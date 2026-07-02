@@ -1,0 +1,30 @@
+name: build-wasm
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone Box3D
+        run: git clone --depth 1 https://github.com/erincatto/box3d.git vendor/box3d
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.2
+
+      - name: Build simulation
+        run: |
+          emcmake cmake -S . -B build/wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/wasm --target sim
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tumbo-wasm
+          path: |
+            build/wasm/tumbo.js
+            build/wasm/tumbo.wasm

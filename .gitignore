@@ -1,0 +1,8 @@
+build/
+vendor/
+node_modules/
+dist/
+web/src/gen/tumbo.js
+web/src/gen/tumbo.wasm
+.vite/
+*.log

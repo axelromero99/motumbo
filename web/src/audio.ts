@@ -1,0 +1,119 @@
+// Synthesized SFX via WebAudio — zero assets, everything is oscillators,
+// noise buffers and envelopes. Volumes are pre-mixed per effect.
+
+export class AudioEngine {
+  private ctx: AudioContext | null = null;
+  private master: GainNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+
+  /** Must be called from a user gesture to satisfy autoplay policies. */
+  unlock(): void {
+    if (!this.ctx) {
+      this.ctx = new AudioContext();
+      const comp = this.ctx.createDynamicsCompressor();
+      comp.threshold.value = -18;
+      comp.ratio.value = 6;
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(comp);
+      comp.connect(this.ctx.destination);
+
+      const len = Math.floor(this.ctx.sampleRate * 0.5);
+      this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = this.noiseBuffer.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
+    if (this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  private tone(f0: number, f1: number, dur: number, type: OscillatorType, vol: number, delay = 0): void {
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(Math.max(20, f0), t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain);
+    gain.connect(this.master);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+
+  private noise(dur: number, freq: number, q: number, vol: number, freqEnd?: number): void {
+    if (!this.ctx || !this.master || !this.noiseBuffer) return;
+    const t = this.ctx.currentTime;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    src.loop = true;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(freq, t);
+    if (freqEnd !== undefined) filter.frequency.exponentialRampToValueAtTime(Math.max(30, freqEnd), t + dur);
+    filter.Q.value = q;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(vol, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.02);
+  }
+
+  hit(intensity: number): void {
+    const v = Math.min(0.9, 0.12 * intensity);
+    this.tone(150, 50, 0.16, 'sine', v);
+    this.noise(0.1, 900, 1.2, v * 0.6, 300);
+  }
+
+  dash(powered: boolean): void {
+    this.noise(0.22, powered ? 2400 : 1500, 2.5, powered ? 0.5 : 0.3, 250);
+    if (powered) this.tone(500, 900, 0.18, 'square', 0.12);
+  }
+
+  jump(): void {
+    this.tone(240, 480, 0.14, 'sine', 0.22);
+  }
+
+  tileWarn(): void {
+    this.tone(1100, 900, 0.07, 'square', 0.05);
+  }
+
+  tileDrop(): void {
+    this.tone(90, 40, 0.4, 'sine', 0.3);
+    this.noise(0.3, 250, 1, 0.15, 80);
+  }
+
+  fall(): void {
+    this.tone(600, 90, 0.5, 'sawtooth', 0.2);
+  }
+
+  orbSpawn(): void {
+    this.tone(880, 880, 0.1, 'sine', 0.12);
+    this.tone(1320, 1320, 0.12, 'sine', 0.1, 0.09);
+  }
+
+  orbPickup(): void {
+    this.tone(660, 660, 0.09, 'square', 0.14);
+    this.tone(880, 880, 0.09, 'square', 0.14, 0.08);
+    this.tone(1320, 1320, 0.14, 'square', 0.14, 0.16);
+  }
+
+  countdown(final: boolean): void {
+    this.tone(final ? 880 : 440, final ? 880 : 440, final ? 0.35 : 0.12, 'square', 0.18);
+  }
+
+  roundEnd(): void {
+    this.tone(523, 523, 0.12, 'square', 0.16);
+    this.tone(659, 659, 0.12, 'square', 0.16, 0.12);
+    this.tone(784, 784, 0.24, 'square', 0.18, 0.24);
+  }
+
+  champion(): void {
+    const notes = [523, 659, 784, 1047, 784, 1047];
+    notes.forEach((f, i) => this.tone(f, f, 0.16, 'square', 0.18, i * 0.13));
+  }
+}

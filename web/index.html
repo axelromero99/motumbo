@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TUMBO</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e1a; }
+    #app { position: fixed; inset: 0; }
+    canvas { display: block; }
+    .hud {
+      position: fixed; left: 0; right: 0; pointer-events: none;
+      color: #e8eaf6; font-family: system-ui, sans-serif; text-align: center;
+      text-shadow: 0 2px 8px rgba(0,0,0,.8);
+    }
+    #status { top: 16px; font-size: 20px; font-weight: 700; letter-spacing: .08em; }
+    #banner { top: 40%; font-size: 44px; font-weight: 800; display: none; }
+    #banner small { font-size: 20px; font-weight: 600; opacity: .8; }
+    #countdown {
+      top: 30%; font-size: 110px; font-weight: 900; display: none;
+      -webkit-text-stroke: 2px rgba(255,255,255,.25);
+    }
+    #netwait { bottom: 44px; font-size: 14px; color: #ffd24d; display: none; }
+    #menu {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: rgba(6, 8, 16, .88); color: #e8eaf6; font-family: system-ui, sans-serif; z-index: 10;
+    }
+    #menu .card { width: min(520px, 92vw); text-align: center; }
+    #menu h1 { font-size: 64px; letter-spacing: .2em; margin: 0 0 24px; }
+    #menu button {
+      display: block; width: 100%; margin: 10px 0; padding: 14px; font-size: 17px; font-weight: 700;
+      color: #e8eaf6; background: #1c2138; border: 1px solid #3a4166; border-radius: 10px; cursor: pointer;
+    }
+    #menu button:hover { background: #262d4d; }
+    #menu textarea {
+      width: 100%; height: 64px; margin: 8px 0; padding: 8px; box-sizing: border-box;
+      background: #10142a; color: #aab3e0; border: 1px solid #3a4166; border-radius: 8px;
+      font-size: 11px; resize: none;
+    }
+    #menu .hint { font-size: 14px; opacity: .8; margin: 6px 0; }
+    #net-panel[hidden] { display: none; }
+    #help { bottom: 14px; font-size: 13px; opacity: .75; }
+    kbd {
+      background: #1c2138; border: 1px solid #3a4166; border-radius: 4px;
+      padding: 1px 5px; font-family: inherit;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="status" class="hud"></div>
+  <div id="banner" class="hud"></div>
+  <div id="countdown" class="hud"></div>
+  <div id="netwait" class="hud">⏳ esperando al rival…</div>
+  <div id="menu">
+    <div class="card">
+      <h1>TUMBO</h1>
+      <button id="btn-local">🎮 LOCAL — 2 en un teclado</button>
+      <button id="btn-host">🌐 CREAR PARTIDA ONLINE</button>
+      <button id="btn-join">🔗 UNIRSE A PARTIDA</button>
+      <div id="net-panel" hidden>
+        <p class="hint" id="net-instructions"></p>
+        <textarea id="net-out" readonly placeholder="tu código aparecerá acá"></textarea>
+        <button id="btn-copy">📋 Copiar mi código</button>
+        <textarea id="net-in" placeholder="pegá el código del rival acá"></textarea>
+        <button id="btn-connect">Conectar</button>
+        <p class="hint" id="net-status"></p>
+      </div>
+    </div>
+  </div>
+  <div id="help" class="hud">
+    P1 <kbd>WASD</kbd> · dash <kbd>Shift izq.</kbd> · salto <kbd>Espacio</kbd> &nbsp;|&nbsp;
+    P2 <kbd>Flechas</kbd> · dash <kbd>Shift der.</kbd> · salto <kbd>Ctrl der.</kbd> &nbsp;|&nbsp;
+    <kbd>1</kbd>–<kbd>4</kbd> nivel · <kbd>R</kbd> revancha
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
