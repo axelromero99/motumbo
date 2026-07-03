@@ -77,6 +77,22 @@
  *     renderLevelThumbs(sim) de minimap.ts ANTES de la init real, y re-init
  *     después). La card ALEATORIO se agrega sola al final.
  *
+ * Editor de mapas / MIS MAPAS:
+ *   - EDITOR (title) -> navega a 'none' y dispara onEditor(); main.ts debe
+ *     llamar mapEditor.open(). La pantalla del editor NO pasa por show():
+ *     MapEditor maneja solo la clase 'active' de su propia
+ *     <section data-screen="editor"> (por eso 'editor' no está en ScreenName;
+ *     igual un show() de acá la oculta porque comparte la clase .screen).
+ *   - setCustomMaps(maps): puebla la sección MIS MAPAS del setup (llamarla al
+ *     boot con listMaps() y de nuevo en onMapsChanged del editor). Elegir una
+ *     card la selecciona como nivel; JUGAR/Revancha entregan { custom: id }
+ *     en onStartMatch (main.ts resuelve los bytes con getMapBytes(id)).
+ *   - Botón ✎ de una card -> navega a 'none' y dispara onEditMap(id); main.ts
+ *     debe llamar mapEditor.open(id).
+ *   - Botón ✕ de una card: la UiShell borra sola (deleteMap + re-render
+ *     interno, con confirm); no hay callback. Si el mapa borrado estaba
+ *     seleccionado, la selección vuelve a ALEATORIO.
+ *
  * Settings (interface Settings):
  *   volMaster/volMusic 0..1 · shadows boolean · particles número 0..1
  *   (multiplicador de densidad, presets del toggle: ALTA=1, MEDIA=0.5,
@@ -85,8 +101,14 @@
  *   debería además atenuar el screen-shake de fx).
  */
 
+import { deleteMap, listMaps } from './editor';
+import type { SavedMap } from './editor';
+
 /** Presets del toggle de partículas (valor = multiplicador de densidad). */
 export const PARTICLE_PRESETS: Record<string, number> = { alta: 1, media: 0.5, baja: 0.2 };
+
+/** Nivel elegido en el setup: built-in, aleatorio o mapa custom (id de SavedMap). */
+export type LevelChoice = number | 'random' | { custom: string };
 
 export interface Settings {
   volMaster: number;
@@ -130,10 +152,14 @@ export interface UiCallbacks {
   onConnectClicked(code: string): void;
   onCopyCode(): void;
   onInviteLink(): void;
-  onStartMatch(level: number | 'random', winTarget: number): void;
+  onStartMatch(level: LevelChoice, winTarget: number): void;
   onResume(): void;
   onQuitToTitle(): void;
   onSettingsChanged(s: Settings): void;
+  /** Botón EDITOR de la pantalla title (la UiShell ya navegó a 'none'). */
+  onEditor(): void;
+  /** Botón ✎ de una card de MIS MAPAS (la UiShell ya navegó a 'none'). */
+  onEditMap(id: string): void;
 }
 
 const SETTINGS_KEY = 'tumbo.settings.v1';
@@ -178,9 +204,10 @@ export class UiShell {
 
   private screens = new Map<string, HTMLElement>();
   private levelNames: string[] = [];
-  private selLevel: number | 'random' = 'random';
+  private customMaps: SavedMap[] = [];
+  private selLevel: LevelChoice = 'random';
   private winTarget = 5;
-  private lastStart: { level: number | 'random'; winTarget: number } = { level: 'random', winTarget: 5 };
+  private lastStart: { level: LevelChoice; winTarget: number } = { level: 'random', winTarget: 5 };
 
   private hostTab = true;
   private offerCode = '';
@@ -262,6 +289,75 @@ export class UiShell {
     rand.append(q, label);
     rand.addEventListener('click', () => this.selectLevel('random'));
     grid.appendChild(rand);
+    this.selectLevel(this.selLevel);
+  }
+
+  /** Puebla la sección MIS MAPAS del setup con los mapas custom guardados. */
+  setCustomMaps(maps: SavedMap[]): void {
+    this.customMaps = maps.slice();
+    const grid = $('custom-grid');
+    grid.textContent = '';
+    if (maps.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'custom-empty';
+      p.textContent = 'creá tu primer mapa en el EDITOR';
+      grid.appendChild(p);
+    }
+    for (const m of maps) {
+      const card = document.createElement('div');
+      card.className = 'level-card custom-card';
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+
+      const img = document.createElement('img');
+      img.src = m.thumb;
+      img.alt = m.name;
+      img.draggable = false;
+
+      const label = document.createElement('span');
+      label.className = 'lname';
+      label.textContent = m.name;
+
+      const acts = document.createElement('div');
+      acts.className = 'card-acts';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'card-act';
+      edit.textContent = '✎';
+      edit.title = 'Editar';
+      edit.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showAny('none');
+        this.cb.onEditMap(m.id);
+      });
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'card-act danger';
+      del.textContent = '✕';
+      del.title = 'Borrar';
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!window.confirm(`¿Borrar "${m.name}"?`)) return;
+        deleteMap(m.id);
+        if (typeof this.selLevel === 'object' && this.selLevel.custom === m.id) {
+          this.selLevel = 'random';
+        }
+        this.setCustomMaps(listMaps());
+        this.toast('Mapa borrado');
+      });
+      acts.append(edit, del);
+
+      card.append(img, label, acts);
+      const select = (): void => this.selectLevel({ custom: m.id });
+      card.addEventListener('click', select);
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          select();
+        }
+      });
+      grid.appendChild(card);
+    }
     this.selectLevel(this.selLevel);
   }
 
@@ -504,6 +600,10 @@ export class UiShell {
       this.optionsReturnTo = 'title';
       this.showAny('options');
     });
+    $('btn-editor').addEventListener('click', () => {
+      this.showAny('none');
+      this.cb.onEditor();
+    });
   }
 
   private wireSetup(): void {
@@ -521,13 +621,24 @@ export class UiShell {
     $('btn-setup-back').addEventListener('click', () => this.showAny('title'));
   }
 
-  private selectLevel(sel: number | 'random'): void {
+  private selectLevel(sel: LevelChoice): void {
     if (typeof sel === 'number' && sel >= this.levelNames.length) sel = 'random';
+    if (typeof sel === 'object') {
+      const id = sel.custom;
+      if (!this.customMaps.some((m) => m.id === id)) sel = 'random';
+    }
     this.selLevel = sel;
+    const chosen = sel; // const: TS puede narrowear dentro de los callbacks
     const cards = $('level-grid').querySelectorAll('.level-card');
     cards.forEach((card, i) => {
       const isRandom = i === cards.length - 1;
-      card.classList.toggle('selected', isRandom ? sel === 'random' : sel === i);
+      const on = typeof chosen === 'object' ? false : isRandom ? chosen === 'random' : chosen === i;
+      card.classList.toggle('selected', on);
+    });
+    const customCards = $('custom-grid').querySelectorAll('.custom-card');
+    customCards.forEach((card, i) => {
+      const on = typeof chosen === 'object' && this.customMaps[i]?.id === chosen.custom;
+      card.classList.toggle('selected', on);
     });
   }
 

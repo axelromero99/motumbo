@@ -8,10 +8,22 @@ export const INPUT_DELAY = 4;
 // Wire format (little-endian):
 //   INPUT: u8 type=0, u8 round, u32 tick, u32 word
 //   HASH:  u8 type=1, u8 round, u32 tick, u32 hash
-//   START: u8 type=2, u8 round, u32 seed, u8 level, u8 resetWins
+//   START: u8 type=2, u8 round, u32 seed, u8 level, u8 resetWins, u8 winTarget
+//   MAP:   u8 type=3, u16 len, bytes (custom map blob; sent before a START
+//          with level 8 — the channel is ordered, so arrival order is safe)
 export const MSG_INPUT = 0;
 export const MSG_HASH = 1;
 export const MSG_START = 2;
+export const MSG_MAP = 3;
+
+export function msgMap(bytes: Uint8Array): ArrayBuffer {
+  const buf = new ArrayBuffer(3 + bytes.length);
+  const v = new DataView(buf);
+  v.setUint8(0, MSG_MAP);
+  v.setUint16(1, bytes.length, true);
+  new Uint8Array(buf, 3).set(bytes);
+  return buf;
+}
 
 export function msgInput(round: number, tick: number, word: number): ArrayBuffer {
   const buf = new ArrayBuffer(10);

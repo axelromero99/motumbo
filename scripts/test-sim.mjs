@@ -95,5 +95,77 @@ if (!botsOk) {
   console.log(`  bots deterministas y agresivos OK (winner=${ba.winner})`);
 }
 
+console.log('--- mapa custom ---');
+// Cross-shaped custom map with raised ends and a spinning beam, built with
+// the same byte layout as mapcodec.ts / BuildCustomLevel.
+function buildTestMap() {
+  const tiles = [];
+  for (let gx = -4; gx <= 4; gx++) {
+    for (let gz = -4; gz <= 4; gz++) {
+      if (Math.abs(gx) <= 1 || Math.abs(gz) <= 1) {
+        tiles.push([gx, gz, Math.abs(gx) === 4 || Math.abs(gz) === 4 ? 1 : 0]);
+      }
+    }
+  }
+  const spawns = [
+    [-4, 0],
+    [4, 0],
+    [0, -4],
+    [0, 4],
+  ];
+  const bytes = new Uint8Array(8 + tiles.length * 3 + spawns.length * 2);
+  bytes[0] = 1; // version
+  bytes[1] = 3; // theme
+  bytes[2] = 30; // crumble start (300 ticks)
+  bytes[3] = 20; // crumble interval
+  bytes[4] = tiles.length;
+  bytes[5] = spawns.length;
+  bytes[6] = 40; // beam half-length 4.0m
+  let o = 8;
+  for (const [gx, gz, h] of tiles) {
+    bytes[o++] = gx + 16;
+    bytes[o++] = gz + 16;
+    bytes[o++] = h;
+  }
+  for (const [gx, gz] of spawns) {
+    bytes[o++] = gx + 16;
+    bytes[o++] = gz + 16;
+  }
+  return bytes;
+}
+
+async function runCustom(label) {
+  const M = await createTumbo();
+  const bytes = buildTestMap();
+  M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
+  M._tumbo_set_custom(bytes.length);
+  M._tumbo_init(99, PLAYERS, 8);
+  const inputsBase = M._tumbo_inputs_ptr() >> 2;
+  const stateBase = M._tumbo_state_ptr() >> 2;
+  const hashes = [];
+  for (let t = 0; t < TICKS; t++) {
+    for (let p = 0; p < PLAYERS; p++) M.HEAPU32[inputsBase + p] = inputFor(p, t);
+    M._tumbo_step();
+    if (t % 100 === 0) hashes.push(M._tumbo_hash() >>> 0);
+  }
+  const S = M.HEAPF32;
+  console.log(
+    `[custom ${label}] pieces=${S[stateBase + 3]} hazards=${S[stateBase + 6]} ` +
+      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]}`,
+  );
+  return { hashes, pieces: S[stateBase + 3], hazards: S[stateBase + 6] };
+}
+
+const ca = await runCustom('A');
+const cb = await runCustom('B');
+const customOk =
+  ca.pieces === 45 && ca.hazards === 1 && ca.hashes.length === cb.hashes.length && ca.hashes.every((h, i) => h === cb.hashes[i]);
+if (!customOk) {
+  allOk = false;
+  console.log('  FALLO en mapa custom');
+} else {
+  console.log('  mapa custom determinista OK (45 baldosas, 1 hazard)');
+}
+
 console.log(allOk ? 'TODOS LOS TESTS OK' : 'HAY FALLOS');
 process.exit(allOk ? 0 : 1);

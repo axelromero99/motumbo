@@ -293,7 +293,7 @@ export class GameRenderer {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
-  private cameraBase = new THREE.Vector3(0, 16, 15);
+  private cameraBase = new THREE.Vector3(0, 22, 20.5);
   private lookTarget = new THREE.Vector3(0, 0, 0);
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
@@ -357,11 +357,11 @@ export class GameRenderer {
     this.sun.position.set(10, 22, 8);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.camera.left = -12;
-    this.sun.shadow.camera.right = 12;
-    this.sun.shadow.camera.top = 12;
-    this.sun.shadow.camera.bottom = -12;
-    this.sun.shadow.camera.far = 50;
+    this.sun.shadow.camera.left = -17;
+    this.sun.shadow.camera.right = 17;
+    this.sun.shadow.camera.top = 17;
+    this.sun.shadow.camera.bottom = -17;
+    this.sun.shadow.camera.far = 60;
     this.scene.add(this.sun);
 
     // Skybox dome; colors are retinted per theme in setup().
@@ -421,11 +421,11 @@ export class GameRenderer {
   }
 
   /** (Re)build meshes for a fresh round from the sim's initial snapshot. */
-  setup(sim: Sim): void {
-    this.theme = THEMES[sim.level] ?? THEMES[0];
+  setup(sim: Sim, themeOverride?: number): void {
+    this.theme = THEMES[themeOverride ?? sim.level] ?? THEMES[0];
     this.scene.background = null;
     this.renderer.setClearColor(this.theme.bg, 1);
-    this.scene.fog = new THREE.Fog(this.theme.bg, 28, 60);
+    this.scene.fog = new THREE.Fog(this.theme.bg, 36, 80);
     this.hemi.color.set(this.theme.sky);
     this.hemi.groundColor.set(this.theme.ground);
     (this.skyMat.uniforms.uSkyTop.value as THREE.Color).setHex(this.theme.skyTop);

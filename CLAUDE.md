@@ -85,3 +85,13 @@ abajo hacia arriba), 5 HERRADURA (U con ola de derrumbe angular), 6 PASARELA (co
 3×11 + alcobas + 2 pistones kinemáticos), 7 TARIMAS (6 tarimas con huecos de 1 baldosa).
 Los hazards están inertes durante el countdown (fix: la viga ya no arrolla en el spawn).
 Eventos extra: 9 DASH_HIT (a=atacante, b=víctima), 10 PARRY. Teclas 1-8 en el juego.
+
+## Mapas custom (nivel 8)
+
+El mapa es un blob de bytes (layout en `web/src/mapcodec.ts`, espejado en
+`BuildCustomLevel` de tumbo.c): baldosas en grilla 15×15 con 3 alturas, hasta 8
+spawns, velocidad de derrumbe y barra giratoria opcional. JS lo escribe con
+`sim.loadCustomMap(bytes)` ANTES de `tumbo_init(seed, players, 8)`; en online el
+host lo manda con MSG_MAP antes del START (canal ordenado). Editor visual en
+`web/src/editor.ts` (pantalla propia, storage 'tumbo.maps.v1', export/import
+base64 para compartir). Bytes inválidos caen a CLÁSICA — nunca rompe.

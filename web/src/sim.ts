@@ -53,9 +53,12 @@ interface TumboModule {
   _tumbo_event_count(): number;
   _tumbo_countdown_ticks(): number;
   _tumbo_set_bot(slot: number, difficulty: number): void;
+  _tumbo_custom_ptr(): number;
+  _tumbo_set_custom(len: number): void;
   _tumbo_hash(): number;
   HEAPF32: Float32Array;
   HEAPU32: Uint32Array;
+  HEAPU8: Uint8Array;
 }
 
 export class Sim {
@@ -118,6 +121,17 @@ export class Sim {
    */
   setBot(slot: number, difficulty: number): void {
     this.module._tumbo_set_bot(slot, difficulty);
+  }
+
+  /**
+   * Load custom map bytes (see mapcodec.ts). Call BEFORE init with level 8;
+   * in lockstep, both peers must load identical bytes. Persists across
+   * rounds until replaced.
+   */
+  loadCustomMap(bytes: Uint8Array): void {
+    const ptr = this.module._tumbo_custom_ptr();
+    this.module.HEAPU8.set(bytes, ptr);
+    this.module._tumbo_set_custom(bytes.length);
   }
 
   hash(): number {

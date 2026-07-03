@@ -25,10 +25,12 @@ import { LocalInput } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
-import { NetSession, Lockstep, msgStart, MSG_INPUT, MSG_HASH, MSG_START, offerFromLocation } from './net';
+import { NetSession, Lockstep, msgStart, msgMap, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP, offerFromLocation } from './net';
 import { UiShell, type Settings } from './ui';
 import { renderLevelThumbs } from './minimap';
 import { MatchStats } from './stats';
+import { MapEditor, listMaps, getMapBytes } from './editor';
+import { LEVEL_CUSTOM } from './mapcodec';
 
 const PLAYER_NAMES = ['ROJO', 'AZUL', 'AMARILLO', 'VERDE', 'VIOLETA', 'NARANJA', 'TURQUESA', 'ROSA'];
 const TILE_DUST = 0x9aa4c0;
@@ -64,8 +66,13 @@ async function main(): Promise<void> {
   let mode: Mode = 'menu';
   let intent: Intent = 'local';
   let seed = 1;
-  let levelChoice: number | 'random' = 0;
+  let levelChoice: number | 'random' | { custom: string } | 'test' = 0;
+  let testBytes: Uint8Array | null = null;
+  let testTheme = 0;
+  let pendingGuestMap: Uint8Array | null = null;
   let currentLevel = 0;
+  let currentTheme = 0;
+  let currentLevelName = LEVEL_NAMES[0];
   let winTarget = 5;
   let playerCount = 2;
   let botSlots: number[] = [];
@@ -103,8 +110,29 @@ async function main(): Promise<void> {
     return `${PLAYER_NAMES[i]}${bot}${you}`;
   };
 
-  const resolveLevel = (): number =>
-    levelChoice === 'random' ? randomSeed() % sim.levelCount : levelChoice % sim.levelCount;
+  interface RoundSpec {
+    level: number;
+    theme: number;
+    bytes: Uint8Array | null;
+    name: string;
+  }
+
+  const resolveRound = (): RoundSpec => {
+    if (levelChoice === 'test' && testBytes) {
+      return { level: LEVEL_CUSTOM, theme: testTheme, bytes: testBytes, name: 'PRUEBA DEL EDITOR' };
+    }
+    if (typeof levelChoice === 'object') {
+      const id = levelChoice.custom;
+      const bytes = getMapBytes(id);
+      if (bytes) {
+        const meta = listMaps().find((m) => m.id === id);
+        return { level: LEVEL_CUSTOM, theme: bytes[1] & 7, bytes, name: (meta?.name ?? 'CUSTOM').toUpperCase() };
+      }
+      levelChoice = 0;
+    }
+    const lvl = levelChoice === 'random' ? randomSeed() % sim.levelCount : (levelChoice as number) % sim.levelCount;
+    return { level: lvl, theme: lvl, bytes: null, name: LEVEL_NAMES[lvl] };
+  };
 
   // ---------------------------------------------------------------------
   // UI shell
@@ -137,7 +165,7 @@ async function main(): Promise<void> {
     // UiShell already wrote code/link to the clipboard; we just confirm.
     onCopyCode: () => ui.toast('código copiado'),
     onInviteLink: () => ui.toast('link de invitación copiado'),
-    onStartMatch: (level: number | 'random', target: number) => {
+    onStartMatch: (level: number | 'random' | { custom: string }, target: number) => {
       audio.uiClick();
       levelChoice = level;
       winTarget = target;
@@ -147,10 +175,38 @@ async function main(): Promise<void> {
         startMatch();
       }
     },
+    onEditor: () => {
+      audio.uiClick();
+      ui.show('none');
+      editor.open();
+    },
+    onEditMap: (id: string) => {
+      audio.uiClick();
+      ui.show('none');
+      editor.open(id);
+    },
     onResume: () => setPaused(false),
     onQuitToTitle: () => quitToTitle(),
     onSettingsChanged: applySettings,
   });
+
+  const editor = new MapEditor({
+    onPlayTest: (bytes: Uint8Array, theme: number) => {
+      editor.close();
+      testBytes = bytes;
+      testTheme = theme;
+      levelChoice = 'test';
+      intent = 'solo';
+      winTarget = 3;
+      startMatch();
+    },
+    onExit: () => {
+      editor.close();
+      ui.show('title');
+    },
+    onMapsChanged: () => ui.setCustomMaps(listMaps()),
+  });
+  ui.setCustomMaps(listMaps());
   applySettings(ui.settings);
   ui.setLifetimeLine(stats.summaryLine());
 
@@ -185,11 +241,14 @@ async function main(): Promise<void> {
     prevLocalDashReady = true;
   };
 
-  const initRound = (roundSeed: number, lvl: number): void => {
-    currentLevel = lvl;
-    sim.init(roundSeed, playerCount, lvl);
+  const initRound = (roundSeed: number, spec: RoundSpec): void => {
+    currentLevel = spec.level;
+    currentTheme = spec.theme;
+    currentLevelName = spec.name;
+    if (spec.bytes) sim.loadCustomMap(spec.bytes);
+    sim.init(roundSeed, playerCount, spec.level);
     for (const slot of botSlots) sim.setBot(slot, slot === playerCount - 1 ? 2 : 1);
-    renderer.setup(sim);
+    renderer.setup(sim, spec.theme);
     stats.onRoundStart(0);
     resetRoundLocals();
   };
@@ -201,6 +260,9 @@ async function main(): Promise<void> {
     wins = [0, 0, 0, 0];
     matchOver = false;
     attractLevel = (attractLevel + 1) % sim.levelCount;
+    currentLevel = attractLevel;
+    currentTheme = attractLevel;
+    currentLevelName = LEVEL_NAMES[attractLevel];
     sim.init(randomSeed(), 4, attractLevel);
     for (const slot of botSlots) sim.setBot(slot, 2);
     renderer.setup(sim);
@@ -220,7 +282,7 @@ async function main(): Promise<void> {
     wins = new Array(playerCount).fill(0);
     matchOver = false;
     stats.reset(playerCount);
-    initRound(seed++, resolveLevel());
+    initRound(seed++, resolveRound());
     ui.show('none');
     help.innerHTML = helpText();
     updateScorebar(true);
@@ -232,7 +294,7 @@ async function main(): Promise<void> {
       matchOver = false;
       stats.reset(playerCount);
     }
-    initRound(seed++, resolveLevel());
+    initRound(seed++, resolveRound());
     ui.show('none');
   };
 
@@ -264,7 +326,10 @@ async function main(): Promise<void> {
       const type = v.getUint8(0);
       if (type === MSG_INPUT) lockstep?.onRemoteInput(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
       else if (type === MSG_HASH) lockstep?.onRemoteHash(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
-      else if (type === MSG_START && !isHost) {
+      else if (type === MSG_MAP && !isHost) {
+        const len = v.getUint16(1, true);
+        pendingGuestMap = new Uint8Array(v.buffer.slice(v.byteOffset + 3, v.byteOffset + 3 + len));
+      } else if (type === MSG_START && !isHost) {
         const round = v.getUint8(1);
         const netSeed = v.getUint32(2, true);
         const lvl = v.getUint8(6);
@@ -275,7 +340,11 @@ async function main(): Promise<void> {
         }
         winTarget = v.getUint8(8);
         roundId = round;
-        startNetRound(netSeed, lvl, round);
+        const spec: RoundSpec =
+          lvl === LEVEL_CUSTOM && pendingGuestMap
+            ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] & 7, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
+            : { level: lvl, theme: lvl, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
+        startNetRound(netSeed, spec, round);
       }
     };
     s.onClose = () => {
@@ -347,11 +416,11 @@ async function main(): Promise<void> {
     }
   };
 
-  const startNetRound = (netSeed: number, lvl: number, round: number): void => {
+  const startNetRound = (netSeed: number, spec: RoundSpec, round: number): void => {
     mode = 'net';
     playerCount = 2;
     botSlots = [];
-    initRound(netSeed, lvl);
+    initRound(netSeed, spec);
     lockstep = new Lockstep(session!, mySlot, round);
     lastNetProgress = performance.now();
     ui.show('none');
@@ -365,9 +434,10 @@ async function main(): Promise<void> {
     matchOver = false;
     stats.reset(2);
     const netSeed = randomSeed();
-    const lvl = resolveLevel();
-    session!.send(msgStart(0, netSeed, lvl, true, winTarget));
-    startNetRound(netSeed, lvl, 0);
+    const spec = resolveRound();
+    if (spec.bytes) session!.send(msgMap(spec.bytes));
+    session!.send(msgStart(0, netSeed, spec.level, true, winTarget));
+    startNetRound(netSeed, spec, 0);
   };
 
   const hostNextRound = (resetWins: boolean): void => {
@@ -379,9 +449,10 @@ async function main(): Promise<void> {
     }
     roundId = (roundId + 1) & 0xff;
     const netSeed = randomSeed();
-    const lvl = resolveLevel();
-    session.send(msgStart(roundId, netSeed, lvl, resetWins, winTarget));
-    startNetRound(netSeed, lvl, roundId);
+    const spec = resolveRound();
+    if (spec.bytes) session.send(msgMap(spec.bytes));
+    session.send(msgStart(roundId, netSeed, spec.level, resetWins, winTarget));
+    startNetRound(netSeed, spec, roundId);
   };
 
   // Deep link: ?#j=<offer> lands straight in the join flow.
@@ -663,7 +734,7 @@ async function main(): Promise<void> {
       let aliveCount = 0;
       for (let i = 0; i < playerCount; i++) if (sim.aliveMask & (1 << i)) aliveCount++;
       music.setState({
-        level: currentLevel,
+        level: currentTheme,
         aliveCount,
         playerCount,
         crumbleRatio: sim.pieceCount > 0 ? 1 - standing / sim.pieceCount : 0,
@@ -703,7 +774,7 @@ async function main(): Promise<void> {
 
       updateScorebar(false);
       const modeTag = mode === 'net' ? (isHost ? 'ONLINE · anfitrión' : 'ONLINE') : intent === 'solo' ? 'SOLO' : 'LOCAL';
-      status.textContent = `${modeTag} · ${LEVEL_NAMES[currentLevel]}`;
+      status.textContent = `${modeTag} · ${currentLevelName}`;
     } else {
       status.textContent = '';
       countdownEl.style.display = 'none';

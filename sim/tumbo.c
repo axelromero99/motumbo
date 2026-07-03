@@ -16,9 +16,15 @@
 #endif
 
 #define MAX_PLAYERS 8
-#define MAX_PIECES 128
+#define MAX_PIECES 256
 #define MAX_HAZARDS 2
 #define LEVEL_COUNT 8
+
+// Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
+// format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
+// deterministic setup, so lockstep peers must load identical bytes.
+#define LEVEL_CUSTOM 8
+#define CUSTOM_DATA_MAX 1024
 
 #define TICK_DT ( 1.0f / 60.0f )
 #define SUBSTEPS 4
@@ -204,6 +210,10 @@ static uint32_t g_frame;
 static int g_winner; // -1 ongoing, -2 draw, else player index
 
 static uint32_t g_inputs[MAX_PLAYERS];
+static uint8_t g_customData[CUSTOM_DATA_MAX];
+static int g_customLen;
+static float g_customSpawns[MAX_PLAYERS][2];
+static int g_customSpawnCount;
 static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS + 4];
 static float g_events[MAX_EVENTS * EVENT_FLOATS];
 static int g_eventCount;
@@ -282,6 +292,16 @@ TUMBO_EXPORT int tumbo_event_count( void )
 TUMBO_EXPORT int tumbo_countdown_ticks( void )
 {
 	return COUNTDOWN_TICKS;
+}
+
+TUMBO_EXPORT uint8_t* tumbo_custom_ptr( void )
+{
+	return g_customData;
+}
+
+TUMBO_EXPORT void tumbo_set_custom( int len )
+{
+	g_customLen = len < 0 ? 0 : ( len > CUSTOM_DATA_MAX ? CUSTOM_DATA_MAX : len );
 }
 
 // Enable a deterministic bot on a player slot. Call between tumbo_init and
@@ -487,7 +507,7 @@ static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type )
 
 static void BuildLevel( int level, const b3BoxHull* hull )
 {
-	int extent = 6;
+	int extent = 7;
 	for ( int gx = -extent; gx <= extent; ++gx )
 	{
 		for ( int gz = -extent; gz <= extent; ++gz )
@@ -498,14 +518,14 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 
 			if ( level == LEVEL_CLASICA )
 			{
-				if ( d2 <= 6.0f * 6.0f )
+				if ( d2 <= 8.4f * 8.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
 			}
 			else if ( level == LEVEL_ANILLO )
 			{
-				if ( d2 <= 7.2f * 7.2f && d2 >= 2.9f * 2.9f )
+				if ( d2 <= 10.1f * 10.1f && d2 >= 4.06f * 4.06f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -513,18 +533,18 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			else if ( level == LEVEL_PUENTES )
 			{
 				float dc2[4];
-				dc2[0] = ( cx - 6.0f ) * ( cx - 6.0f ) + cz * cz;
-				dc2[1] = ( cx + 6.0f ) * ( cx + 6.0f ) + cz * cz;
-				dc2[2] = cx * cx + ( cz - 6.0f ) * ( cz - 6.0f );
-				dc2[3] = cx * cx + ( cz + 6.0f ) * ( cz + 6.0f );
-				float islandR2 = 2.0f * 2.0f;
+				dc2[0] = ( cx - 8.4f ) * ( cx - 8.4f ) + cz * cz;
+				dc2[1] = ( cx + 8.4f ) * ( cx + 8.4f ) + cz * cz;
+				dc2[2] = cx * cx + ( cz - 8.4f ) * ( cz - 8.4f );
+				dc2[3] = cx * cx + ( cz + 8.4f ) * ( cz + 8.4f );
+				float islandR2 = 2.8f * 2.8f;
 				bool inIsland = dc2[0] <= islandR2 || dc2[1] <= islandR2 || dc2[2] <= islandR2 || dc2[3] <= islandR2;
-				bool inCenter = d2 <= 2.3f * 2.3f;
-				bool onBridge = ( gz == 0 || gx == 0 ) && d2 <= 6.0f * 6.0f;
+				bool inCenter = d2 <= 3.22f * 3.22f;
+				bool onBridge = ( gz == 0 || gx == 0 ) && d2 <= 8.4f * 8.4f;
 
 				if ( inCenter )
 				{
-					AddPiece( cx, cz, 0.0f, d2 > 1.4f * 1.4f ? 3 : 4, hull );
+					AddPiece( cx, cz, 0.0f, d2 > 1.96f * 1.96f ? 3 : 4, hull );
 				}
 				else if ( inIsland )
 				{
@@ -536,7 +556,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 							best = dc2[k];
 						}
 					}
-					AddPiece( cx, cz, 0.0f, best > 1.3f * 1.3f ? 1 : 2, hull );
+					AddPiece( cx, cz, 0.0f, best > 1.82f * 1.82f ? 1 : 2, hull );
 				}
 				else if ( onBridge )
 				{
@@ -545,7 +565,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			}
 			else if ( level == LEVEL_RULETA )
 			{
-				if ( d2 <= 6.5f * 6.5f )
+				if ( d2 <= 9.1f * 9.1f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -556,10 +576,10 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				int ax = gx < 0 ? -gx : gx;
 				int az = gz < 0 ? -gz : gz;
 				int m = ax > az ? ax : az;
-				if ( m <= 4 )
+				if ( m <= 6 )
 				{
-					float h = m <= 1 ? 1.6f : ( m == 2 ? 0.8f : 0.0f );
-					int prio = m >= 3 ? 0 : ( m == 2 ? 1 : 2 );
+					float h = m <= 2 ? 1.6f : ( m <= 4 ? 0.8f : 0.0f );
+					int prio = m >= 5 ? 0 : ( m >= 3 ? 1 : 2 );
 					AddPiece( cx, cz, h, prio, hull );
 				}
 			}
@@ -567,7 +587,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			{
 				// Ring with an opening at -Z; the collapse wave sweeps from
 				// one horn of the U to the other. Push rivals INTO the wave.
-				if ( d2 <= 7.4f * 7.4f && d2 >= 3.0f * 3.0f && !( cz < -2.0f && ( cx < 2.3f && cx > -2.3f ) ) )
+				if ( d2 <= 10.36f * 10.36f && d2 >= 4.2f * 4.2f && !( cz < -2.8f && ( cx < 3.22f && cx > -3.22f ) ) )
 				{
 					float rel = fmodf( atan2f( cz, cx ) + 3.14159265f * 0.5f + 6.2831853f, 6.2831853f );
 					AddPiece( cx, cz, 0.0f, (int)( rel * 10.0f ), hull );
@@ -579,11 +599,11 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				// both ends while pistons sweep the lane.
 				int ax = gx < 0 ? -gx : gx;
 				int az = gz < 0 ? -gz : gz;
-				bool corridor = ax <= 5 && az <= 1;
-				bool alcove = ax == 2 && az == 2;
+				bool corridor = ax <= 7 && az <= 1;
+				bool alcove = ax == 4 && az == 2;
 				if ( corridor || alcove )
 				{
-					AddPiece( cx, cz, 0.0f, 5 - ax, hull );
+					AddPiece( cx, cz, 0.0f, 7 - ax, hull );
 				}
 			}
 			else // LEVEL_TARIMAS
@@ -592,29 +612,29 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				// sink in a fixed, learnable order. Central plaza dies last.
 				int prio = -1;
 				float h = 0.0f;
-				if ( gx >= -1 && gx <= 1 && gz >= -1 && gz <= 1 )
+				if ( gx >= -2 && gx <= 2 && gz >= -2 && gz <= 2 )
 				{
 					prio = 5;
 				}
-				else if ( gx >= 3 && gx <= 4 && gz >= -1 && gz <= 1 )
+				else if ( gx >= 4 && gx <= 6 && gz >= -1 && gz <= 1 )
 				{
 					prio = 0;
 					h = 0.8f;
 				}
-				else if ( gx >= -4 && gx <= -3 && gz >= -1 && gz <= 1 )
+				else if ( gx >= -6 && gx <= -4 && gz >= -1 && gz <= 1 )
 				{
 					prio = 1;
 					h = 0.8f;
 				}
-				else if ( gx >= -1 && gx <= 1 && gz >= 3 && gz <= 4 )
+				else if ( gx >= -1 && gx <= 1 && gz >= 4 && gz <= 6 )
 				{
 					prio = 2;
 				}
-				else if ( gx >= -1 && gx <= 1 && gz >= -4 && gz <= -3 )
+				else if ( gx >= -1 && gx <= 1 && gz >= -6 && gz <= -4 )
 				{
 					prio = 3;
 				}
-				else if ( gx >= 3 && gx <= 4 && gz >= 3 && gz <= 4 )
+				else if ( gx >= 4 && gx <= 6 && gz >= 4 && gz <= 6 )
 				{
 					prio = 4;
 					h = 0.8f;
@@ -631,43 +651,112 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 	{
 		case LEVEL_RULETA:
 			ShuffleCrumbleOrder();
-			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 5.8f, 0.3f, 0.32f }, HAZARD_BEAM );
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 8.1f, 0.3f, 0.32f }, HAZARD_BEAM );
 			g_crumbleStart = 420;
-			g_crumbleInterval = 35;
+			g_crumbleInterval = 20;
 			break;
 		case LEVEL_PIRAMIDE:
 			SortCrumbleOrder();
 			g_crumbleStart = 600;
-			g_crumbleInterval = 30;
+			g_crumbleInterval = 18;
 			break;
 		case LEVEL_HERRADURA:
 			SortCrumbleOrder();
 			g_crumbleStart = 480;
-			g_crumbleInterval = 25;
+			g_crumbleInterval = 15;
 			break;
 		case LEVEL_PASARELA:
 			SortCrumbleOrder();
 			AddBoxHazard( ( b3Vec3 ){ -3.0f, 0.5f, -2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
 			AddBoxHazard( ( b3Vec3 ){ 3.0f, 0.5f, 2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
 			g_crumbleStart = 540;
-			g_crumbleInterval = 45;
+			g_crumbleInterval = 28;
 			break;
 		case LEVEL_TARIMAS:
 			SortCrumbleOrder();
 			g_crumbleStart = 540;
-			g_crumbleInterval = 35;
+			g_crumbleInterval = 21;
 			break;
 		case LEVEL_PUENTES:
 			SortCrumbleOrder();
 			g_crumbleStart = 480;
-			g_crumbleInterval = 40;
+			g_crumbleInterval = 24;
 			break;
 		default:
 			SortCrumbleOrder();
 			g_crumbleStart = 600;
-			g_crumbleInterval = 50;
+			g_crumbleInterval = 28;
 			break;
 	}
+}
+
+// Custom map blob layout (little-endian bytes):
+//   [0] version (must be 1)     [1] theme id (presentation only)
+//   [2] crumble start, in 10-tick units (clamped to >= countdown + 60)
+//   [3] crumble interval, ticks (clamped to >= 6)
+//   [4] tile count              [5] spawn count (max 8)
+//   [6] beam half-length, 0.1m units (0 = no beam)
+//   [7] reserved
+//   then per tile 3 bytes:  gx+16, gz+16, low 2 bits height (0 / 0.8 / 1.6m),
+//                           high 4 bits crumble priority
+//   then per spawn 2 bytes: gx+16, gz+16
+static void BuildCustomLevel( const b3BoxHull* hull )
+{
+	const uint8_t* d = g_customData;
+	g_customSpawnCount = 0;
+
+	int tileCount = d[4];
+	int spawnCount = d[5];
+	int need = 8 + tileCount * 3 + spawnCount * 2;
+	if ( g_customLen < 8 || d[0] != 1 || tileCount == 0 || g_customLen < need )
+	{
+		// Invalid blob: fall back to a plain disc so the game never breaks.
+		BuildLevel( LEVEL_CLASICA, hull );
+		return;
+	}
+
+	static const float heights[4] = { 0.0f, 0.8f, 1.6f, 1.6f };
+	for ( int i = 0; i < tileCount && g_pieceCount < MAX_PIECES; ++i )
+	{
+		const uint8_t* t = d + 8 + i * 3;
+		float cx = ( (int)t[0] - 16 ) * PIECE_STEP;
+		float cz = ( (int)t[1] - 16 ) * PIECE_STEP;
+		AddPiece( cx, cz, heights[t[2] & 3], ( t[2] >> 4 ) & 15, hull );
+	}
+
+	for ( int i = 0; i < spawnCount && i < MAX_PLAYERS; ++i )
+	{
+		const uint8_t* s = d + 8 + tileCount * 3 + i * 2;
+		g_customSpawns[i][0] = ( (int)s[0] - 16 ) * PIECE_STEP;
+		g_customSpawns[i][1] = ( (int)s[1] - 16 ) * PIECE_STEP;
+		g_customSpawnCount += 1;
+	}
+
+	if ( d[6] > 0 )
+	{
+		AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ (float)d[6] * 0.1f, 0.3f, 0.32f }, HAZARD_BEAM );
+	}
+
+	SortCrumbleOrder();
+	uint32_t start = (uint32_t)d[2] * 10u;
+	g_crumbleStart = start < COUNTDOWN_TICKS + 60u ? COUNTDOWN_TICKS + 60u : start;
+	g_crumbleInterval = d[3] < 6 ? 6 : d[3];
+}
+
+// Top surface height of the tile at (x, z), or 0 when there is none.
+static float TileTopAt( float x, float z )
+{
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+		float dx = x - tp.x;
+		float dz = z - tp.z;
+		if ( dx > -0.76f && dx < 0.76f && dz > -0.76f && dz < 0.76f )
+		{
+			return tp.y + PIECE_HY;
+		}
+	}
+	return 0.0f;
 }
 
 static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
@@ -679,18 +768,29 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 
 	*outY = 0.0f;
 
+	if ( level == LEVEL_CUSTOM && g_customSpawnCount > 0 )
+	{
+		int slot = index % g_customSpawnCount;
+		// Repeated spawns get a small deterministic offset so players pop apart.
+		float nudge = 0.35f * (float)( index / g_customSpawnCount );
+		*outX = g_customSpawns[slot][0] + nudge;
+		*outZ = g_customSpawns[slot][1];
+		*outY = TileTopAt( g_customSpawns[slot][0], g_customSpawns[slot][1] );
+		return;
+	}
+
 	if ( level == LEVEL_PUENTES )
 	{
 		// First four on the island centers, extras on the center plaza.
 		if ( index < 4 )
 		{
-			*outX = 6.0f * dirs[index][0];
-			*outZ = 6.0f * dirs[index][1];
+			*outX = 8.4f * dirs[index][0];
+			*outZ = 8.4f * dirs[index][1];
 		}
 		else
 		{
-			*outX = 1.5f * dirs[index][0];
-			*outZ = 1.5f * dirs[index][1];
+			*outX = 2.1f * dirs[index][0];
+			*outZ = 2.1f * dirs[index][1];
 		}
 		return;
 	}
@@ -702,8 +802,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 			{ 1.0f, 1.0f }, { -1.0f, -1.0f }, { 1.0f, -1.0f }, { -1.0f, 1.0f },
 			{ 1.0f, 0.0f }, { -1.0f, 0.0f },  { 0.0f, 1.0f },	{ 0.0f, -1.0f },
 		};
-		*outX = 6.0f * corners[index][0];
-		*outZ = 6.0f * corners[index][1];
+		*outX = 9.0f * corners[index][0];
+		*outZ = 9.0f * corners[index][1];
 		return;
 	}
 
@@ -714,15 +814,15 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 			{ 1.0f, 0.0f },		  { -1.0f, 0.0f },		 { 0.0f, 1.0f },	   { 0.7071f, -0.7071f },
 			{ -0.7071f, -0.7071f }, { 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.3827f, 0.9239f },
 		};
-		*outX = 5.2f * ring[index][0];
-		*outZ = 5.2f * ring[index][1];
+		*outX = 7.28f * ring[index][0];
+		*outZ = 7.28f * ring[index][1];
 		return;
 	}
 
 	if ( level == LEVEL_PASARELA )
 	{
 		static const float lane[MAX_PLAYERS][2] = {
-			{ 6.0f, 0.0f }, { -6.0f, 0.0f }, { 4.5f, 1.5f }, { -4.5f, -1.5f },
+			{ 9.0f, 0.0f }, { -9.0f, 0.0f }, { 6.0f, 1.5f }, { -6.0f, -1.5f },
 			{ 3.0f, -1.5f }, { -3.0f, 1.5f }, { 1.5f, 1.5f }, { -1.5f, -1.5f },
 		};
 		*outX = lane[index][0];
@@ -734,8 +834,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	{
 		// Outer pads first (their tops sit at 0.8 or 0), plaza corners after.
 		static const float pads[MAX_PLAYERS][3] = {
-			{ 5.25f, 0.8f, 0.0f }, { -5.25f, 0.8f, 0.0f }, { 0.0f, 0.0f, 5.25f }, { 0.0f, 0.0f, -5.25f },
-			{ 5.25f, 0.8f, 5.25f }, { 1.5f, 0.0f, 1.5f },  { -1.5f, 0.0f, -1.5f }, { 1.5f, 0.0f, -1.5f },
+			{ 7.5f, 0.8f, 0.0f }, { -7.5f, 0.8f, 0.0f }, { 0.0f, 0.0f, 7.5f }, { 0.0f, 0.0f, -7.5f },
+			{ 7.5f, 0.8f, 7.5f }, { 1.5f, 0.0f, 1.5f },  { -1.5f, 0.0f, -1.5f }, { 1.5f, 0.0f, -1.5f },
 		};
 		*outX = pads[index][0];
 		*outY = pads[index][1];
@@ -745,7 +845,7 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 
 	// Ruleta spawns on diagonals so the beam (along +X) misses at tick 0.
 	int slot = level == LEVEL_RULETA ? ( index + 4 ) % MAX_PLAYERS : index;
-	float radius = level == LEVEL_ANILLO ? 5.05f : ( level == LEVEL_RULETA ? 4.0f : 3.5f );
+	float radius = level == LEVEL_ANILLO ? 7.07f : ( level == LEVEL_RULETA ? 5.6f : 4.9f );
 	*outX = radius * dirs[slot][0];
 	*outZ = radius * dirs[slot][1];
 }
@@ -764,7 +864,11 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	g_crumbleNext = 0;
 	g_pieceCount = 0;
 	g_hazardCount = 0;
-	g_level = level < 0 ? 0 : ( level >= LEVEL_COUNT ? LEVEL_COUNT - 1 : level );
+	g_level = level < 0 ? 0 : ( level > LEVEL_CUSTOM ? LEVEL_CUSTOM : level );
+	if ( g_level == LEVEL_CUSTOM && g_customLen < 8 )
+	{
+		g_level = 0;
+	}
 	g_playerCount = playerCount < 1 ? 1 : ( playerCount > MAX_PLAYERS ? MAX_PLAYERS : playerCount );
 	g_powerup.active = false;
 	g_powerup.pos = ( b3Vec3 ){ 0.0f, -100.0f, 0.0f };
@@ -778,7 +882,14 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	g_world = b3CreateWorld( &worldDef );
 
 	b3BoxHull tileHull = b3MakeBoxHull( PIECE_HX, PIECE_HY, PIECE_HZ );
-	BuildLevel( g_level, &tileHull );
+	if ( g_level == LEVEL_CUSTOM )
+	{
+		BuildCustomLevel( &tileHull );
+	}
+	else
+	{
+		BuildLevel( g_level, &tileHull );
+	}
 	g_standingPieces = g_pieceCount;
 
 	for ( int i = 0; i < g_playerCount; ++i )
@@ -1011,8 +1122,8 @@ static void BotReplan( int slot )
 		bot->pulseDash = false;
 	}
 
-	// Dodge the beam on RULETA: jump when an arm is about to sweep through.
-	if ( g_level == LEVEL_RULETA && g_hazardCount > 0 && p->jumpCooldown == 0 )
+	// Dodge a spinning beam: jump when an arm is about to sweep through.
+	if ( g_hazardCount > 0 && g_hazards[0].type == HAZARD_BEAM && p->jumpCooldown == 0 )
 	{
 		b3Quat q = b3Body_GetRotation( g_hazards[0].body );
 		float yaw = 2.0f * atan2f( q.v.y, q.s );

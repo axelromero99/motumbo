@@ -194,6 +194,69 @@
     .seg button + button { border-left: 1px solid var(--line); }
     .seg button.active { background: var(--accent); color: #06101f; }
 
+    /* ================= Setup: MIS MAPAS ================= */
+    .mymaps-head {
+      margin: 2px 0 8px; font-size: 12px; font-weight: 800;
+      letter-spacing: 0.22em; color: var(--muted);
+    }
+    #custom-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+    .custom-empty {
+      grid-column: 1 / -1; margin: 0; padding: 14px;
+      border: 1px dashed var(--line); border-radius: 12px; text-align: center;
+      font-size: 12.5px; color: var(--muted); letter-spacing: 0.06em;
+    }
+    .custom-card { user-select: none; }
+    .custom-card .card-acts {
+      position: absolute; top: 6px; right: 6px; display: flex; gap: 6px;
+      opacity: 0; transition: opacity 0.12s;
+    }
+    .custom-card:hover .card-acts, .custom-card:focus-within .card-acts { opacity: 1; }
+    .card-act {
+      width: 26px; height: 26px; padding: 0; font-size: 13px; line-height: 1;
+      color: var(--text); background: rgba(10, 13, 28, 0.88);
+      border: 1px solid var(--line-hi); border-radius: 8px; cursor: pointer;
+    }
+    .card-act:hover { border-color: var(--accent); }
+    .card-act.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+    /* ================= Editor de mapas ================= */
+    .editor-panel { width: min(880px, 96vw); }
+    .ed-cols { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+    .ed-left { flex: 1 1 340px; min-width: 280px; }
+    .ed-right { flex: 1 1 280px; min-width: 250px; }
+    #ed-tools { display: flex; width: 100%; margin-bottom: 10px; }
+    #ed-tools button { flex: 1; padding: 9px 4px; font-size: 12.5px; letter-spacing: 0.06em; }
+    #ed-canvas {
+      display: block; width: 100%; aspect-ratio: 1;
+      border: 1px solid var(--line); border-radius: 12px; background: #0e1226;
+      cursor: crosshair; touch-action: none;
+    }
+    .ed-status {
+      display: flex; justify-content: space-between; gap: 10px;
+      margin-top: 8px; font-size: 12.5px; min-height: 18px;
+    }
+    #ed-count { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    #ed-error { color: var(--bad); font-weight: 600; text-align: right; }
+    .ed-inline { display: inline-flex; align-items: center; gap: 8px; }
+    #ed-name {
+      width: 170px; padding: 8px 10px; font: inherit; color: var(--text);
+      background: #10142a; border: 1px solid #3a4166; border-radius: 8px;
+    }
+    #ed-theme {
+      padding: 8px 10px; font: inherit; color: var(--text);
+      background: #10142a; border: 1px solid #3a4166; border-radius: 8px;
+    }
+    .ed-swatch { display: inline-flex; gap: 3px; }
+    .ed-swatch i {
+      width: 16px; height: 16px; border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.18); background: #10142a;
+    }
+    input[type='range'].ed-range { width: 120px; }
+    input[type='range'].ed-range-sm { width: 84px; }
+    input[type='range'].ed-range:disabled { opacity: 0.4; }
+    .ed-val { min-width: 48px; text-align: right; font-size: 12px; font-weight: 700; color: var(--muted); }
+    .ed-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 18px; }
+
     /* ================= Online wizard ================= */
     .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
     .tab {
@@ -326,6 +389,7 @@
       <button class="menu-btn" id="btn-local">LOCAL<span class="sub">2 EN UN TECLADO</span></button>
       <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 POR INTERNET</span></button>
       <button class="menu-btn" id="btn-options">OPCIONES</button>
+      <button class="menu-btn" id="btn-editor">EDITOR<span class="sub">CREÁ TU PROPIA ARENA</span></button>
       <div id="lifetime-line"></div>
     </div>
   </section>
@@ -336,6 +400,8 @@
       <h2>ELEGÍ ARENA</h2>
       <div id="setup-mode"></div>
       <div id="level-grid"></div>
+      <div class="mymaps-head">MIS MAPAS</div>
+      <div id="custom-grid"></div>
       <div class="setup-row">
         <span class="lbl">PRIMERO A</span>
         <div class="seg" id="seg-rounds">
@@ -442,6 +508,68 @@
         <b>Partida</b> <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha · mantené el dash para frenarte (brace) y parriar empujones
       </div>
       <div class="back-row"><button class="btn ghost" id="btn-options-back">← Volver</button></div>
+    </div>
+  </section>
+
+  <!-- ============ EDITOR DE MAPAS (visibilidad manejada por MapEditor, no por UiShell) ============ -->
+  <section class="screen" data-screen="editor">
+    <div class="panel editor-panel">
+      <h2>EDITOR DE MAPAS</h2>
+      <div class="ed-cols">
+        <div class="ed-left">
+          <div class="seg" id="ed-tools">
+            <button type="button" data-tool="floor" class="active" title="Baldosa a nivel del piso">PISO</button>
+            <button type="button" data-tool="mid" title="Baldosa elevada +0.8 m">TARIMA</button>
+            <button type="button" data-tool="high" title="Baldosa elevada +1.6 m">TORRE</button>
+            <button type="button" data-tool="erase" title="Sacar baldosa (también con click derecho)">BORRAR</button>
+            <button type="button" data-tool="spawn" title="Punto de aparición (máx 8, click para poner/sacar)">SPAWN</button>
+          </div>
+          <canvas id="ed-canvas" width="600" height="600"></canvas>
+          <div class="ed-status"><span id="ed-count"></span><span id="ed-error"></span></div>
+        </div>
+        <div class="ed-right">
+          <div class="opt-row">
+            <span class="lbl">Nombre</span>
+            <input id="ed-name" maxlength="24" placeholder="MI ARENA" autocomplete="off" />
+          </div>
+          <div class="opt-row">
+            <span class="lbl">Tema</span>
+            <span class="ed-inline">
+              <select id="ed-theme"></select>
+              <span class="ed-swatch" id="ed-swatch"><i></i><i></i></span>
+            </span>
+          </div>
+          <div class="opt-row">
+            <span class="lbl">Empieza a derrumbarse<small>segundos desde el arranque</small></span>
+            <span class="ed-inline">
+              <input type="range" class="ed-range" id="ed-cstart" min="5" max="40" step="1" />
+              <span class="ed-val" id="ed-cstart-val"></span>
+            </span>
+          </div>
+          <div class="opt-row">
+            <span class="lbl">Velocidad del derrumbe</span>
+            <span class="ed-inline">
+              <input type="range" class="ed-range" id="ed-cspeed" min="0" max="100" step="1" />
+              <span class="ed-val" id="ed-cspeed-val"></span>
+            </span>
+          </div>
+          <div class="opt-row">
+            <span class="lbl">Barra giratoria<small>largo del brazo desde el centro</small></span>
+            <span class="ed-inline">
+              <label class="switch"><input type="checkbox" id="ed-beam" /><span class="track"></span></label>
+              <input type="range" class="ed-range ed-range-sm" id="ed-beam-len" min="2" max="12" step="0.5" />
+              <span class="ed-val" id="ed-beam-val"></span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="ed-actions">
+        <button class="btn primary" id="ed-test">PROBAR</button>
+        <button class="btn" id="ed-save">GUARDAR</button>
+        <button class="btn" id="ed-export">EXPORTAR CÓDIGO</button>
+        <button class="btn" id="ed-import">IMPORTAR</button>
+        <button class="btn ghost" id="ed-back">← Volver</button>
+      </div>
     </div>
   </section>
 
