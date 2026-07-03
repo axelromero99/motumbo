@@ -15,6 +15,7 @@ import {
   MODE_MALDITO,
   DASH_COOLDOWN_TICKS,
   dashCooldownFrom,
+  ballRadiusFrom,
   pieceStateOf,
   pieceSpecialOf,
   SPECIAL_BOOST,
@@ -644,6 +645,21 @@ export class GameRenderer {
     this.pieces.instanceColor!.needsUpdate = true;
     this.scene.add(this.pieces);
 
+    // Auto-fit the camera to the arena: levels now span very different sizes.
+    let ext = 8;
+    for (let i = 0; i < sim.pieceCount; i++) {
+      const pb = sim.pieceBase(i);
+      ext = Math.max(ext, Math.abs(state[pb]), Math.abs(state[pb + 2]));
+    }
+    ext += 1.5;
+    this.cameraBase.set(0, ext * 2.02, ext * 1.88);
+    this.scene.fog = new THREE.Fog(this.theme.bg, ext * 3.3, ext * 7.3);
+    this.sun.shadow.camera.left = -(ext + 4);
+    this.sun.shadow.camera.right = ext + 4;
+    this.sun.shadow.camera.top = ext + 4;
+    this.sun.shadow.camera.bottom = -(ext + 4);
+    this.sun.shadow.camera.updateProjectionMatrix();
+
     const sphereGeo = new THREE.SphereGeometry(PLAYER_RADIUS, 32, 24);
     for (let i = 0; i < sim.playerCount; i++) {
       const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
@@ -732,6 +748,9 @@ export class GameRenderer {
       const cursed = (flags & FLAG_CURSED) !== 0;
       root.visible = alive || curr[base + 1] > -8;
       this.lerpInto(root.position, mesh.quaternion, prev, curr, base, alpha);
+      // Levels pick ball sizes and MEGA pickups grow them mid-round.
+      const ballR = ballRadiusFrom(flags);
+      mesh.scale.setScalar(ballR / PLAYER_RADIUS);
 
       const vx = (curr[base] - prev[base]) * 60;
       const vy = (curr[base + 1] - prev[base + 1]) * 60;
@@ -813,7 +832,8 @@ export class GameRenderer {
       this.cdRings[i].visible = ringVisible;
       if (ringVisible) {
         const pulse = this.ringPulse[i];
-        this.cdRings[i].position.set(root.position.x, root.position.y - PLAYER_RADIUS + 0.05, root.position.z);
+        this.cdRings[i].position.set(root.position.x, root.position.y - ballR + 0.05, root.position.z);
+        this.cdRings[i].scale.setScalar(1.9 * (ballR / PLAYER_RADIUS));
         this.cdRings[i].scale.setScalar(1.9 * (1 + 0.4 * pulse * pulse));
         this.cdRingMats[i].uniforms.uFrac.value = cdFrac;
         this.cdRingMats[i].uniforms.uAlpha.value = 0.55 + 0.45 * pulse;
@@ -894,6 +914,13 @@ export class GameRenderer {
     const orbActive = curr[orbBase + 3] > 0.5;
     this.orb.visible = orbActive;
     if (orbActive) {
+      // Bomberman-style pickups: gold = super dash, cyan = turbo, red = mega.
+      const orbType = Math.round(curr[orbBase + 3]) - 1;
+      const orbColor = orbType === 1 ? 0x35e8ff : orbType === 2 ? 0xff5964 : 0xffc93c;
+      const om = this.orb.material as THREE.MeshStandardMaterial;
+      om.color.setHex(orbColor);
+      om.emissive.setHex(orbColor);
+      this.orbLight.color.setHex(orbColor);
       this.orb.position.set(curr[orbBase], curr[orbBase + 1] + 0.15 * Math.sin(timeMs * 0.004), curr[orbBase + 2]);
       this.orb.rotation.y = timeMs * 0.002;
     }

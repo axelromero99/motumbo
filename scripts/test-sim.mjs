@@ -9,7 +9,7 @@ const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
 const PLAYERS = 4;
 const TICKS = 1500;
-const LEVELS = 20;
+const LEVELS = 70; // 20 hechos a mano + 50 generados
 
 // Deterministic scripted inputs: phase-shifted direction changes, periodic
 // dashes, jumps and braces.
@@ -22,7 +22,7 @@ function inputFor(player, tick) {
   return word;
 }
 
-async function run(level, label, useBots) {
+async function run(level, label, useBots, verbose = true) {
   const M = await createTumbo();
   M._tumbo_init(42, PLAYERS, level);
   if (useBots) {
@@ -59,26 +59,34 @@ async function run(level, label, useBots) {
     if (st === 3) warning++;
   }
 
-  console.log(
-    `[nivel ${level} ${label}] alive=${aliveMask} winner=${winner} pieces=${pieceCount} ` +
-      `warn=${warning} falling=${falling} gone=${gone} hazards=${hazards}`,
-  );
-  return { hashes, winner, aliveMask };
+  if (verbose) {
+    console.log(
+      `[nivel ${level} ${label}] alive=${aliveMask} winner=${winner} pieces=${pieceCount} ` +
+        `warn=${warning} falling=${falling} gone=${gone} hazards=${hazards}`,
+    );
+  }
+  return { hashes, winner, aliveMask, pieces: pieceCount };
 }
 
 let allOk = true;
 
+let quietOk = 0;
 for (let level = 0; level < LEVELS; level++) {
-  const a = await run(level, 'A', false);
-  const b = await run(level, 'B', false);
+  const verbose = level < 20;
+  const a = await run(level, 'A', false, verbose);
+  const b = await run(level, 'B', false, verbose);
   const ok = a.hashes.length === b.hashes.length && a.hashes.every((h, i) => h === b.hashes[i]);
-  if (!ok) {
+  const sane = a.pieces >= 24;
+  if (!ok || !sane) {
     allOk = false;
-    console.log(`  DESYNC nivel ${level}!`);
-  } else {
+    console.log(`  FALLO nivel ${level}: determinismo=${ok} piezas=${a.pieces}`);
+  } else if (verbose) {
     console.log(`  determinismo OK (${a.hashes.length} hashes identicos)`);
+  } else {
+    quietOk++;
   }
 }
+console.log(`generados 20-69: ${quietOk}/50 deterministas y sanos`);
 
 console.log('--- bots ---');
 const ba = await run(3, 'BOTS A', true);
@@ -182,7 +190,7 @@ async function runCustom(label) {
   const bytes = buildTestMap();
   M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
   M._tumbo_set_custom(bytes.length);
-  M._tumbo_init(99, PLAYERS, 20);
+  M._tumbo_init(99, PLAYERS, 70);
   const inputsBase = M._tumbo_inputs_ptr() >> 2;
   const stateBase = M._tumbo_state_ptr() >> 2;
   const hashes = [];
@@ -194,7 +202,7 @@ async function runCustom(label) {
   const S = M.HEAPF32;
   console.log(
     `[custom ${label}] pieces=${S[stateBase + 3]} hazards=${S[stateBase + 6]} ` +
-      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]}`,
+      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]} (esperado level=70)`,
   );
   return { hashes, pieces: S[stateBase + 3], hazards: S[stateBase + 6] };
 }

@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TUMBO — sumo físico multijugador en el navegador</title>
-  <meta name="description" content="Party game de sumo físico 3D: empujá a tus rivales fuera de una arena que se desmorona. 20 arenas, editor de mapas, bots y 1v1 online sin servidores. Física determinista en C compilada a WASM." />
+  <meta name="description" content="Party game de sumo físico 3D: empujá a tus rivales fuera de una arena que se desmorona. Decenas de arenas, editor de mapas, bots y 1v1 online con código de sala. Física determinista en C compilada a WASM." />
   <meta property="og:title" content="TUMBO — sumo físico multijugador" />
-  <meta property="og:description" content="Empujá a tus rivales al vacío antes de que el piso desaparezca. 20 arenas, 4 modos, editor de mapas y multiplayer online sin servidores — física determinista C→WASM con lockstep por WebRTC." />
+  <meta property="og:description" content="Empujá a tus rivales al vacío antes de que el piso desaparezca. Decenas de arenas, 4 modos, editor de mapas y multiplayer online — física determinista C→WASM con lockstep por WebRTC." />
   <meta property="og:type" content="website" />
   <meta name="theme-color" content="#0b0e1a" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2244%22 fill=%22%23ff5964%22/><circle cx=%2236%22 cy=%2236%22 r=%2212%22 fill=%22%23ff9aa2%22/></svg>" />
@@ -183,27 +183,70 @@
     }
     .tagline { margin: 0 0 26px; color: var(--muted); font-size: 14px; letter-spacing: 0.28em; }
     .menu-btn {
-      display: block; width: min(340px, 82vw); margin: 10px auto; padding: 13px 18px;
-      font-size: 17px; font-weight: 800; letter-spacing: 0.08em; text-align: center;
+      display: block; width: min(340px, 82vw); margin: 10px auto; padding: 14px 18px;
+      font-size: 18px; font-weight: 800; letter-spacing: 0.1em; text-align: center;
       color: var(--text); background: linear-gradient(180deg, #1e2444, #161b34);
       border: 1px solid #3a4166; border-radius: 12px; cursor: pointer;
       transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
     }
     .menu-btn:hover { transform: translateY(-2px); border-color: var(--line-hi); box-shadow: 0 8px 26px rgba(53, 167, 255, 0.16); }
+    .menu-btn.primary {
+      background: linear-gradient(180deg, #2e86d9, #1f6ab3); border-color: #4fa8ec;
+      box-shadow: 0 6px 22px rgba(53, 167, 255, 0.28);
+    }
+    .menu-btn.primary:hover { box-shadow: 0 8px 28px rgba(53, 167, 255, 0.4); }
     .menu-btn .sub { display: block; margin-top: 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--muted); }
-    #lifetime-line { margin-top: 26px; font-size: 13px; color: var(--muted); letter-spacing: 0.04em; }
+    .menu-btn.primary .sub { color: rgba(232, 234, 246, 0.75); }
+    .title-foot {
+      margin-top: 26px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    }
+    .link-btn {
+      background: none; border: none; padding: 6px 10px; cursor: pointer;
+      color: var(--muted); font-size: 13px; font-weight: 800; letter-spacing: 0.18em;
+    }
+    .link-btn:hover { color: var(--text); text-decoration: underline; }
+    #lifetime-line { font-size: 12.5px; color: var(--muted); letter-spacing: 0.04em; }
+    #lifetime-line:empty { display: none; }
 
     /* ================= Setup ================= */
+    .setup-panel { width: min(680px, 94vw); }
     #setup-mode { text-align: center; margin: -8px 0 14px; font-size: 12px; font-weight: 800; letter-spacing: 0.3em; color: var(--accent); }
+    #setup-mode:empty { display: none; }
     .sect-head {
       margin: 2px 0 8px; font-size: 12px; font-weight: 800;
       letter-spacing: 0.22em; color: var(--muted);
     }
-    #level-grid {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
-      gap: 8px; margin-bottom: 18px;
-      max-height: 38vh; overflow-y: auto; padding: 2px; scrollbar-width: thin;
+
+    .rival-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .rival-card {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      min-height: 76px; padding: 12px 10px; border: 2px solid var(--line); border-radius: 12px;
+      background: #0e1226; cursor: pointer; user-select: none;
+      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
     }
+    .rival-card:hover { transform: translateY(-1px); border-color: var(--line-hi); }
+    .rival-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35), 0 6px 20px rgba(53, 167, 255, 0.25);
+    }
+    .rival-card .rtitle { font-size: 13px; font-weight: 800; letter-spacing: 0.12em; }
+    .rival-card .rsub { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
+
+    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .seg button {
+      padding: 9px 18px; font-size: 14px; font-weight: 700; color: var(--muted);
+      background: transparent; border: none; cursor: pointer; letter-spacing: 0.04em;
+    }
+    .seg button + button { border-left: 1px solid var(--line); }
+    .seg button.active { background: var(--accent); color: #06101f; }
+    .seg.seg-sm button { padding: 6px 10px; font-size: 11.5px; }
+
+    .arena-scroll {
+      max-height: min(32vh, 300px); overflow-y: auto; padding: 2px;
+      margin-bottom: 16px; scrollbar-width: thin;
+    }
+    .arena-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 7px; }
+    .grid-inline { display: contents; }
     .level-card {
       position: relative; padding: 0; border: 2px solid var(--line); border-radius: 12px;
       background: #0e1226; cursor: pointer; overflow: hidden;
@@ -219,45 +262,11 @@
     }
     .level-card .random-thumb {
       display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 1;
-      font-size: 32px; font-weight: 900; color: var(--muted);
+      font-size: 30px; font-weight: 900; color: var(--accent);
       background: repeating-linear-gradient(45deg, #10142a, #10142a 12px, #141931 12px, #141931 24px);
     }
+    .random-card { border-color: var(--line-hi); }
 
-    /* ================= Setup: MODO ================= */
-    #mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
-    .mode-card {
-      padding: 10px 12px; text-align: left; border: 2px solid var(--line); border-radius: 12px;
-      background: #0e1226; cursor: pointer; color: var(--text);
-      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
-    }
-    .mode-card:hover { transform: translateY(-1px); border-color: var(--line-hi); }
-    .mode-card.selected {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35), 0 6px 20px rgba(53, 167, 255, 0.25);
-    }
-    .mode-card .mname { display: block; font-size: 12px; font-weight: 800; letter-spacing: 0.12em; }
-    .mode-card .mdesc { display: block; margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); }
-    .setup-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 14px 0; flex-wrap: wrap; }
-    .setup-row .lbl { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
-    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-    .seg button {
-      padding: 9px 18px; font-size: 14px; font-weight: 700; color: var(--muted);
-      background: transparent; border: none; cursor: pointer; letter-spacing: 0.04em;
-    }
-    .seg button + button { border-left: 1px solid var(--line); }
-    .seg button.active { background: var(--accent); color: #06101f; }
-
-    /* ================= Setup: MIS MAPAS ================= */
-    .mymaps-head {
-      margin: 2px 0 8px; font-size: 12px; font-weight: 800;
-      letter-spacing: 0.22em; color: var(--muted);
-    }
-    #custom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; margin-bottom: 18px; }
-    .custom-empty {
-      grid-column: 1 / -1; margin: 0; padding: 14px;
-      border: 1px dashed var(--line); border-radius: 12px; text-align: center;
-      font-size: 12.5px; color: var(--muted); letter-spacing: 0.06em;
-    }
     .custom-card { user-select: none; }
     .custom-card .card-acts {
       position: absolute; top: 6px; right: 6px; display: flex; gap: 6px;
@@ -271,6 +280,28 @@
     }
     .card-act:hover { border-color: var(--accent); }
     .card-act.danger:hover { border-color: var(--bad); color: var(--bad); }
+
+    .mode-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .mode-chip {
+      flex: 1 1 90px; padding: 9px 6px; font-size: 12px; font-weight: 800; letter-spacing: 0.08em;
+      color: var(--muted); background: #0e1226; border: 2px solid var(--line); border-radius: 10px;
+      cursor: pointer; transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+    }
+    .mode-chip:hover { border-color: var(--line-hi); }
+    .mode-chip.selected {
+      color: var(--text); border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35);
+    }
+    .mode-desc-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      flex-wrap: wrap; min-height: 34px; margin: 8px 0 12px;
+    }
+    #mode-desc { font-size: 12.5px; color: var(--muted); }
+    .mode-param { display: inline-flex; align-items: center; gap: 8px; }
+    .mode-param .lbl { font-size: 11px; font-weight: 800; letter-spacing: 0.14em; color: var(--muted); }
+
+    .setup-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 16px; flex-wrap: wrap; }
+    .setup-row .lbl { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
 
     /* ================= Editor de mapas ================= */
     .editor-panel { width: min(880px, 96vw); }
@@ -310,52 +341,46 @@
     .ed-val { min-width: 48px; text-align: right; font-size: 12px; font-weight: 700; color: var(--muted); }
     .ed-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 18px; }
 
-    /* ================= Online wizard ================= */
-    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
-    .tab {
-      flex: 1; padding: 10px; font-size: 14px; font-weight: 800; letter-spacing: 0.08em;
-      color: var(--muted); background: transparent; border: 1px solid var(--line);
-      border-radius: 10px; cursor: pointer;
+    /* ================= Online (salas) ================= */
+    .online-panel { width: min(460px, 94vw); text-align: center; }
+    .or-sep {
+      display: flex; align-items: center; gap: 12px; margin: 18px 0 14px;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--muted);
     }
-    .tab.active { color: var(--text); background: #1c2340; border-color: var(--line-hi); }
-    #wizard { list-style: none; margin: 0; padding: 0; counter-reset: wstep; }
-    #wizard li {
-      counter-increment: wstep; position: relative; padding: 4px 0 18px 46px; min-height: 46px;
+    .or-sep::before, .or-sep::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+    .join-row { display: flex; gap: 8px; justify-content: center; }
+    .code-field {
+      display: inline-flex; align-items: center; padding: 0 4px 0 14px;
+      background: #10142a; border: 1px solid #3a4166; border-radius: 10px;
     }
-    #wizard li::after {
-      content: ''; position: absolute; left: 15px; top: 36px; bottom: 2px; width: 2px;
-      background: var(--line);
+    .code-field:focus-within { border-color: var(--accent); }
+    .code-prefix { font-size: 15px; font-weight: 800; letter-spacing: 0.06em; color: var(--muted); }
+    #room-code-in {
+      width: 5.2ch; padding: 11px 0 11px 4px; background: none; border: none; outline: none;
+      color: var(--text); font-family: ui-monospace, monospace; font-size: 19px; font-weight: 800;
+      letter-spacing: 0.22em; text-transform: uppercase;
     }
-    #wizard li:last-child::after { display: none; }
-    #wizard li::before {
-      content: counter(wstep); position: absolute; left: 0; top: 2px;
-      width: 32px; height: 32px; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; font-weight: 800; color: var(--muted);
-      background: #10142a; border: 2px solid var(--line);
+    #room-code-in::placeholder { color: #39406b; }
+    #room-live { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+    .room-code-big {
+      margin: 4px 0 2px; font-weight: 900; line-height: 1;
+      font-size: clamp(36px, 9vw, 56px); letter-spacing: 0.05em; user-select: text;
+      cursor: pointer;
     }
-    #wizard li[data-state='active']::before { border-color: var(--accent); color: var(--text); }
-    #wizard li[data-state='busy']::before {
-      content: ''; border: 3px solid var(--line); border-top-color: var(--accent);
+    .room-code-big small { font-size: 0.48em; font-weight: 800; color: var(--muted); letter-spacing: 0.1em; vertical-align: 0.16em; }
+    .room-code-big b { color: var(--accent); font-family: ui-monospace, monospace; }
+    .room-status-row {
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      min-height: 24px; font-size: 14px; color: var(--muted);
+    }
+    .spinner {
+      width: 16px; height: 16px; flex: none; border-radius: 50%;
+      border: 3px solid var(--line); border-top-color: var(--accent);
       animation: spin 0.8s linear infinite;
     }
-    #wizard li[data-state='done']::before { content: '✓'; background: var(--good); border-color: var(--good); color: #06101f; }
-    #wizard li[data-state='error']::before { content: '!'; background: var(--bad); border-color: var(--bad); color: #06101f; }
-    #wizard li[data-state='idle'] { opacity: 0.45; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .wtitle { margin: 6px 0 8px; font-size: 14px; font-weight: 700; }
-    .whint { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
-    .code-area {
-      width: 100%; height: 62px; padding: 8px; resize: none;
-      background: #10142a; color: #aab3e0; border: 1px solid #3a4166; border-radius: 8px;
-      font-size: 11px; font-family: ui-monospace, monospace;
-    }
-    .code-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-    .code-btns .btn { font-size: 13px; padding: 8px 14px; }
-    #conn-status { font-size: 14px; color: var(--muted); margin: 6px 0; min-height: 20px; }
-    #online-error {
-      margin: 4px 0 0; min-height: 18px; font-size: 13px; font-weight: 600; color: var(--bad); text-align: center;
-    }
+    .room-ok { color: var(--good); font-weight: 900; font-size: 18px; }
+    #room-error-msg { margin: 6px 0 16px; font-size: 14px; font-weight: 600; line-height: 1.5; color: var(--bad); }
 
     /* ================= Pause ================= */
     .pause-panel { text-align: center; }
@@ -418,7 +443,7 @@
     body.reduced-motion .chip.cursed { animation: none; box-shadow: 0 0 0 2px var(--bad); }
     body.reduced-motion .screen { transition-duration: 0.01s; }
     body.reduced-motion .btn, body.reduced-motion .menu-btn, body.reduced-motion .level-card,
-    body.reduced-motion .mode-card { transition: none; }
+    body.reduced-motion .mode-chip, body.reduced-motion .rival-card { transition: none; }
   </style>
 </head>
 <body>
@@ -441,116 +466,133 @@
     <div class="title-wrap">
       <h1 class="logo">TUMB<span class="logo-ball" aria-label="O"></span></h1>
       <p class="tagline">SUMO · FÍSICA · PLATAFORMA QUE SE CAE</p>
-      <button class="menu-btn" id="btn-solo">SOLO<span class="sub">CONTRA BOTS</span></button>
-      <button class="menu-btn" id="btn-local">LOCAL<span class="sub">2 EN UN TECLADO</span></button>
-      <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 POR INTERNET</span></button>
+      <button class="menu-btn primary" id="btn-play">JUGAR<span class="sub">BOTS O AMIGO EN EL TECLADO</span></button>
+      <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 CON CÓDIGO DE SALA</span></button>
+      <button class="menu-btn" id="btn-editor">EDITOR<span class="sub">CREÁ TU ARENA</span></button>
       <button class="menu-btn" id="btn-options">OPCIONES</button>
-      <button class="menu-btn" id="btn-howto">CÓMO JUGAR</button>
-      <button class="menu-btn" id="btn-editor">EDITOR<span class="sub">CREÁ TU PROPIA ARENA</span></button>
-      <div id="lifetime-line"></div>
+      <div class="title-foot">
+        <button class="link-btn" id="btn-howto">CÓMO JUGAR</button>
+        <div id="lifetime-line"></div>
+      </div>
     </div>
   </section>
 
-  <!-- ============ SETUP (nivel + rondas) ============ -->
+  <!-- ============ SETUP (rivales + arena + modo + rondas) ============ -->
   <section class="screen" data-screen="setup">
-    <div class="panel">
-      <h2>ELEGÍ ARENA</h2>
+    <div class="panel setup-panel">
+      <h2>PARTIDA</h2>
       <div id="setup-mode"></div>
-      <div id="level-grid"></div>
-      <div class="mymaps-head">MIS MAPAS</div>
-      <div id="custom-grid"></div>
+
+      <div id="rival-block">
+        <div class="sect-head">RIVALES</div>
+        <div class="rival-row">
+          <div class="rival-card selected" id="rival-bots" role="button" tabindex="0">
+            <span class="rtitle">3 BOTS</span>
+            <span class="seg seg-sm" id="seg-botdiff">
+              <button type="button" data-diff="0">FÁCIL</button>
+              <button type="button" data-diff="1" class="active">NORMAL</button>
+              <button type="button" data-diff="2">DIFÍCIL</button>
+            </span>
+          </div>
+          <div class="rival-card" id="rival-humano" role="button" tabindex="0">
+            <span class="rtitle">AMIGO</span>
+            <span class="rsub">en el mismo teclado</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect-head">ARENA</div>
+      <div class="arena-scroll">
+        <div class="arena-grid">
+          <button class="level-card random-card" id="card-random" type="button">
+            <span class="random-thumb">?</span>
+            <span class="lname">ALEATORIO</span>
+          </button>
+          <div id="custom-grid" class="grid-inline"></div>
+          <div id="level-grid" class="grid-inline"></div>
+        </div>
+      </div>
+
       <div class="sect-head">MODO</div>
       <!-- data-mode = valores MODE_* de sim.ts (0 SUMO, 1 KOTH, 2 COSECHA, 3 MALDITO) -->
-      <div id="mode-grid">
-        <button type="button" class="mode-card selected" data-mode="0">
-          <span class="mname">SUMO</span>
-          <span class="mdesc">El último en pie gana la ronda.</span>
-        </button>
-        <button type="button" class="mode-card" data-mode="1">
-          <span class="mname">REY DE LA COLINA</span>
-          <span class="mdesc">Sumá segundos estando solo en la zona.</span>
-        </button>
-        <button type="button" class="mode-card" data-mode="2">
-          <span class="mname">COSECHA</span>
-          <span class="mdesc">Sé el primero en juntar los orbes.</span>
-        </button>
-        <button type="button" class="mode-card" data-mode="3">
-          <span class="mname">MALDITO</span>
-          <span class="mdesc">Pasale la maldición a otro antes de que explote.</span>
-        </button>
+      <div class="mode-chips" id="mode-chips">
+        <button type="button" class="mode-chip selected" data-mode="0">SUMO</button>
+        <button type="button" class="mode-chip" data-mode="1">REY</button>
+        <button type="button" class="mode-chip" data-mode="2">COSECHA</button>
+        <button type="button" class="mode-chip" data-mode="3">MALDITO</button>
       </div>
-      <div class="setup-row" id="mode-param-row" style="display:none">
-        <span class="lbl" id="mode-param-label"></span>
-        <div class="seg" id="seg-mode-param"></div>
+      <div class="mode-desc-row">
+        <span id="mode-desc"></span>
+        <span class="mode-param" id="mode-param-row" style="display:none">
+          <span class="lbl" id="mode-param-label"></span>
+          <span class="seg seg-sm" id="seg-mode-param"></span>
+        </span>
       </div>
-      <div class="setup-row" id="bot-diff-row" style="display:none">
-        <span class="lbl">BOTS</span>
-        <div class="seg" id="seg-botdiff">
-          <button data-diff="0">FÁCIL</button>
-          <button data-diff="1" class="active">NORMAL</button>
-          <button data-diff="2">DIFÍCIL</button>
-        </div>
-      </div>
+
       <div class="setup-row">
-        <span class="lbl">PRIMERO A</span>
-        <div class="seg" id="seg-rounds">
-          <button data-rounds="3">3</button>
-          <button data-rounds="5" class="active">5</button>
-          <button data-rounds="7">7</button>
-        </div>
+        <span class="lbl">RONDAS</span>
+        <span class="seg" id="seg-rounds">
+          <button type="button" data-rounds="3">3</button>
+          <button type="button" data-rounds="5" class="active">5</button>
+          <button type="button" data-rounds="7">7</button>
+        </span>
       </div>
-      <button class="btn primary big" id="btn-play">JUGAR</button>
+
+      <button class="btn primary big" id="btn-start">JUGAR</button>
       <div class="back-row"><button class="btn ghost" id="btn-setup-back">← Volver</button></div>
     </div>
   </section>
 
+  <!-- ============ CÓMO JUGAR ============ -->
   <section class="screen" data-screen="howto">
     <div class="panel">
       <h2>CÓMO JUGAR</h2>
       <div class="howto-rows">
         <div class="howto-row"><span class="howto-keys"><kbd>WASD</kbd></span><span>Moverte. La bola tiene inercia: frená antes del borde.</span></div>
-        <div class="howto-row"><span class="howto-keys"><kbd>Shift</kbd></span><span><b>Dash</b> — tu arma. Golpear con el dash empuja MUCHO más fuerte.</span></div>
-        <div class="howto-row"><span class="howto-keys"><kbd>Espacio</kbd></span><span>Salto. Sirve para huecos, rampas y esquivar barras.</span></div>
-        <div class="howto-row"><span class="howto-keys"><kbd>Ctrl</kbd> / <kbd>.</kbd></span><span><b>Anclarte</b> (Ctrl izq. P1 · punto P2) — frena en seco y aguanta empujones. Si te anclás JUSTO antes de recibir un dash, lo devolvés (parry).</span></div>
-        <div class="howto-row"><span class="howto-keys"><span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:var(--warn);vertical-align:-1px"></span></span><span>El orbe dorado carga tu próximo dash ×2.3. Si te golpean, lo soltás.</span></div>
-        <div class="howto-row"><span class="howto-keys"><kbd>Esc</kbd></span><span>Pausa · <kbd>R</kbd> revancha</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Shift</kbd></span><span><b>Dash</b> — golpear con dash empuja mucho más fuerte.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Espacio</kbd></span><span>Salto.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Ctrl</kbd> / <kbd>.</kbd></span><span><b>Ancla</b> — frená en seco. Justo antes de un dash rival = parry.</span></div>
+        <div class="howto-row"><span class="howto-keys"><span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:var(--warn);vertical-align:-1px"></span></span><span>El orbe dorado carga tu próximo dash ×2.3.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Esc</kbd> / <kbd>R</kbd></span><span>Pausa / revancha.</span></div>
       </div>
-      <p class="hint">El último en pie gana la ronda. En los modos REY, COSECHA y MALDITO se gana distinto — leé la descripción de cada uno al elegirlo.</p>
+      <p class="hint">Gana el último en pie. Los otros modos se explican al elegirlos.</p>
       <div class="back-row"><button class="btn ghost" id="btn-howto-back">← Volver</button></div>
     </div>
   </section>
 
-  <!-- ============ ONLINE (wizard) ============ -->
+  <!-- ============ ONLINE (salas con código) ============ -->
   <section class="screen" data-screen="online">
-    <div class="panel">
+    <div class="panel online-panel">
       <h2>ONLINE · 1V1</h2>
-      <div class="tabs">
-        <button class="tab active" id="tab-crear">CREAR PARTIDA</button>
-        <button class="tab" id="tab-unirse">UNIRSE</button>
+
+      <div id="room-idle">
+        <button class="btn primary big" id="btn-create-room">CREAR SALA</button>
+        <div class="or-sep">O UNITE A UNA</div>
+        <div class="join-row">
+          <span class="code-field">
+            <span class="code-prefix">TUMBO-</span>
+            <input id="room-code-in" placeholder="····" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+          </span>
+          <button class="btn" id="btn-join-room" disabled>UNIRSE</button>
+        </div>
       </div>
-      <ol id="wizard">
-        <li id="wstep-code" data-state="idle">
-          <p class="wtitle" id="wstep-code-title">Generá tu código</p>
-          <p class="whint" id="wstep-code-hint">Mandáselo al rival por donde quieras.</p>
-          <textarea class="code-area" id="code-out" readonly placeholder="tu código aparece acá…"></textarea>
-          <div class="code-btns">
-            <button class="btn" id="btn-copy-code">Copiar código</button>
-            <button class="btn" id="btn-copy-link">Copiar link de invitación</button>
-          </div>
-        </li>
-        <li id="wstep-paste" data-state="idle">
-          <p class="wtitle" id="wstep-paste-title">Pegá la respuesta del rival</p>
-          <textarea class="code-area" id="code-in" placeholder="pegá el código acá…"></textarea>
-          <div class="code-btns">
-            <button class="btn primary" id="btn-connect">Conectar</button>
-          </div>
-        </li>
-        <li id="wstep-conn" data-state="idle">
-          <p class="wtitle">Conexión</p>
-          <p id="conn-status">esperando los pasos anteriores…</p>
-        </li>
-      </ol>
-      <p id="online-error"></p>
+
+      <div id="room-live" style="display:none">
+        <div class="room-code-big" id="room-code-big" title="Copiar código" style="display:none"><small>TUMBO-</small><b id="room-code-chars"></b></div>
+        <button class="btn" id="btn-copy-invite" style="display:none">Copiar link de invitación</button>
+        <div class="room-status-row">
+          <span class="spinner" id="room-spinner"></span>
+          <span class="room-ok" id="room-ok" style="display:none">✓</span>
+          <span id="room-status"></span>
+        </div>
+        <button class="btn ghost" id="btn-room-cancel">Cancelar</button>
+      </div>
+
+      <div id="room-error" style="display:none">
+        <p id="room-error-msg"></p>
+        <button class="btn primary" id="btn-room-retry">Reintentar</button>
+      </div>
+
       <div class="back-row"><button class="btn ghost" id="btn-online-back">← Volver</button></div>
     </div>
   </section>
@@ -608,9 +650,9 @@
         <label class="switch"><input type="checkbox" id="opt-reduced" /><span class="track"></span></label>
       </div>
       <div class="controls-note">
-        <b>P1</b> <kbd>WASD</kbd> mover · <kbd>Shift izq.</kbd> dash · <kbd>Espacio</kbd> salto · <kbd>Ctrl izq.</kbd> anclarse<br />
-        <b>P2</b> <kbd>Flechas</kbd> mover · <kbd>Shift der.</kbd> dash · <kbd>Ctrl der.</kbd> salto · <kbd>.</kbd> anclarse<br />
-        <b>Partida</b> <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha · anclate justo antes de un dash rival para devolverlo (parry)
+        <b>P1</b> <kbd>WASD</kbd> · <kbd>Shift</kbd> dash · <kbd>Espacio</kbd> salto · <kbd>Ctrl</kbd> ancla<br />
+        <b>P2</b> <kbd>Flechas</kbd> · <kbd>Shift der.</kbd> dash · <kbd>Ctrl der.</kbd> salto · <kbd>.</kbd> ancla<br />
+        <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha
       </div>
       <div class="back-row"><button class="btn ghost" id="btn-options-back">← Volver</button></div>
     </div>

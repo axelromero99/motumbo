@@ -16,15 +16,32 @@
 #endif
 
 #define MAX_PLAYERS 8
-#define MAX_PIECES 256
+#define MAX_PIECES 512
 #define MAX_HAZARDS 4
-#define LEVEL_COUNT 20
+
+// 20 hand-crafted arenas + 50 procedurally generated ones. Generated levels
+// derive ONLY from their id (own PCG stream), so every peer builds the exact
+// same arena for level N regardless of round seed.
+#define LEVEL_HANDMADE 20
+#define LEVEL_COUNT 70
 
 // Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
 // format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
 // deterministic setup, so lockstep peers must load identical bytes.
-#define LEVEL_CUSTOM 20
+#define LEVEL_CUSTOM 70
 #define CUSTOM_DATA_MAX 1024
+
+// Bomberman-style pickups: the orb now has a type.
+enum
+{
+	ORB_SUPER = 0,	// next dash x2.3 (the classic)
+	ORB_TURBO = 1,	// permanent (per round) speed stack
+	ORB_MEGA = 2,	// permanent (per round) size/mass stack
+};
+#define TURBO_STEP 0.16f
+#define TURBO_MAX 1.5f
+#define MEGA_STEP 1.16f
+#define MEGA_MAX 1.55f
 
 // Game modes (tumbo_set_mode). All win conditions resolve inside the sim.
 enum
@@ -47,7 +64,7 @@ enum
 #define PIECE_HY 0.4f
 #define PIECE_HZ 0.74f
 
-#define PLAYER_RADIUS 0.6f
+#define PLAYER_RADIUS 0.6f // base; each level picks its own ball size
 #define MOVE_ACCEL 28.0f
 #define AIR_CONTROL 0.45f
 #define MAX_MOVE_SPEED 9.0f
@@ -56,7 +73,6 @@ enum
 #define POWER_DASH_MULT 2.3f
 #define JUMP_SPEED 7.0f
 #define JUMP_COOLDOWN_TICKS 14
-#define GROUND_RAY_REACH 0.85f
 #define FALL_Y ( -8.0f )
 #define PIECE_KILL_Y ( -30.0f )
 #define WARNING_TICKS 72
@@ -178,6 +194,7 @@ enum
 typedef struct Player
 {
 	b3BodyId body;
+	b3ShapeId shape;
 	b3Vec3 facing;
 	uint32_t prevIn;
 	int dashCooldown;
@@ -186,6 +203,9 @@ typedef struct Player
 	int dashBuffer;
 	int coyote;
 	int braceTicks;
+	float ballR;	 // current radius (MEGA grows it)
+	float baseR;	 // the level's base radius
+	float speedMult; // TURBO stacks
 	bool hasPower;
 	bool alive;
 } Player;
@@ -222,6 +242,7 @@ typedef struct Hazard
 typedef struct Powerup
 {
 	b3Vec3 pos;
+	int type;
 	bool active;
 	uint32_t nextEventTick;
 } Powerup;
@@ -264,6 +285,11 @@ static uint8_t g_customData[CUSTOM_DATA_MAX];
 static int g_customLen;
 static float g_customSpawns[MAX_PLAYERS][2];
 static int g_customSpawnCount;
+
+// Generated-level round data, filled by BuildGenerated.
+static float g_genSpawns[MAX_PLAYERS][3];
+static int g_genSpawnCount;
+static float g_genBallR;
 static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS + 4 +
 					 MODE_FLOATS];
 
@@ -426,9 +452,10 @@ static void WriteState( void )
 		out[5] = q.v.z;
 		out[6] = q.s;
 		int cd = p->dashCooldown > 63 ? 63 : p->dashCooldown;
+		int rBits = (int)( p->ballR * 20.0f + 0.5f ) & 31; // bits 11-15, 0.05m units
 		int flags = ( p->alive ? FLAG_ALIVE : 0 ) | ( p->dashCooldown == 0 ? FLAG_DASH_READY : 0 ) |
 					( p->hasPower ? FLAG_HAS_POWER : 0 ) | ( cd << FLAG_CD_SHIFT ) |
-					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 );
+					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 ) | ( rBits << 11 );
 		out[7] = (float)flags;
 		out += STATE_STRIDE;
 	}
@@ -467,7 +494,7 @@ static void WriteState( void )
 	out[0] = g_powerup.pos.x;
 	out[1] = g_powerup.pos.y;
 	out[2] = g_powerup.pos.z;
-	out[3] = g_powerup.active ? 1.0f : 0.0f;
+	out[3] = g_powerup.active ? (float)( 1 + g_powerup.type ) : 0.0f;
 	out += 4;
 
 	out[0] = (float)g_mode;
@@ -638,7 +665,7 @@ static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type, float a, float b, f
 
 static void BuildLevel( int level, const b3BoxHull* hull )
 {
-	int extent = 7;
+	int extent = 9;
 	for ( int gx = -extent; gx <= extent; ++gx )
 	{
 		for ( int gz = -extent; gz <= extent; ++gz )
@@ -649,19 +676,19 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 
 			if ( level == LEVEL_CLASICA )
 			{
-				if ( d2 <= 8.4f * 8.4f )
+				if ( d2 <= 13.4f * 13.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
 			}
 			else if ( level == LEVEL_ANILLO )
 			{
-				if ( d2 <= 10.1f * 10.1f && d2 >= 4.06f * 4.06f )
+				if ( d2 <= 13.4f * 13.4f && d2 >= 6.0f * 6.0f )
 				{
 					// Velodrome: the ring's centerline is a counterclockwise
 					// speed lane. Fighting against the current is a choice.
 					float r = sqrtf( d2 );
-					if ( r >= 6.4f && r <= 7.8f )
+					if ( r >= 9.6f && r <= 11.2f )
 					{
 						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, -cz / r, cx / r, -1 );
 					}
@@ -706,7 +733,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			}
 			else if ( level == LEVEL_RULETA )
 			{
-				if ( d2 <= 9.1f * 9.1f )
+				if ( d2 <= 13.4f * 13.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -739,7 +766,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			{
 				// Ring with an opening at -Z; the collapse wave sweeps from
 				// one horn of the U to the other. Push rivals INTO the wave.
-				if ( d2 <= 10.36f * 10.36f && d2 >= 4.2f * 4.2f && !( cz < -2.8f && ( cx < 3.22f && cx > -3.22f ) ) )
+				if ( d2 <= 13.4f * 13.4f && d2 >= 6.0f * 6.0f && !( cz < -4.5f && ( cx < 5.1f && cx > -5.1f ) ) )
 				{
 					float rel = fmodf( atan2f( cz, cx ) + 3.14159265f * 0.5f + 6.2831853f, 6.2831853f );
 					AddPiece( cx, cz, 0.0f, (int)( rel * 10.0f ), hull );
@@ -859,7 +886,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				// Field of 2x2 pads with one-tile gaps everywhere: pure jumps.
 				int mx = ( ( gx % 3 ) + 3 ) % 3;
 				int mz = ( ( gz % 3 ) + 3 ) % 3;
-				if ( mx != 2 && mz != 2 && d2 <= 10.2f * 10.2f )
+				if ( mx != 2 && mz != 2 && d2 <= 13.4f * 13.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -868,15 +895,15 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			{
 				// Concentric rings with real gaps; migrate inward by jumping.
 				float r = sqrtf( d2 );
-				if ( r <= 2.2f )
+				if ( r <= 3.5f )
 				{
 					AddPiece( cx, cz, 0.0f, 2, hull );
 				}
-				else if ( r >= 4.2f && r <= 5.8f )
+				else if ( r >= 6.5f && r <= 9.0f )
 				{
 					AddPiece( cx, cz, 0.0f, 1, hull );
 				}
-				else if ( r >= 7.6f && r <= 9.4f )
+				else if ( r >= 11.5f && r <= 13.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -886,15 +913,15 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				// The crater grows: crumble radiates from the center outward.
 				// The raised rim is a trampoline — your last-ditch escape.
 				float r = sqrtf( d2 );
-				if ( r <= 9.1f && r >= 1.6f )
+				if ( r <= 13.4f && r >= 2.4f )
 				{
-					if ( r >= 7.9f )
+					if ( r >= 11.8f )
 					{
-						AddPieceEx( cx, cz, 0.8f, (int)( r * 2.0f ), hull, SPECIAL_BOUNCY, 0.0f, 0.0f, -1 );
+						AddPieceEx( cx, cz, 0.8f, (int)( r * 1.4f ), hull, SPECIAL_BOUNCY, 0.0f, 0.0f, -1 );
 					}
 					else
 					{
-						AddPiece( cx, cz, 0.0f, (int)( r * 2.0f ), hull );
+						AddPiece( cx, cz, 0.0f, (int)( r * 1.4f ), hull );
 					}
 				}
 			}
@@ -962,7 +989,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			else if ( level == LEVEL_MARTILLO )
 			{
 				// Big disc patrolled by an orbiting wrecking block.
-				if ( d2 <= 8.4f * 8.4f )
+				if ( d2 <= 13.4f * 13.4f )
 				{
 					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
@@ -973,7 +1000,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				// The two main avenues are one-way speed lanes.
 				int mx = ( ( gx % 3 ) + 3 ) % 3;
 				int mz = ( ( gz % 3 ) + 3 ) % 3;
-				if ( ( mx == 0 || mz == 0 ) && d2 <= 10.4f * 10.4f )
+				if ( ( mx == 0 || mz == 0 ) && d2 <= 13.4f * 13.4f )
 				{
 					if ( gz == 0 && gx != 0 )
 					{
@@ -994,11 +1021,21 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 
 	switch ( level )
 	{
+		case LEVEL_CLASICA:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 11;
+			break;
+		case LEVEL_ANILLO:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 11;
+			break;
 		case LEVEL_RULETA:
 			ShuffleCrumbleOrder();
-			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 8.1f, 0.3f, 0.32f }, HAZARD_BEAM, 0.9f, 0.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 12.9f, 0.3f, 0.32f }, HAZARD_BEAM, 0.8f, 0.0f, 0.0f );
 			g_crumbleStart = 420;
-			g_crumbleInterval = 20;
+			g_crumbleInterval = 8;
 			break;
 		case LEVEL_PIRAMIDE:
 			SortCrumbleOrder();
@@ -1008,7 +1045,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 		case LEVEL_HERRADURA:
 			SortCrumbleOrder();
 			g_crumbleStart = 480;
-			g_crumbleInterval = 15;
+			g_crumbleInterval = 6;
 			break;
 		case LEVEL_PASARELA:
 			SortCrumbleOrder();
@@ -1045,17 +1082,17 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 		case LEVEL_PANAL:
 			SortCrumbleOrder();
 			g_crumbleStart = 600;
-			g_crumbleInterval = 18;
+			g_crumbleInterval = 8;
 			break;
 		case LEVEL_DIANA:
 			SortCrumbleOrder();
 			g_crumbleStart = 540;
-			g_crumbleInterval = 20;
+			g_crumbleInterval = 9;
 			break;
 		case LEVEL_VOLCAN:
 			SortCrumbleOrder();
 			g_crumbleStart = 420;
-			g_crumbleInterval = 16;
+			g_crumbleInterval = 7;
 			break;
 		case LEVEL_ZIGURAT:
 			SortCrumbleOrder();
@@ -1085,14 +1122,14 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			break;
 		case LEVEL_MARTILLO:
 			SortCrumbleOrder();
-			AddBoxHazard( ( b3Vec3 ){ 6.5f, 0.95f, 0.0f }, ( b3Vec3 ){ 0.9f, 0.6f, 0.9f }, HAZARD_ORBITER, 0.55f, 0.0f, 6.5f );
+			AddBoxHazard( ( b3Vec3 ){ 10.4f, 0.95f, 0.0f }, ( b3Vec3 ){ 1.2f, 0.7f, 1.2f }, HAZARD_ORBITER, 0.5f, 0.0f, 10.4f );
 			g_crumbleStart = 540;
-			g_crumbleInterval = 20;
+			g_crumbleInterval = 8;
 			break;
 		case LEVEL_CALLES:
 			ShuffleCrumbleOrder();
 			g_crumbleStart = 480;
-			g_crumbleInterval = 12;
+			g_crumbleInterval = 5;
 			break;
 		default:
 			SortCrumbleOrder();
@@ -1172,6 +1209,289 @@ static float TileTopAt( float x, float z )
 	return 0.0f;
 }
 
+// ---------------------------------------------------------------------------
+// Procedural arenas (levels 20..69). Everything derives from the level id via
+// a dedicated RNG stream, so every peer builds bit-identical geometry no
+// matter the round seed. Six families keep the variety honest.
+// ---------------------------------------------------------------------------
+
+static int TileIndexAt( float x, float z );
+
+static uint32_t g_genRng;
+
+static uint32_t GenNext( void )
+{
+	g_genRng = g_genRng * 1664525u + 1013904223u;
+	return g_genRng >> 8;
+}
+
+static float GenF( float lo, float hi )
+{
+	return lo + ( hi - lo ) * (float)( GenNext() % 1024u ) / 1023.0f;
+}
+
+// Greedy max-min spread over plain tiles: spawns as far apart as possible,
+// never on boost lanes, never over the void.
+static void PickGeneratedSpawns( void )
+{
+	g_genSpawnCount = 0;
+	int chosen[MAX_PLAYERS];
+	for ( int s = 0; s < MAX_PLAYERS; ++s )
+	{
+		int best = -1;
+		float bestScore = -1.0f;
+		for ( int i = 0; i < g_pieceCount; ++i )
+		{
+			if ( g_pieces[i].special != SPECIAL_NONE )
+			{
+				continue;
+			}
+			b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+			float score;
+			if ( s == 0 )
+			{
+				score = tp.x * tp.x + tp.z * tp.z;
+			}
+			else
+			{
+				score = 1e30f;
+				for ( int k = 0; k < s; ++k )
+				{
+					b3Pos cp = b3Body_GetPosition( g_pieces[chosen[k]].body );
+					float dx = tp.x - cp.x;
+					float dz = tp.z - cp.z;
+					float dd = dx * dx + dz * dz;
+					if ( dd < score )
+					{
+						score = dd;
+					}
+				}
+			}
+			if ( score > bestScore )
+			{
+				bestScore = score;
+				best = i;
+			}
+		}
+		if ( best < 0 )
+		{
+			break;
+		}
+		chosen[s] = best;
+		b3Pos tp = b3Body_GetPosition( g_pieces[best].body );
+		g_genSpawns[s][0] = tp.x;
+		g_genSpawns[s][1] = tp.y + PIECE_HY;
+		g_genSpawns[s][2] = tp.z;
+		g_genSpawnCount += 1;
+	}
+}
+
+static void BuildGenerated( int level, const b3BoxHull* hull )
+{
+	g_genRng = (uint32_t)level * 2654435761u + 977u;
+	int fam = ( level - LEVEL_HANDMADE ) % 6;
+	float R = GenF( 9.0f, 13.4f );
+	static const float sizes[7] = { 0.45f, 0.5f, 0.55f, 0.6f, 0.6f, 0.75f, 0.9f };
+	g_genBallR = sizes[GenNext() % 7u];
+
+	// Family parameters, all rolled up-front so the RNG stream is stable.
+	int holes = (int)( GenNext() % 4u );
+	float hx[3], hz[3], hr[3];
+	for ( int k = 0; k < 3; ++k )
+	{
+		float a = GenF( 0.0f, 6.2831f );
+		float rr = GenF( 0.25f, 0.75f ) * R;
+		hx[k] = cosf( a ) * rr;
+		hz[k] = sinf( a ) * rr;
+		hr[k] = GenF( 1.6f, 3.4f );
+	}
+	int nIsl = 3 + (int)( GenNext() % 4u );
+	float ix[6], iz[6], ir[6];
+	for ( int k = 0; k < 6; ++k )
+	{
+		float a = 6.2831f * (float)k / (float)( nIsl > 0 ? nIsl : 1 ) + GenF( -0.3f, 0.3f );
+		float rr = GenF( 0.45f, 0.75f ) * R;
+		ix[k] = cosf( a ) * rr;
+		iz[k] = sinf( a ) * rr;
+		ir[k] = GenF( 2.4f, 4.6f );
+	}
+	bool hub = ( GenNext() & 1u ) != 0u;
+	float ringIn = GenF( 0.28f, 0.42f ) * R;
+	float ringMid = GenF( 0.55f, 0.7f ) * R;
+	int pitch = 2 + (int)( GenNext() % 2u );
+	int skipMod = 5 + (int)( GenNext() % 4u );
+	bool cheby = ( GenNext() & 1u ) != 0u;
+	int tierEvery = 2 + (int)( GenNext() % 2u );
+	int padSize = 2 + (int)( GenNext() % 2u );
+
+	for ( int gx = -9; gx <= 9; ++gx )
+	{
+		for ( int gz = -9; gz <= 9; ++gz )
+		{
+			float cx = gx * PIECE_STEP;
+			float cz = gz * PIECE_STEP;
+			float d2 = cx * cx + cz * cz;
+			float r = sqrtf( d2 );
+			bool put = false;
+			float h = 0.0f;
+			int prio = 0;
+			int special = SPECIAL_NONE;
+
+			if ( fam == 0 )
+			{
+				// Holed disc: big open brawl with deadly potholes.
+				if ( r <= R )
+				{
+					put = true;
+					for ( int k = 0; k < holes; ++k )
+					{
+						float dx = cx - hx[k];
+						float dz = cz - hz[k];
+						if ( dx * dx + dz * dz < hr[k] * hr[k] )
+						{
+							put = false;
+						}
+					}
+				}
+			}
+			else if ( fam == 1 )
+			{
+				// Island cluster with a doomed escape corridor.
+				for ( int k = 0; k < nIsl; ++k )
+				{
+					float dx = cx - ix[k];
+					float dz = cz - iz[k];
+					if ( dx * dx + dz * dz <= ir[k] * ir[k] )
+					{
+						put = true;
+						prio = 1;
+					}
+				}
+				if ( hub && r <= 3.2f )
+				{
+					put = true;
+					prio = 3;
+				}
+				if ( !put && gz == 0 && r <= R * 0.9f )
+				{
+					put = true;
+					prio = 0; // the corridor falls first
+				}
+			}
+			else if ( fam == 2 )
+			{
+				// Concentric rings with a jumpable moat.
+				if ( ( r >= ringIn && r <= ringMid ) || ( r >= ringMid + 2.2f && r <= R ) )
+				{
+					put = true;
+					prio = r > ringMid ? 0 : 2;
+				}
+				if ( hub && r <= 2.4f )
+				{
+					put = true;
+					prio = 4;
+				}
+			}
+			else if ( fam == 3 )
+			{
+				// Street lattice with potholes.
+				int mx = ( ( gx % pitch ) + pitch ) % pitch;
+				int mz = ( ( gz % pitch ) + pitch ) % pitch;
+				if ( ( mx == 0 || mz == 0 ) && r <= R )
+				{
+					put = ( ( gx * 31 + gz * 17 + level ) % skipMod ) != 0;
+				}
+			}
+			else if ( fam == 4 )
+			{
+				// Terraced hill, square or diamond silhouette, with ramps.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				int m = cheby ? ( ax > az ? ax : az ) : ( ax + az + 1 ) / 2;
+				if ( m <= 8 && r <= R )
+				{
+					int tier = ( 8 - m ) / tierEvery;
+					if ( tier > 3 )
+					{
+						tier = 3;
+					}
+					h = 0.8f * (float)tier;
+					prio = 3 - tier;
+					bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
+					if ( onAxis && ( ( 8 - m ) % tierEvery ) == ( tierEvery - 1 ) && tier < 3 )
+					{
+						int dir = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );
+						AddPieceEx( cx, cz, h, prio, hull, SPECIAL_NONE, 0.0f, 0.0f, dir );
+					}
+					else
+					{
+						put = true;
+					}
+				}
+			}
+			else
+			{
+				// Jump-pad archipelago, some pads bouncy.
+				int mx = ( ( gx % 3 ) + 3 ) % 3;
+				int mz = ( ( gz % 3 ) + 3 ) % 3;
+				if ( mx < padSize && mz < padSize && r <= R )
+				{
+					put = ( ( gx * 13 + gz * 7 + level ) % skipMod ) != 0;
+					if ( put && ( ( gx + gz + level ) % 9 ) == 0 )
+					{
+						special = SPECIAL_BOUNCY;
+					}
+				}
+			}
+
+			if ( put )
+			{
+				AddPieceEx( cx, cz, h, prio, hull, special, 0.0f, 0.0f, -1 );
+			}
+		}
+	}
+
+	// Degenerate roll (tiny floor)? Backfill a plain disc: rounds must work.
+	if ( g_pieceCount < 24 )
+	{
+		for ( int gx = -7; gx <= 7; ++gx )
+		{
+			for ( int gz = -7; gz <= 7; ++gz )
+			{
+				float cx = gx * PIECE_STEP;
+				float cz = gz * PIECE_STEP;
+				if ( cx * cx + cz * cz <= 10.4f * 10.4f && TileIndexAt( cx, cz ) < 0 )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+		}
+	}
+
+	// Optional hazard: 30% spinning beam, 20% orbiting hammer.
+	uint32_t roll = GenNext() % 10u;
+	if ( roll < 3u )
+	{
+		float w = GenF( 0.6f, 1.0f ) * ( ( GenNext() & 1u ) ? 1.0f : -1.0f );
+		AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ R - 0.6f, 0.3f, 0.32f }, HAZARD_BEAM, w, 0.0f, 0.0f );
+	}
+	else if ( roll < 5u )
+	{
+		float orbR = R * 0.72f;
+		AddBoxHazard( ( b3Vec3 ){ orbR, 0.95f, 0.0f }, ( b3Vec3 ){ 1.1f, 0.7f, 1.1f }, HAZARD_ORBITER,
+					  GenF( 0.4f, 0.65f ), 0.0f, orbR );
+	}
+
+	SortCrumbleOrder();
+	if ( ( GenNext() % 10u ) < 3u )
+	{
+		ShuffleCrumbleOrder();
+	}
+	g_crumbleStart = 420u + ( GenNext() % 5u ) * 60u;
+	int interval = 2200 / ( g_pieceCount > 0 ? g_pieceCount : 1 );
+	g_crumbleInterval = (uint32_t)( interval < 4 ? 4 : ( interval > 26 ? 26 : interval ) );
+}
+
 static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
 {
 	static const float dirs[MAX_PLAYERS][2] = {
@@ -1180,6 +1500,15 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	};
 
 	*outY = 0.0f;
+
+	if ( level >= LEVEL_HANDMADE && level < LEVEL_CUSTOM && g_genSpawnCount > 0 )
+	{
+		int slot = index % g_genSpawnCount;
+		*outX = g_genSpawns[slot][0] + 0.3f * (float)( index / g_genSpawnCount );
+		*outY = g_genSpawns[slot][1];
+		*outZ = g_genSpawns[slot][2];
+		return;
+	}
 
 	if ( level == LEVEL_CUSTOM && g_customSpawnCount > 0 )
 	{
@@ -1227,8 +1556,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 			{ 1.0f, 0.0f },		  { -1.0f, 0.0f },		 { 0.0f, 1.0f },	   { 0.7071f, -0.7071f },
 			{ -0.7071f, -0.7071f }, { 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.3827f, 0.9239f },
 		};
-		*outX = 7.28f * ring[index][0];
-		*outZ = 7.28f * ring[index][1];
+		*outX = 10.2f * ring[index][0];
+		*outZ = 10.2f * ring[index][1];
 		return;
 	}
 
@@ -1272,8 +1601,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	{
 		// Side-street tiles: on the lattice but OFF the boost avenues.
 		static const float street[MAX_PLAYERS][2] = {
-			{ 9.0f, 4.5f }, { -9.0f, -4.5f }, { -4.5f, 9.0f }, { 4.5f, -9.0f },
-			{ 9.0f, -4.5f }, { -9.0f, 4.5f }, { 4.5f, 9.0f },	{ -4.5f, -9.0f },
+			{ 12.0f, 4.5f }, { -12.0f, -4.5f }, { -4.5f, 12.0f }, { 4.5f, -12.0f },
+			{ 12.0f, -4.5f }, { -12.0f, 4.5f }, { 4.5f, 12.0f },  { -4.5f, -12.0f },
 		};
 		*outX = street[index][0];
 		*outZ = street[index][1];
@@ -1302,8 +1631,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	if ( level == LEVEL_PANAL )
 	{
 		static const float pads[MAX_PLAYERS][2] = {
-			{ 6.0f, 6.0f }, { -6.0f, -6.0f }, { 6.0f, -6.0f }, { -6.0f, 6.0f },
-			{ 6.0f, 0.0f }, { -6.0f, 0.0f },  { 0.0f, 6.0f },  { 0.0f, -6.0f },
+			{ 9.0f, 9.0f }, { -9.0f, -9.0f }, { 9.0f, -9.0f }, { -9.0f, 9.0f },
+			{ 9.0f, 0.0f }, { -9.0f, 0.0f },  { 0.0f, 9.0f },  { 0.0f, -9.0f },
 		};
 		*outX = pads[index][0];
 		*outZ = pads[index][1];
@@ -1352,22 +1681,26 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	bool diag = level == LEVEL_RULETA || level == LEVEL_RULETA2 || level == LEVEL_MARTILLO;
 	int slot = diag ? ( index + 4 ) % MAX_PLAYERS : index;
 	float radius = 4.9f;
-	if ( level == LEVEL_ANILLO )
+	if ( level == LEVEL_CLASICA )
 	{
-		// Inside the ring but OFF the boost lane (which spans r 6.4-7.8).
-		radius = 5.5f;
+		radius = 7.8f;
+	}
+	else if ( level == LEVEL_ANILLO )
+	{
+		// Inside the ring but OFF the boost lane (which spans r 9.6-11.2).
+		radius = 7.8f;
 	}
 	else if ( level == LEVEL_RULETA )
 	{
-		radius = 5.6f;
+		radius = 8.9f;
 	}
 	else if ( level == LEVEL_DIANA )
 	{
-		radius = 8.5f;
+		radius = 12.4f;
 	}
 	else if ( level == LEVEL_VOLCAN )
 	{
-		radius = 7.0f;
+		radius = 10.4f;
 	}
 	else if ( level == LEVEL_RULETA2 )
 	{
@@ -1375,7 +1708,7 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	}
 	else if ( level == LEVEL_MARTILLO )
 	{
-		radius = 5.0f;
+		radius = 8.0f;
 	}
 	*outX = radius * dirs[slot][0];
 	*outZ = radius * dirs[slot][1];
@@ -1421,15 +1754,35 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	g_world = b3CreateWorld( &worldDef );
 
 	b3BoxHull tileHull = b3MakeBoxHull( PIECE_HX, PIECE_HY, PIECE_HZ );
+	g_genSpawnCount = 0;
+	g_genBallR = PLAYER_RADIUS;
 	if ( g_level == LEVEL_CUSTOM )
 	{
 		BuildCustomLevel( &tileHull );
+	}
+	else if ( g_level >= LEVEL_HANDMADE )
+	{
+		BuildGenerated( g_level, &tileHull );
+		PickGeneratedSpawns();
 	}
 	else
 	{
 		BuildLevel( g_level, &tileHull );
 	}
 	g_standingPieces = g_pieceCount;
+
+	// Each arena picks its ball size: tiny = nervous, huge = heavyweight sumo.
+	static const float levelBallR[LEVEL_HANDMADE] = { 0.6f, 0.6f, 0.55f, 0.6f, 0.7f, 0.6f, 0.5f,	0.55f, 0.65f, 0.6f,
+													  0.8f, 0.45f, 0.55f, 0.75f, 0.6f, 0.7f, 0.55f, 0.6f,  0.9f,  0.5f };
+	float ballR = PLAYER_RADIUS;
+	if ( g_level < LEVEL_HANDMADE )
+	{
+		ballR = levelBallR[g_level];
+	}
+	else if ( g_level < LEVEL_CUSTOM )
+	{
+		ballR = g_genBallR;
+	}
 
 	for ( int i = 0; i < g_playerCount; ++i )
 	{
@@ -1438,7 +1791,7 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_dynamicBody;
-		bodyDef.position = ( b3Pos ){ sx, sy + PLAYER_RADIUS + 0.05f, sz };
+		bodyDef.position = ( b3Pos ){ sx, sy + ballR + 0.05f, sz };
 		bodyDef.linearDamping = 0.4f;
 		bodyDef.angularDamping = 0.8f;
 		bodyDef.enableSleep = false;
@@ -1453,8 +1806,11 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 		shapeDef.baseMaterial.rollingResistance = 0.03f;
 		shapeDef.filter.categoryBits = CAT_PLAYER;
 		shapeDef.enableHitEvents = true;
-		b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, PLAYER_RADIUS };
-		b3CreateSphereShape( body, &shapeDef, &sphere );
+		b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, ballR };
+		g_players[i].shape = b3CreateSphereShape( body, &shapeDef, &sphere );
+		g_players[i].ballR = ballR;
+		g_players[i].baseR = ballR;
+		g_players[i].speedMult = 1.0f;
 
 		// Face the center.
 		float len = sx * sx + sz * sz;
@@ -1502,7 +1858,7 @@ static int NearestAliveTo( float x, float z, int exclude );
 static bool IsGrounded( const Player* p )
 {
 	b3Pos origin = b3Body_GetPosition( p->body );
-	b3Vec3 translation = { 0.0f, -GROUND_RAY_REACH, 0.0f };
+	b3Vec3 translation = { 0.0f, -( p->ballR + 0.25f ), 0.0f };
 	b3QueryFilter filter = b3DefaultQueryFilter();
 	filter.maskBits = CAT_WORLD;
 	b3RayResult result = b3World_CastRayClosest( g_world, origin, translation, filter );
@@ -2158,9 +2514,10 @@ static void StepPlayers( void )
 			p->facing = ( b3Vec3 ){ dx, 0.0f, dz };
 			b3Vec3 v = b3Body_GetLinearVelocity( p->body );
 			// Only push while below max speed along the input direction.
-			if ( v.x * dx + v.z * dz < MAX_MOVE_SPEED )
+			// TURBO pickups raise both the ceiling and the acceleration.
+			if ( v.x * dx + v.z * dz < MAX_MOVE_SPEED * p->speedMult )
 			{
-				float accel = MOVE_ACCEL * ( grounded ? 1.0f : AIR_CONTROL );
+				float accel = MOVE_ACCEL * p->speedMult * ( grounded ? 1.0f : AIR_CONTROL );
 				b3Vec3 force = { accel * mass * dx, 0.0f, accel * mass * dz };
 				b3Body_ApplyForceToCenter( p->body, force, true );
 			}
@@ -2240,9 +2597,10 @@ static void ResolveDashHit( int att, int vic, float nx, float nz, float speed, b
 		victim->hasPower = false;
 		b3Pos vp = b3Body_GetPosition( victim->body );
 		g_powerup.pos = ( b3Vec3 ){ vp.x, vp.y + 1.1f, vp.z };
+		g_powerup.type = ORB_SUPER;
 		g_powerup.active = true;
 		g_powerup.nextEventTick = g_frame + 600;
-		PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 1.0f, (float)vic );
+		PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)ORB_SUPER, (float)vic );
 	}
 }
 
@@ -2536,6 +2894,33 @@ static void StepMode( void )
 	}
 }
 
+// MEGA pickup: grow the ball by recreating its collision shape. Mass scales
+// with r³ automatically (constant density), so bigger really is heavier.
+static void ApplyMega( Player* p )
+{
+	float cap = p->baseR * MEGA_MAX;
+	float nr = p->ballR * MEGA_STEP;
+	if ( nr > cap )
+	{
+		nr = cap;
+	}
+	if ( nr <= p->ballR )
+	{
+		return;
+	}
+	p->ballR = nr;
+	b3DestroyShape( p->shape, true );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.density = 1000.0f;
+	shapeDef.baseMaterial.friction = 0.4f;
+	shapeDef.baseMaterial.restitution = 0.55f;
+	shapeDef.baseMaterial.rollingResistance = 0.03f;
+	shapeDef.filter.categoryBits = CAT_PLAYER;
+	shapeDef.enableHitEvents = true;
+	b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, p->ballR };
+	p->shape = b3CreateSphereShape( p->body, &shapeDef, &sphere );
+}
+
 static void StepPowerup( void )
 {
 	if ( g_frame >= g_powerup.nextEventTick )
@@ -2555,8 +2940,9 @@ static void StepPowerup( void )
 			int pick = candidates[RngNext() % (uint32_t)count];
 			b3Pos tile = b3Body_GetPosition( g_pieces[pick].body );
 			g_powerup.pos = ( b3Vec3 ){ tile.x, tile.y + PIECE_HY + 1.1f, tile.z };
+			g_powerup.type = (int)( RngNext() % 3u );
 			g_powerup.active = true;
-			PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 0.0f, -1.0f );
+			PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)g_powerup.type, -1.0f );
 		}
 		g_powerup.nextEventTick = g_frame + 600;
 	}
@@ -2579,10 +2965,23 @@ static void StepPowerup( void )
 		float ddy = pos.y - g_powerup.pos.y;
 		if ( ddx * ddx + ddz * ddz < 1.1f * 1.1f && ddy > -1.4f && ddy < 1.4f )
 		{
-			p->hasPower = true;
+			// Bomberman rules: what you grab changes how you roll.
+			if ( g_powerup.type == ORB_TURBO )
+			{
+				p->speedMult = p->speedMult + TURBO_STEP > TURBO_MAX ? TURBO_MAX : p->speedMult + TURBO_STEP;
+			}
+			else if ( g_powerup.type == ORB_MEGA )
+			{
+				ApplyMega( p );
+			}
+			else
+			{
+				p->hasPower = true;
+			}
 			g_powerup.active = false;
 			g_powerup.nextEventTick = g_frame + ( g_mode == MODE_COSECHA ? 120 : 300 );
-			PushEvent( EVT_ORB_PICKUP, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 0.0f, (float)i );
+			PushEvent( EVT_ORB_PICKUP, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)g_powerup.type,
+					   (float)i );
 			if ( g_mode == MODE_COSECHA && g_winner == -1 )
 			{
 				g_scores[i] += 1;

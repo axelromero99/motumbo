@@ -35,7 +35,8 @@ import { LocalInput } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
-import { NetSession, Lockstep, msgStart, msgMap, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP, offerFromLocation } from './net';
+import { NetSession, Lockstep, msgStart, msgMap, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP } from './net';
+import { RoomSignal, randomRoomCode, normalizeRoomCode } from './signal';
 import { UiShell, type Settings } from './ui';
 import { renderLevelThumbs } from './minimap';
 import { MatchStats } from './stats';
@@ -110,7 +111,7 @@ async function main(): Promise<void> {
   let isHost = false;
   let mySlot = 0;
   let roundId = 0;
-  let currentOfferCode = '';
+  let roomSignal: RoomSignal | null = null;
   let connectTimeout = 0;
   let lastNetProgress = 0;
   let desyncShown = false;
@@ -144,7 +145,8 @@ async function main(): Promise<void> {
       levelChoice = 0;
     }
     const lvl = levelChoice === 'random' ? randomSeed() % sim.levelCount : (levelChoice as number) % sim.levelCount;
-    return { level: lvl, theme: lvl, bytes: null, name: LEVEL_NAMES[lvl] };
+    // Generated levels (20-69) reuse the 20 visual/musical themes cyclically.
+    return { level: lvl, theme: lvl % 20, bytes: null, name: LEVEL_NAMES[lvl] };
   };
 
   // ---------------------------------------------------------------------
@@ -160,34 +162,30 @@ async function main(): Promise<void> {
   };
 
   const ui = new UiShell({
-    onSolo: () => {
-      audio.uiClick();
-      intent = 'solo';
-      ui.show('setup');
-    },
-    onLocal: () => {
-      audio.uiClick();
-      intent = 'local';
-      ui.show('setup');
-    },
-    onOnline: (host: boolean) => {
-      audio.uiClick();
-      void beginOnline(host);
-    },
-    onConnectClicked: (code: string) => void connectWithCode(code),
-    // UiShell already wrote code/link to the clipboard; we just confirm.
-    onCopyCode: () => ui.toast('código copiado'),
-    onInviteLink: () => ui.toast('link de invitación copiado'),
-    onStartMatch: (level: number | 'random' | { custom: string }, target: number, m = MODE_SUMO, mParam = 0, botDiff = 1) => {
+    onPlay: () => audio.uiClick(),
+    onOnline: () => audio.uiClick(),
+    onCreateRoom: () => void createRoom(),
+    onJoinRoom: (code: string) => void joinRoom(code),
+    onCancelOnline: () => teardownOnline(),
+    onStartMatch: (
+      level: number | 'random' | { custom: string },
+      target: number,
+      m = MODE_SUMO,
+      mParam = 0,
+      botDiff = 1,
+      rivals: 'bots' | 'humano' = 'bots',
+    ) => {
       audio.uiClick();
       levelChoice = level;
       winTarget = target;
       gameMode = m;
       gameModeParam = mParam;
       botDifficulty = botDiff;
-      if (mode === 'net' || intent === 'net-host') {
+      // With a live session the match is online; otherwise RIVALES decides.
+      if (session) {
         if (isHost) hostStartMatch();
       } else {
+        intent = rivals === 'bots' ? 'solo' : 'local';
         startMatch();
       }
     },
@@ -364,7 +362,7 @@ async function main(): Promise<void> {
         const spec: RoundSpec =
           lvl === LEVEL_CUSTOM && pendingGuestMap
             ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] & 7, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
-            : { level: lvl, theme: lvl, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
+            : { level: lvl, theme: lvl % 20, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
         startNetRound(netSeed, spec, round);
       }
     };
@@ -373,56 +371,78 @@ async function main(): Promise<void> {
         ui.toast('❌ se cortó la conexión');
         quitToTitle();
       } else {
-        ui.setOnlineState('error', 'Se cortó la conexión. Volvé a intentar.');
+        ui.setRoomState('error', 'Se cortó la conexión. Volvé a intentar.');
       }
     };
     return s;
   };
 
-  async function beginOnline(host: boolean): Promise<void> {
+  function teardownOnline(): void {
+    roomSignal?.close();
+    roomSignal = null;
     session?.close();
-    isHost = host;
-    mySlot = host ? 0 : 1;
+    session = null;
+    lockstep = null;
+    window.clearTimeout(connectTimeout);
+  }
+
+  async function createRoom(): Promise<void> {
+    teardownOnline();
+    isHost = true;
+    mySlot = 0;
     intent = 'net-host';
     session = wireSession();
-    if (host) {
-      ui.setOnlineState('creating', 'generando tu código…');
-      try {
-        currentOfferCode = await session.createOfferCode();
-        ui.setOfferCode(currentOfferCode);
-        ui.setOnlineState('offer-ready', 'Mandale el código o el link a tu rival y pegá su respuesta.');
-      } catch (err) {
-        ui.setOnlineState('error', String(err));
-      }
-    } else {
-      ui.setOnlineState('idle', 'Pegá el código o abrí el link que te mandaron.');
+    roomSignal = new RoomSignal();
+    const code = randomRoomCode();
+    try {
+      await roomSignal.host(code, {
+        makeOffer: async () => {
+          ui.setRoomState('connecting', '¡rival encontrado! conectando…');
+          connectTimeout = window.setTimeout(() => {
+            ui.setRoomState('error', 'No se pudo conectar (NAT restrictivo). Probá con el hotspot del celular.');
+          }, 15000);
+          return await session!.createOfferCode();
+        },
+        onAnswer: (answer) => void session!.acceptAnswerCode(answer),
+        onError: (msg) => ui.setRoomState('error', msg),
+      });
+      ui.setRoomState('waiting', undefined, code);
+    } catch (err) {
+      ui.setRoomState('error', err instanceof Error ? err.message : String(err));
     }
   }
 
-  async function connectWithCode(code: string): Promise<void> {
-    if (!session || !code.trim()) return;
+  async function joinRoom(raw: string): Promise<void> {
+    const code = normalizeRoomCode(raw);
+    if (!code) {
+      ui.setRoomState('error', 'Ese código no parece de TUMBO (son 4 letras/números).');
+      return;
+    }
+    teardownOnline();
+    isHost = false;
+    mySlot = 1;
+    intent = 'net-host';
+    session = wireSession();
+    roomSignal = new RoomSignal();
     try {
-      if (isHost) {
-        ui.setOnlineState('connecting', 'conectando…');
-        await session.acceptAnswerCode(code);
-        connectTimeout = window.setTimeout(() => {
-          ui.setOnlineState(
-            'error',
-            'No se pudo conectar (probablemente un NAT restrictivo). Probá con el hotspot del celular.',
-          );
-        }, 12000);
-      } else {
-        ui.setOnlineState('creating', 'generando tu respuesta…');
-        currentOfferCode = await session.acceptOfferCode(code);
-        ui.setOfferCode(currentOfferCode);
-        ui.setOnlineState('answer-ready', 'Mandale este código de respuesta al anfitrión.');
-      }
+      await roomSignal.join(code, {
+        makeAnswer: async (offer) => {
+          ui.setRoomState('connecting', '¡sala encontrada! conectando…');
+          connectTimeout = window.setTimeout(() => {
+            ui.setRoomState('error', 'No se pudo conectar (NAT restrictivo). Probá con el hotspot del celular.');
+          }, 15000);
+          return await session!.acceptOfferCode(offer);
+        },
+        onError: (msg) => ui.setRoomState('error', msg),
+      });
     } catch (err) {
-      ui.setOnlineState('error', err instanceof Error ? err.message : String(err));
+      ui.setRoomState('error', err instanceof Error ? err.message : String(err));
     }
   }
 
   const onChannelOpen = (): void => {
+    roomSignal?.close();
+    roomSignal = null;
     window.clearTimeout(connectTimeout);
     playerCount = 2;
     botSlots = [];
@@ -430,10 +450,10 @@ async function main(): Promise<void> {
     matchOver = false;
     stats.reset(2);
     if (isHost) {
-      ui.setOnlineState('connected', 'conectados ✔ elegí nivel y arrancamos');
+      ui.setRoomState('connected', '¡conectados! elegí la arena');
       ui.show('setup');
     } else {
-      ui.setOnlineState('connected', 'conectados ✔ el anfitrión elige el nivel…');
+      ui.setRoomState('connected', 'el anfitrión elige la arena…');
     }
   };
 
@@ -477,7 +497,8 @@ async function main(): Promise<void> {
   };
 
   // Deep link: ?#j=<offer> lands straight in the join flow.
-  const linkedOffer = offerFromLocation();
+  // Deep link: #room=CODE lands straight in the join flow.
+  const roomLink = location.hash.match(/^#room=([A-Za-z0-9-]{4,12})/i);
 
   // ---------------------------------------------------------------------
   // Input routing
@@ -611,14 +632,23 @@ async function main(): Promise<void> {
           renderer.fx.burst(x, Math.max(y, -6), z, pcolor, { count: 36, speed: 4, up: 4, life: 800 });
           renderer.fx.ring(x, 0.2, z, pcolor, 5);
           break;
-        case EVT_ORB_SPAWN:
-          if (!attract) (a > 0.5 ? audio.orbLoose() : audio.orbSpawn());
-          renderer.fx.burst(x, y, z, ORB_GOLD, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
+        case EVT_ORB_SPAWN: {
+          // `a` is the orb type; `b >= 0` means it was knocked out of a carrier.
+          if (!attract) (b >= 0 ? audio.orbLoose() : audio.orbSpawn());
+          const spawnColor = a === 1 ? 0x35e8ff : a === 2 ? 0xff5964 : ORB_GOLD;
+          renderer.fx.burst(x, y, z, spawnColor, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
           break;
-        case EVT_ORB_PICKUP:
+        }
+        case EVT_ORB_PICKUP: {
           if (!attract) audio.orbPickup();
-          renderer.fx.burst(x, y, z, ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
+          const pickColor = a === 1 ? 0x35e8ff : a === 2 ? 0xff5964 : ORB_GOLD;
+          renderer.fx.burst(x, y, z, pickColor, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
+          if (!attract && b >= 0) {
+            if (a === 1) ui.toast(`⚡ ¡TURBO para ${PLAYER_NAMES[b]}!`);
+            else if (a === 2) ui.toast(`🔴 ¡${PLAYER_NAMES[b]} creció!`);
+          }
           break;
+        }
         case EVT_CURSE:
           if (!attract) {
             audio.orbLoose();
@@ -720,9 +750,9 @@ async function main(): Promise<void> {
     boot.classList.add('done');
     window.setTimeout(() => boot.remove(), 400);
   }
-  if (linkedOffer) {
+  if (roomLink) {
     ui.show('online');
-    void beginOnline(false).then(() => connectWithCode(linkedOffer));
+    void joinRoom(roomLink[1]);
   }
 
   let last = performance.now();

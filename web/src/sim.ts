@@ -62,6 +62,23 @@ export const LEVEL_NAMES = [
   'CALLES',
 ];
 
+// Levels 20-69 are procedurally generated in the sim (deterministic per id).
+const GEN_PREFIX = ['NOVA', 'CRÁTER', 'ARRECIFE', 'FALLA', 'TÚNEL', 'BASTIÓN', 'PLAZA', 'ISLOTE', 'CIRCUITO', 'MESETA'];
+for (let i = 20; i < 70; i++) {
+  LEVEL_NAMES.push(`${GEN_PREFIX[i % 10]} ${i - 19}`);
+}
+
+/** Current ball radius in meters, decoded from a player's packed flags. */
+export function ballRadiusFrom(flags: number): number {
+  const r = ((flags >> 11) & 31) / 20;
+  return r >= 0.3 ? r : 0.6;
+}
+
+// Orb pickup types (EVT_ORB_SPAWN/PICKUP carry the type in `a`).
+export const ORB_SUPER = 0;
+export const ORB_TURBO = 1;
+export const ORB_MEGA = 2;
+
 // Game modes (deterministic, resolved inside the sim).
 export const MODE_SUMO = 0;
 export const MODE_KOTH = 1; // rey de la colina: puntuás estando SOLO en la zona

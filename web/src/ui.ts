@@ -14,55 +14,61 @@
  *     que el constructor retorna (así main.ts ya tiene la variable `ui`
  *     asignada), y luego sincrónicamente en cada cambio del usuario. main.ts
  *     también puede leer ui.settings sincrónicamente apenas construye.
- *   - Si la URL trae '#join=<código>', el constructor deja pre-seleccionada
- *     la pestaña UNIRSE y pre-pega el código en el textarea, SIN disparar
- *     callbacks: el flujo del link (mostrar 'online', crear sesión, conectar)
- *     es 100% responsabilidad de main.ts.
+ *   - Si la URL trae '#room=<código>', el constructor deja el código pre-cargado
+ *     en el input de UNIRSE, SIN disparar callbacks ni navegar: el flujo del
+ *     link (mostrar 'online', unirse solo) es 100% responsabilidad de main.ts.
  *
  * Flujo de pantallas (la UiShell navega sola; main.ts NO necesita llamar a
- * show() salvo para pausa y para volver de estados propios):
- *   - SOLO   -> onSolo()  y navega a 'setup'
- *   - LOCAL  -> onLocal() y navega a 'setup'
- *   - ONLINE -> navega a 'online' y dispara onOnline(true) (pestaña CREAR).
- *     Cambiar de pestaña vuelve a disparar onOnline(host); main.ts debe
- *     descartar la sesión anterior y crear una nueva en cada onOnline.
- *   - JUGAR (setup) -> onStartMatch(level, winTarget, mode, modeParam) y
- *     navega a 'none'. level es índice de nivel o 'random' (main.ts resuelve
- *     el random — es elección de host, no gameplay). winTarget es 3, 5 o 7.
- *     mode es una constante MODE_* de sim.ts; modeParam es el parámetro
- *     contextual del modo (KOTH: segundos en zona 10/15/20, COSECHA: orbes
- *     3/5/8, MALDITO: segundos de mecha 8/12/20; SUMO: 0, sin parámetro) —
- *     pasable directo a sim.setMode(mode, modeParam).
- *   - Volver (setup) -> 'title'. Volver (online) -> 'title' + onQuitToTitle()
- *     (para que main.ts descarte la sesión WebRTC).
+ * show() salvo para pausa, para el setup online del host y para volver de
+ * estados propios):
+ *   - JUGAR  -> onPlay() y navega a 'setup' (fila RIVALES visible).
+ *   - ONLINE -> navega a 'online' (estado idle) y dispara onOnline().
+ *   - JUGAR (setup) -> onStartMatch(level, winTarget, mode, modeParam,
+ *     botDifficulty, rivals) y navega a 'none'. level es índice de nivel,
+ *     'random' o { custom: id } (main.ts resuelve random/bytes). winTarget es
+ *     3, 5 o 7. mode es una constante MODE_* de sim.ts; modeParam es el
+ *     parámetro contextual (KOTH: segundos en zona 10/15/20, COSECHA: orbes
+ *     3/5/8, MALDITO: segundos de mecha 8/12/20; SUMO: 0) — pasable directo a
+ *     sim.setMode(mode, modeParam). rivals: 'bots' (3 bots, aplica
+ *     botDifficulty) | 'humano' (2 en un teclado). Con sala online conectada
+ *     la fila RIVALES está oculta y rivals llega como 'humano'.
+ *   - Volver (setup) -> 'title' (o 'online' si hay sala conectada).
  *   - Pausa: main.ts llama ui.show('pause') cuando detecta Esc.
  *     Reanudar -> onResume() + 'none'. Opciones -> pantalla interna de
  *     opciones (vuelve sola a 'pause'). Salir al menú -> onQuitToTitle() + 'title'.
- *   - Results: Revancha -> onStartMatch(últimoNivel, últimoWinTarget,
- *     últimoModo, últimoModeParam) + 'none' (misma semántica que JUGAR; en
- *     online solo el host debería actuar — el guest puede ignorar el callback
- *     o main.ts lo deshabilita mostrando un toast). Menú -> onQuitToTitle()
- *     + 'title'.
+ *   - Results: Revancha -> onStartMatch(mismos args que el último JUGAR) +
+ *     'none' (en online solo el host debería actuar — el guest puede ignorar
+ *     el callback o main.ts lo deshabilita con un toast). Menú ->
+ *     onQuitToTitle() + 'title'.
  *
- * Online — protocolo de setOnlineState(state, detail?):
- *   'idle'         reset del wizard (pasos según pestaña activa)
- *   'creating'     paso "tu código" con spinner ("generando código…")
- *                  (alias: 'generating')
- *   'offer-ready'  tu código listo (check verde); llamá antes setOfferCode(code)
- *                  (alias: 'code-ready')
- *   'answer-ready' (pestaña UNIRSE) respuesta generada, hay que mandársela al
- *                  anfitrión; llamá antes setOfferCode(respuesta)
- *   'connecting'   conectando (spinner en paso conexión)
- *   'waiting'      conectado a nivel transporte, esperando al rival/anfitrión
- *   'connected'    todo verde; detail opcional se muestra como estado
- *   'error'        marca el paso activo en rojo y muestra `detail` en rojo
- *   Cualquier otro string se muestra tal cual en la línea de estado.
- *   setOfferCode(code) llena el textarea de "tu código" (offer del host o
- *   respuesta del guest) y lo guarda para los botones de copiar.
- *   Copiar código / Copiar link escriben al portapapeles DESDE la UiShell
- *   (con toast) y después notifican onCopyCode()/onInviteLink() — main.ts no
- *   tiene que copiar nada. El link es `${origin}${pathname}#join=<código>`;
- *   main.ts no necesita parsear el hash (lo hace la UiShell, ver arriba).
+ * Online — salas con código corto:
+ *   - CREAR SALA: la shell pasa sola a 'creating' y dispara onCreateRoom().
+ *     main.ts crea la sala y llama setRoomState('waiting', undefined, code).
+ *   - UNIRSE: input de 4 caracteres (autoupper; acepta pegar "TUMBO-XK42" o el
+ *     link entero y extrae el código; validación visual: 4 alfanuméricos — la
+ *     validación real es normalizeRoomCode de signal.ts, en main.ts). Al
+ *     apretar UNIRSE la shell pasa sola a 'joining' y dispara onJoinRoom(code)
+ *     con el código ya normalizado (4 chars, mayúsculas).
+ *   - Cancelar (creating/waiting/joining/connecting) -> estado 'idle' +
+ *     onCancelOnline(). Volver -> 'title' + onCancelOnline(). main.ts debe
+ *     descartar sesión/señalización en onCancelOnline y también al recibir un
+ *     nuevo onCreateRoom/onJoinRoom (Reintentar repite la última acción).
+ *   - setRoomState(state, detail?, code?):
+ *       'idle'        vuelve a CREAR SALA / UNIRSE
+ *       'creating'    spinner "creando sala…"
+ *       'waiting'     código GIGANTE (pasá code al menos la primera vez) +
+ *                     "Copiar link de invitación" + spinner "esperando rival…"
+ *       'joining'     spinner "buscando la sala…"
+ *       'connecting'  spinner "conectando…"
+ *       'connected'   "¡conectados!" (detail lo pisa, p.ej. "el anfitrión
+ *                     elige la arena…"); marca la sala como conectada para que
+ *                     show('setup') oculte RIVALES
+ *       'error'       mensaje (detail) + botón Reintentar
+ *     Cualquier otro string se muestra tal cual con spinner. detail opcional
+ *     pisa el texto por defecto de cualquier estado.
+ *   - "Copiar link de invitación": la shell copia
+ *     `${origin}${pathname}#room=<code>` al portapapeles y muestra toast; NO
+ *     hay callback. Click en el código gigante copia solo "TUMBO-<code>".
  *
  * HUD:
  *   - updateScorebar(entries, winTarget): llamar cuando cambie score/vidas
@@ -82,7 +88,9 @@
  * Setup:
  *   - setLevelThumbs(urls, names): puebla la grilla (usar
  *     renderLevelThumbs(sim) de minimap.ts ANTES de la init real, y re-init
- *     después). La card ALEATORIO se agrega sola al final.
+ *     después). La card ALEATORIO ahora es fija en el DOM y va PRIMERA;
+ *     después van MIS MAPAS y recién entonces los niveles built-in. Aguanta
+ *     ~70 niveles con scroll interno.
  *
  * Editor de mapas / MIS MAPAS:
  *   - EDITOR (title) -> navega a 'none' y dispara onEditor(); main.ts debe
@@ -90,10 +98,11 @@
  *     MapEditor maneja solo la clase 'active' de su propia
  *     <section data-screen="editor"> (por eso 'editor' no está en ScreenName;
  *     igual un show() de acá la oculta porque comparte la clase .screen).
- *   - setCustomMaps(maps): puebla la sección MIS MAPAS del setup (llamarla al
- *     boot con listMaps() y de nuevo en onMapsChanged del editor). Elegir una
- *     card la selecciona como nivel; JUGAR/Revancha entregan { custom: id }
- *     en onStartMatch (main.ts resuelve los bytes con getMapBytes(id)).
+ *   - setCustomMaps(maps): puebla las cards de mapas custom dentro de la
+ *     grilla ARENA (llamarla al boot con listMaps() y de nuevo en
+ *     onMapsChanged del editor). Elegir una card la selecciona como nivel;
+ *     JUGAR/Revancha entregan { custom: id } en onStartMatch (main.ts resuelve
+ *     los bytes con getMapBytes(id)). Sin mapas no se muestra nada extra.
  *   - Botón ✎ de una card -> navega a 'none' y dispara onEditMap(id); main.ts
  *     debe llamar mapEditor.open(id).
  *   - Botón ✕ de una card: la UiShell borra sola (deleteMap + re-render
@@ -120,13 +129,24 @@ export const PARTICLE_PRESETS: Record<string, number> = { alta: 1, media: 0.5, b
  * no tiene parámetro y onStartMatch entrega 0.
  */
 const MODE_PARAM_CFG: Record<number, { label: string; suffix: string; options: number[]; def: number }> = {
-  [MODE_KOTH]: { label: 'SEGUNDOS EN ZONA', suffix: 's', options: [10, 15, 20], def: 15 },
-  [MODE_COSECHA]: { label: 'ORBES PARA GANAR', suffix: '', options: [3, 5, 8], def: 5 },
-  [MODE_MALDITO]: { label: 'SEGUNDOS DE MECHA', suffix: 's', options: [8, 12, 20], def: 12 },
+  [MODE_KOTH]: { label: 'ZONA', suffix: 's', options: [10, 15, 20], def: 15 },
+  [MODE_COSECHA]: { label: 'ORBES', suffix: '', options: [3, 5, 8], def: 5 },
+  [MODE_MALDITO]: { label: 'MECHA', suffix: 's', options: [8, 12, 20], def: 12 },
+};
+
+/** Descripción de una línea por modo (clave = MODE_* de sim.ts). */
+const MODE_DESC: Record<number, string> = {
+  [MODE_SUMO]: 'El último en pie gana la ronda.',
+  [MODE_KOTH]: 'Sumá segundos estando solo en la zona.',
+  [MODE_COSECHA]: 'Juntá los orbes antes que nadie.',
+  [MODE_MALDITO]: 'Pasale la maldición a otro antes de que explote.',
 };
 
 /** Nivel elegido en el setup: built-in, aleatorio o mapa custom (id de SavedMap). */
 export type LevelChoice = number | 'random' | { custom: string };
+
+/** Rivales del setup local: 3 bots o un humano en el mismo teclado. */
+export type Rivals = 'bots' | 'humano';
 
 export interface Settings {
   volMaster: number;
@@ -168,14 +188,25 @@ export interface ResultsOpts {
 }
 
 export interface UiCallbacks {
-  onSolo(): void;
-  onLocal(): void;
-  onOnline(host: boolean): void;
-  onConnectClicked(code: string): void;
-  onCopyCode(): void;
-  onInviteLink(): void;
+  /** Botón JUGAR del título (la UiShell ya navegó a 'setup'). */
+  onPlay(): void;
+  /** Botón ONLINE del título (la UiShell ya navegó a 'online', estado idle). */
+  onOnline(): void;
+  /** CREAR SALA (la UiShell ya pasó a estado 'creating'). */
+  onCreateRoom(): void;
+  /** UNIRSE con código ya normalizado a 4 chars mayúsculas ('joining' ya visible). */
+  onJoinRoom(code: string): void;
+  /** Cancelar/Volver del flujo online: descartar sesión y señalización. */
+  onCancelOnline(): void;
   /** mode = MODE_* de sim.ts; modeParam = parámetro contextual (SUMO: 0). */
-  onStartMatch(level: LevelChoice, winTarget: number, mode: number, modeParam: number, botDifficulty: number): void;
+  onStartMatch(
+    level: LevelChoice,
+    winTarget: number,
+    mode: number,
+    modeParam: number,
+    botDifficulty: number,
+    rivals: Rivals,
+  ): void;
   onResume(): void;
   onQuitToTitle(): void;
   onSettingsChanged(s: Settings): void;
@@ -194,6 +225,22 @@ const DEFAULT_SETTINGS: Settings = {
   particles: 1,
   reducedMotion: false,
 };
+
+/** Validación VISUAL del código de sala (la real es normalizeRoomCode en signal.ts). */
+const ROOM_CODE_RE = /^[A-Z0-9]{4}$/;
+
+/**
+ * Extrae un código de sala de lo que sea que pegue el usuario: "XK42",
+ * "TUMBO-XK42" o el link entero con '#room=XK42'. Devuelve hasta 4 chars
+ * alfanuméricos en mayúsculas (puede ser parcial mientras tipea).
+ */
+function extractRoomCode(raw: string): string {
+  let s = raw;
+  const m = /#room=([^&\s]+)/i.exec(s);
+  if (m) s = m[1];
+  s = s.toUpperCase().replace(/^\s*TUMBO-?/, '').replace(/[^A-Z0-9]/g, '');
+  return s.slice(0, 4);
+}
 
 function hexColor(n: number): string {
   return `#${(n >>> 0).toString(16).padStart(6, '0')}`;
@@ -231,6 +278,7 @@ export class UiShell {
   private selLevel: LevelChoice = 'random';
   private winTarget = 5;
   private selMode: number = MODE_SUMO;
+  private rivals: Rivals = 'bots';
   /** Último parámetro elegido por modo (arranca en el default de cada uno). */
   private modeParamSel: Record<number, number> = {
     [MODE_KOTH]: MODE_PARAM_CFG[MODE_KOTH].def,
@@ -238,16 +286,20 @@ export class UiShell {
     [MODE_MALDITO]: MODE_PARAM_CFG[MODE_MALDITO].def,
   };
   private botDiff = 1;
-  private lastStart: { level: LevelChoice; winTarget: number; mode: number; modeParam: number; botDifficulty: number } = {
-    level: 'random',
-    winTarget: 5,
-    mode: MODE_SUMO,
-    modeParam: 0,
-    botDifficulty: 1,
-  };
+  private lastStart: {
+    level: LevelChoice;
+    winTarget: number;
+    mode: number;
+    modeParam: number;
+    botDifficulty: number;
+    rivals: Rivals;
+  } = { level: 'random', winTarget: 5, mode: MODE_SUMO, modeParam: 0, botDifficulty: 1, rivals: 'bots' };
 
-  private hostTab = true;
-  private offerCode = '';
+  // Estado online.
+  private roomCode = '';
+  private roomConnected = false;
+  private lastRoomAction: { type: 'create' } | { type: 'join'; code: string } | null = null;
+
   private nextTimer = 0;
 
   constructor(callbacks: UiCallbacks) {
@@ -269,17 +321,12 @@ export class UiShell {
 
     this.show('title');
 
-    // Link de invitación: solo preparamos el aspecto (pestaña UNIRSE + código
-    // pegado). Conectar y mostrar 'online' lo maneja main.ts con su propio
-    // parseo del hash — acá NO se dispara ningún callback.
-    const m = /^#join=(.+)$/.exec(location.hash);
-    if (m) {
-      this.selectTab(false, false);
-      try {
-        (document.getElementById('code-in') as HTMLTextAreaElement).value = decodeURIComponent(m[1]);
-      } catch {
-        // hash malformado: main.ts mostrará el error al intentar conectar
-      }
+    // Link de invitación: solo pre-cargamos el código en el input de UNIRSE.
+    // Navegar a 'online' y unirse lo maneja main.ts con su propio parseo del
+    // hash — acá NO se dispara ningún callback.
+    if (/#room=/i.test(location.hash)) {
+      (document.getElementById('room-code-in') as HTMLInputElement).value = extractRoomCode(location.hash);
+      this.syncJoinInput();
     }
 
     // Diferido a microtask: cuando main.ts recibe este callback, la variable
@@ -307,6 +354,8 @@ export class UiShell {
       const img = document.createElement('img');
       img.src = urls[i] ?? '';
       img.alt = names[i];
+      img.loading = 'lazy';
+      img.draggable = false;
       const label = document.createElement('span');
       label.className = 'lname';
       label.textContent = names[i];
@@ -314,32 +363,14 @@ export class UiShell {
       card.addEventListener('click', () => this.selectLevel(i));
       grid.appendChild(card);
     }
-    const rand = document.createElement('button');
-    rand.className = 'level-card';
-    rand.type = 'button';
-    const q = document.createElement('span');
-    q.className = 'random-thumb';
-    q.textContent = '?';
-    const label = document.createElement('span');
-    label.className = 'lname';
-    label.textContent = 'ALEATORIO';
-    rand.append(q, label);
-    rand.addEventListener('click', () => this.selectLevel('random'));
-    grid.appendChild(rand);
     this.selectLevel(this.selLevel);
   }
 
-  /** Puebla la sección MIS MAPAS del setup con los mapas custom guardados. */
+  /** Puebla las cards de MIS MAPAS dentro de la grilla ARENA. */
   setCustomMaps(maps: SavedMap[]): void {
     this.customMaps = maps.slice();
     const grid = $('custom-grid');
     grid.textContent = '';
-    if (maps.length === 0) {
-      const p = document.createElement('p');
-      p.className = 'custom-empty';
-      p.textContent = 'creá tu primer mapa en el EDITOR';
-      grid.appendChild(p);
-    }
     for (const m of maps) {
       const card = document.createElement('div');
       card.className = 'level-card custom-card';
@@ -398,75 +429,48 @@ export class UiShell {
     this.selectLevel(this.selLevel);
   }
 
-  setOnlineState(state: string, detail?: string): void {
-    const code = $('wstep-code');
-    const paste = $('wstep-paste');
-    const conn = $('wstep-conn');
-    const connStatus = $('conn-status');
-    const errEl = $('online-error');
-    errEl.textContent = '';
+  /**
+   * Estado visual de la pantalla de salas. Ver protocolo en el header.
+   * code: código de sala (solo hace falta pasarlo con 'waiting').
+   */
+  setRoomState(state: string, detail?: string, code?: string): void {
+    if (code) this.roomCode = extractRoomCode(code) || code.toUpperCase();
+    if (state === 'connected') this.roomConnected = true;
+    else if (state === 'idle' || state === 'error') this.roomConnected = false;
 
-    const set = (el: HTMLElement, s: string): void => {
-      el.dataset.state = s;
+    const idle = $('room-idle');
+    const live = $('room-live');
+    const error = $('room-error');
+    const codeBig = $('room-code-big');
+    const copyBtn = $('btn-copy-invite');
+    const spinner = $('room-spinner');
+    const ok = $('room-ok');
+    const statusEl = $('room-status');
+    const cancelBtn = $('btn-room-cancel');
+
+    const view = state === 'idle' ? idle : state === 'error' ? error : live;
+    idle.style.display = view === idle ? '' : 'none';
+    live.style.display = view === live ? '' : 'none';
+    error.style.display = view === error ? '' : 'none';
+    if (view !== live) return;
+
+    const waiting = state === 'waiting';
+    const connected = state === 'connected';
+    codeBig.style.display = waiting ? '' : 'none';
+    copyBtn.style.display = waiting ? '' : 'none';
+    if (waiting) $('room-code-chars').textContent = this.roomCode;
+    spinner.style.display = connected ? 'none' : '';
+    ok.style.display = connected ? '' : 'none';
+    cancelBtn.style.display = connected ? 'none' : '';
+
+    const DEFAULTS: Record<string, string> = {
+      creating: 'creando sala…',
+      waiting: 'esperando rival…',
+      joining: 'buscando la sala…',
+      connecting: 'conectando…',
+      connected: '¡conectados!',
     };
-    const firstStep = this.hostTab ? code : paste;
-    const secondStep = this.hostTab ? paste : code;
-
-    switch (state) {
-      case 'idle':
-        set(firstStep, 'active');
-        set(secondStep, 'idle');
-        set(conn, 'idle');
-        connStatus.textContent = detail ?? 'esperando los pasos anteriores…';
-        break;
-      case 'creating':
-      case 'generating':
-        set(code, 'busy');
-        connStatus.textContent = detail ?? 'generando código…';
-        break;
-      case 'offer-ready':
-      case 'code-ready':
-        set(code, 'done');
-        set(paste, 'active');
-        connStatus.textContent = detail ?? 'código listo — mandáselo al rival';
-        break;
-      case 'answer-ready':
-        set(paste, 'done');
-        set(code, 'done');
-        set(conn, 'busy');
-        connStatus.textContent = detail ?? 'mandale tu respuesta al anfitrión y esperá…';
-        break;
-      case 'connecting':
-        set(code, 'done');
-        set(paste, 'done');
-        set(conn, 'busy');
-        connStatus.textContent = detail ?? 'conectando…';
-        break;
-      case 'waiting':
-        set(conn, 'busy');
-        connStatus.textContent = detail ?? 'esperando al rival…';
-        break;
-      case 'connected':
-        set(code, 'done');
-        set(paste, 'done');
-        set(conn, 'done');
-        connStatus.textContent = detail ?? 'conectados — arranca la partida';
-        break;
-      case 'error': {
-        for (const el of [code, paste, conn]) {
-          if (el.dataset.state === 'busy' || el.dataset.state === 'active') set(el, 'error');
-        }
-        errEl.textContent = detail ?? 'algo salió mal, probá de nuevo';
-        break;
-      }
-      default:
-        connStatus.textContent = detail ?? state;
-    }
-  }
-
-  setOfferCode(code: string): void {
-    this.offerCode = code;
-    (document.getElementById('code-out') as HTMLTextAreaElement).value = code;
+    statusEl.textContent = detail ?? DEFAULTS[state] ?? state;
   }
 
   setLifetimeLine(text: string): void {
@@ -619,28 +623,28 @@ export class UiShell {
     if (this.current === 'results' && screen !== 'results') {
       window.clearInterval(this.nextTimer);
     }
+    if (screen === 'setup') this.applySetupContext();
     this.current = screen;
     for (const [name, el] of this.screens) {
       el.classList.toggle('active', name === screen);
     }
   }
 
+  /** Con sala online conectada, el rival es la otra persona: RIVALES se oculta. */
+  private applySetupContext(): void {
+    $('rival-block').style.display = this.roomConnected ? 'none' : '';
+    $('setup-mode').textContent = this.roomConnected ? 'ONLINE · 1V1 — ELEGÍS VOS LA ARENA' : '';
+  }
+
   private wireTitle(): void {
-    $('btn-solo').addEventListener('click', () => {
-      $('setup-mode').textContent = 'SOLO — VOS CONTRA BOTS';
-      $('bot-diff-row').style.display = '';
-      this.cb.onSolo();
-      this.showAny('setup');
-    });
-    $('btn-local').addEventListener('click', () => {
-      $('bot-diff-row').style.display = 'none';
-      $('setup-mode').textContent = 'LOCAL — 2 EN UN TECLADO';
-      this.cb.onLocal();
+    $('btn-play').addEventListener('click', () => {
+      this.cb.onPlay();
       this.showAny('setup');
     });
     $('btn-online').addEventListener('click', () => {
+      this.setRoomState('idle');
       this.showAny('online');
-      this.selectTab(true, true);
+      this.cb.onOnline();
     });
     $('btn-options').addEventListener('click', () => {
       this.optionsReturnTo = 'title';
@@ -655,40 +659,68 @@ export class UiShell {
   }
 
   private wireSetup(): void {
+    // RIVALES: dos cards; el seg de dificultad vive dentro de la card de bots.
+    const botsCard = $('rival-bots');
+    const humanCard = $('rival-humano');
+    const pickRivals = (r: Rivals): void => {
+      this.rivals = r;
+      botsCard.classList.toggle('selected', r === 'bots');
+      humanCard.classList.toggle('selected', r === 'humano');
+    };
+    botsCard.addEventListener('click', () => pickRivals('bots'));
+    humanCard.addEventListener('click', () => pickRivals('humano'));
+    for (const card of [botsCard, humanCard]) {
+      card.addEventListener('keydown', (e) => {
+        if (e.target === card && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          pickRivals(card === botsCard ? 'bots' : 'humano');
+        }
+      });
+    }
+    for (const btn of $('seg-botdiff').querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        // El click burbujea a la card y selecciona bots solo.
+        this.botDiff = Number(btn.dataset.diff) || 0;
+        for (const b of $('seg-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+      });
+    }
+
+    $('card-random').addEventListener('click', () => this.selectLevel('random'));
+
     for (const btn of $('seg-rounds').querySelectorAll('button')) {
       btn.addEventListener('click', () => {
         this.winTarget = Number(btn.dataset.rounds) || 5;
         for (const b of $('seg-rounds').querySelectorAll('button')) b.classList.toggle('active', b === btn);
       });
     }
-    for (const btn of $('seg-botdiff').querySelectorAll('button')) {
-      btn.addEventListener('click', () => {
-        this.botDiff = Number(btn.dataset.diff) || 0;
-        for (const b of $('seg-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+
+    const modeChips = $('mode-chips').querySelectorAll<HTMLButtonElement>('.mode-chip');
+    for (const chip of modeChips) {
+      chip.addEventListener('click', () => {
+        this.selMode = Number(chip.dataset.mode) || MODE_SUMO;
+        for (const c of modeChips) c.classList.toggle('selected', c === chip);
+        this.renderModeUi();
       });
     }
-    const modeCards = $('mode-grid').querySelectorAll<HTMLButtonElement>('.mode-card');
-    for (const card of modeCards) {
-      card.addEventListener('click', () => {
-        this.selMode = Number(card.dataset.mode) || MODE_SUMO;
-        for (const c of modeCards) c.classList.toggle('selected', c === card);
-        this.renderModeParam();
-      });
-    }
-    this.renderModeParam();
-    $('btn-play').addEventListener('click', () => {
+    this.renderModeUi();
+
+    $('btn-start').addEventListener('click', () => {
       const modeParam = this.currentModeParam();
+      const rivals: Rivals = this.roomConnected ? 'humano' : this.rivals;
       this.lastStart = {
         level: this.selLevel,
         winTarget: this.winTarget,
         mode: this.selMode,
         modeParam,
         botDifficulty: this.botDiff,
+        rivals,
       };
       this.showAny('none');
-      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, this.botDiff);
+      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, this.botDiff, rivals);
     });
-    $('btn-setup-back').addEventListener('click', () => this.showAny('title'));
+    $('btn-setup-back').addEventListener('click', () => {
+      this.showAny(this.roomConnected ? 'online' : 'title');
+    });
   }
 
   /** Parámetro contextual del modo seleccionado (0 si el modo no tiene). */
@@ -697,8 +729,9 @@ export class UiShell {
     return cfg ? (this.modeParamSel[this.selMode] ?? cfg.def) : 0;
   }
 
-  /** Rehace el segmento del parámetro contextual según el modo elegido. */
-  private renderModeParam(): void {
+  /** Rehace descripción + segmento del parámetro según el modo elegido. */
+  private renderModeUi(): void {
+    $('mode-desc').textContent = MODE_DESC[this.selMode] ?? '';
     const row = $('mode-param-row');
     const cfg = MODE_PARAM_CFG[this.selMode];
     if (!cfg) {
@@ -724,19 +757,17 @@ export class UiShell {
   }
 
   private selectLevel(sel: LevelChoice): void {
-    if (typeof sel === 'number' && sel >= this.levelNames.length) sel = 'random';
+    if (typeof sel === 'number' && (sel < 0 || sel >= this.levelNames.length)) sel = 'random';
     if (typeof sel === 'object') {
       const id = sel.custom;
       if (!this.customMaps.some((m) => m.id === id)) sel = 'random';
     }
     this.selLevel = sel;
     const chosen = sel; // const: TS puede narrowear dentro de los callbacks
-    const cards = $('level-grid').querySelectorAll('.level-card');
-    cards.forEach((card, i) => {
-      const isRandom = i === cards.length - 1;
-      const on = typeof chosen === 'object' ? false : isRandom ? chosen === 'random' : chosen === i;
-      card.classList.toggle('selected', on);
-    });
+    $('card-random').classList.toggle('selected', chosen === 'random');
+    $('level-grid')
+      .querySelectorAll('.level-card')
+      .forEach((card, i) => card.classList.toggle('selected', chosen === i));
     const customCards = $('custom-grid').querySelectorAll('.custom-card');
     customCards.forEach((card, i) => {
       const on = typeof chosen === 'object' && this.customMaps[i]?.id === chosen.custom;
@@ -744,72 +775,77 @@ export class UiShell {
     });
   }
 
-  private selectTab(host: boolean, fire: boolean): void {
-    this.hostTab = host;
-    $('tab-crear').classList.toggle('active', host);
-    $('tab-unirse').classList.toggle('active', !host);
+  // -------------------------------------------------------------------
+  // Online (salas)
+  // -------------------------------------------------------------------
 
-    // Reordenar pasos: CREAR = [mi código, pegar respuesta, conexión];
-    // UNIRSE = [pegar código del anfitrión, mi respuesta, conexión].
-    const wizard = $('wizard');
-    const code = $('wstep-code');
-    const paste = $('wstep-paste');
-    const conn = $('wstep-conn');
-    if (host) {
-      wizard.append(code, paste, conn);
-      $('wstep-code-title').textContent = 'Generá tu código';
-      $('wstep-code-hint').textContent = 'Mandáselo al rival por donde quieras.';
-      $('wstep-paste-title').textContent = 'Pegá la respuesta del rival';
-    } else {
-      wizard.append(paste, code, conn);
-      $('wstep-paste-title').textContent = 'Pegá el código del anfitrión';
-      $('wstep-code-title').textContent = 'Tu respuesta';
-      $('wstep-code-hint').textContent = 'Copiala y mandásela al anfitrión.';
-    }
-    (document.getElementById('code-out') as HTMLTextAreaElement).value = '';
-    (document.getElementById('code-in') as HTMLTextAreaElement).value = '';
-    this.offerCode = '';
-    this.setOnlineState('idle');
-    if (fire) this.cb.onOnline(host);
+  /** Normaliza el input de UNIRSE y habilita el botón con 4 chars válidos. */
+  private syncJoinInput(): void {
+    const input = document.getElementById('room-code-in') as HTMLInputElement;
+    const btn = document.getElementById('btn-join-room') as HTMLButtonElement;
+    const code = extractRoomCode(input.value);
+    if (input.value !== code) input.value = code;
+    btn.disabled = !ROOM_CODE_RE.test(code);
   }
 
   private wireOnline(): void {
-    $('tab-crear').addEventListener('click', () => this.selectTab(true, true));
-    $('tab-unirse').addEventListener('click', () => this.selectTab(false, true));
+    const input = document.getElementById('room-code-in') as HTMLInputElement;
+    const joinBtn = document.getElementById('btn-join-room') as HTMLButtonElement;
 
-    $('btn-connect').addEventListener('click', () => {
-      const code = (document.getElementById('code-in') as HTMLTextAreaElement).value.trim();
-      if (!code) {
-        this.setOnlineState('error', 'Pegá un código primero.');
-        return;
-      }
-      this.cb.onConnectClicked(code);
+    input.addEventListener('input', () => this.syncJoinInput());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
     });
 
-    $('btn-copy-code').addEventListener('click', () => {
-      if (!this.offerCode) {
-        this.toast('Todavía no hay código para copiar');
-        return;
-      }
-      void navigator.clipboard.writeText(this.offerCode);
-      this.toast('Código copiado');
-      this.cb.onCopyCode();
+    $('btn-create-room').addEventListener('click', () => {
+      this.lastRoomAction = { type: 'create' };
+      this.setRoomState('creating');
+      this.cb.onCreateRoom();
     });
 
-    $('btn-copy-link').addEventListener('click', () => {
-      if (!this.offerCode) {
-        this.toast('Todavía no hay código para copiar');
-        return;
-      }
-      const link = `${location.origin}${location.pathname}#join=${encodeURIComponent(this.offerCode)}`;
+    joinBtn.addEventListener('click', () => {
+      const code = extractRoomCode(input.value);
+      if (!ROOM_CODE_RE.test(code)) return;
+      this.lastRoomAction = { type: 'join', code };
+      this.setRoomState('joining');
+      this.cb.onJoinRoom(code);
+    });
+
+    $('btn-copy-invite').addEventListener('click', () => {
+      if (!this.roomCode) return;
+      const link = `${location.origin}${location.pathname}#room=${this.roomCode}`;
       void navigator.clipboard.writeText(link);
-      this.toast('Link de invitación copiado');
-      this.cb.onInviteLink();
+      this.toast('Link copiado — mandáselo a tu rival');
+    });
+
+    $('room-code-big').addEventListener('click', () => {
+      if (!this.roomCode) return;
+      void navigator.clipboard.writeText(`TUMBO-${this.roomCode}`);
+      this.toast('Código copiado');
+    });
+
+    $('btn-room-cancel').addEventListener('click', () => {
+      this.setRoomState('idle');
+      this.cb.onCancelOnline();
+    });
+
+    $('btn-room-retry').addEventListener('click', () => {
+      const act = this.lastRoomAction;
+      if (act?.type === 'create') {
+        this.setRoomState('creating');
+        this.cb.onCreateRoom();
+      } else if (act?.type === 'join') {
+        this.setRoomState('joining');
+        this.cb.onJoinRoom(act.code);
+      } else {
+        this.setRoomState('idle');
+      }
     });
 
     $('btn-online-back').addEventListener('click', () => {
+      this.setRoomState('idle');
       this.showAny('title');
-      this.cb.onQuitToTitle();
+      this.cb.onCancelOnline();
     });
   }
 
@@ -823,6 +859,7 @@ export class UiShell {
       this.showAny('options');
     });
     $('btn-quit').addEventListener('click', () => {
+      this.setRoomState('idle');
       this.showAny('title');
       this.cb.onQuitToTitle();
     });
@@ -832,9 +869,10 @@ export class UiShell {
     $('btn-rematch').addEventListener('click', () => {
       this.showAny('none');
       const s = this.lastStart;
-      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty);
+      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty, s.rivals);
     });
     $('btn-results-menu').addEventListener('click', () => {
+      this.setRoomState('idle');
       this.showAny('title');
       this.cb.onQuitToTitle();
     });

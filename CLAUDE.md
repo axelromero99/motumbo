@@ -100,6 +100,25 @@ MALDITO: m0=maldito, m1=ticks). Flags: bit10=maldito. Eventos: 9 DASH_HIT, 10 PA
 Teclas 1-8 atajo de nivel; el START de red lleva [level, resetWins, winTarget, mode,
 modeParam].
 
+## v7: 70 niveles, salas online, poderes
+
+- Niveles 20-69 son PROCEDURALES (`BuildGenerated` en tumbo.c): 6 familias, todo
+  derivado del id con RNG propio (idéntico en cada peer). Spawns por greedy
+  max-min sobre baldosas sin especiales. Radios hasta 13.4m; MAX_PIECES 512.
+- Cada nivel elige el TAMAÑO DE BOLA (0.45-0.9m; tabla en tumbo_init + pick del
+  generador). El radio actual viaja en bits 11-15 de los flags (0.05m/unidad,
+  helper `ballRadiusFrom` en sim.ts); la cámara se auto-ajusta al extent en
+  render.setup.
+- Orbes tipo Bomberman: SUPER (dash ×2.3), TURBO (velocidad acumulable ×1.5 máx),
+  MEGA (crece ×1.55 máx recreando la shape — la masa escala r³). Tipo en el
+  4º float del powerup (1+type) y en `a` de EVT_ORB_SPAWN/PICKUP.
+- Salas online: `web/src/signal.ts` — cliente MQTT 3.1.1 mínimo hecho a mano
+  sobre brokers públicos WSS (EMQX + mosquitto fallback), solo para el handshake
+  (hello→offer→answer); después es P2P puro. Código de 4 chars (`TUMBO-XK42`),
+  link `#room=CODE`. Menú rediseñado: JUGAR/ONLINE/EDITOR/OPCIONES, setup con
+  RIVALES (bots+dificultad | humano), contrato en el doc-header de ui.ts.
+- El tema visual/musical de niveles generados = `level % 20`.
+
 ## Mapas custom (nivel 8)
 
 El mapa es un blob de bytes (layout en `web/src/mapcodec.ts`, espejado en
