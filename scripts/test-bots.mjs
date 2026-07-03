@@ -16,11 +16,15 @@ async function runMatch(seed, level, difficulties) {
   M._tumbo_init(seed, difficulties.length, level);
   for (let p = 0; p < difficulties.length; p++) M._tumbo_set_bot(p, difficulties[p]);
   const evBase = M._tumbo_events_ptr() >> 2;
+  const stateBase = M._tumbo_state_ptr() >> 2;
+  const N = difficulties.length;
 
-  const lastShoved = new Array(difficulties.length).fill(-9999);
+  const lastShoved = new Array(N).fill(-9999);
   const falls = [];
   let winner = -1;
   let endTick = 5400;
+  let scrumTicks = 0;
+  let activeTicks = 0;
 
   for (let t = 0; t < 5400; t++) {
     M._tumbo_step();
@@ -37,9 +41,27 @@ async function runMatch(seed, level, difficulties) {
         endTick = t;
       }
     }
+    // Scrum metric: 3+ living players packed inside a 2.5m radius.
+    if (t > COUNTDOWN && t % 10 === 0) {
+      const alive = [];
+      const mask = M.HEAPF32[stateBase + 1];
+      for (let p = 0; p < N; p++) {
+        if (mask & (1 << p)) {
+          const pb = stateBase + 8 + 8 * p;
+          alive.push([M.HEAPF32[pb], M.HEAPF32[pb + 2]]);
+        }
+      }
+      if (alive.length >= 3) {
+        activeTicks++;
+        const cx = alive.reduce((s, v) => s + v[0], 0) / alive.length;
+        const cz = alive.reduce((s, v) => s + v[1], 0) / alive.length;
+        const packed = alive.filter(([x, z]) => (x - cx) ** 2 + (z - cz) ** 2 < 2.5 * 2.5).length;
+        if (packed >= 3) scrumTicks++;
+      }
+    }
     if (winner !== -1) break;
   }
-  return { falls, winner, endTick };
+  return { falls, winner, endTick, scrumTicks, activeTicks };
 }
 
 console.log('=== supervivencia por dificultad (4 bots iguales) ===');
@@ -48,6 +70,8 @@ for (const diff of [0, 1, 2]) {
   let selfFalls = 0;
   let totalFalls = 0;
   let durations = [];
+  let scrum = 0;
+  let active = 0;
   for (const level of LEVELS) {
     for (const seed of SEEDS) {
       const r = await runMatch(seed, level, [diff, diff, diff, diff]);
@@ -57,13 +81,17 @@ for (const diff of [0, 1, 2]) {
         if (!f.shoved) selfFalls++;
       }
       durations.push(r.endTick - COUNTDOWN);
+      scrum += r.scrumTicks;
+      active += r.activeTicks;
     }
   }
   const avg = (arr) => (arr.reduce((s, v) => s + v, 0) / Math.max(1, arr.length) / 60).toFixed(1);
   const selfPct = ((selfFalls / Math.max(1, totalFalls)) * 100).toFixed(0);
+  const scrumPct = ((scrum / Math.max(1, active)) * 100).toFixed(0);
   console.log(
     `dif ${diff}: primera caída media ${avg(firstFalls)}s tras el ¡TUMBO! · ` +
-      `duración media de ronda ${avg(durations)}s · caídas solas ${selfPct}% (${selfFalls}/${totalFalls})`,
+      `duración media de ronda ${avg(durations)}s · caídas solas ${selfPct}% (${selfFalls}/${totalFalls}) · ` +
+      `scrum ${scrumPct}% del tiempo con 3+ vivos`,
   );
 }
 

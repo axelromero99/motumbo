@@ -234,9 +234,11 @@ typedef struct Bot
 	int difficulty; // 0 easy, 1 medium, 2 hard
 	int think;
 	float tx, tz;	 // steering target
-	bool holdBrace;
+	int braceFor;	 // short parry reaction, in ticks (holding forever deadlocks)
 	bool pulseDash;
 	bool pulseJump;
+	float lastX, lastZ; // position at the previous replan
+	int stuck;			// consecutive replans without real displacement
 } Bot;
 
 static b3WorldId g_world;
@@ -383,9 +385,12 @@ TUMBO_EXPORT void tumbo_set_bot( int slot, int difficulty )
 	g_bots[slot].think = 0;
 	g_bots[slot].tx = 0.0f;
 	g_bots[slot].tz = 0.0f;
-	g_bots[slot].holdBrace = false;
+	g_bots[slot].braceFor = 0;
 	g_bots[slot].pulseDash = false;
 	g_bots[slot].pulseJump = false;
+	g_bots[slot].lastX = 0.0f;
+	g_bots[slot].lastZ = 0.0f;
+	g_bots[slot].stuck = 0;
 }
 
 static void WriteState( void )
@@ -1549,7 +1554,9 @@ static int SupportStateAt( float x, float z )
 	return best;
 }
 
-static void NearestSafeTile( float x, float z, float* outX, float* outZ )
+// `salt` de-clusters bots: without it every fleeing bot converges on the
+// exact same "safest" tile and the fight collapses into a fixed-point scrum.
+static void NearestSafeTile( float x, float z, int salt, float* outX, float* outZ )
 {
 	// Bias toward the centroid of remaining solid ground so bots retreat
 	// inward instead of hugging a doomed rim.
@@ -1586,7 +1593,8 @@ static void NearestSafeTile( float x, float z, float* outX, float* outZ )
 		float dz = tp.z - z;
 		float ex = tp.x - cx;
 		float ez = tp.z - cz;
-		float score = dx * dx + dz * dz + 0.25f * ( ex * ex + ez * ez );
+		float score = dx * dx + dz * dz + 0.25f * ( ex * ex + ez * ez ) +
+					  (float)( ( i * 7 + salt * 13 ) & 7 ) * 0.6f;
 		if ( score < bestScore )
 		{
 			bestScore = score;
@@ -1623,14 +1631,37 @@ static void BotReplan( int slot )
 	Player* p = &g_players[slot];
 	b3Pos pos = b3Body_GetPosition( p->body );
 
-	bot->holdBrace = false;
 	bot->pulseDash = false;
 	bot->pulseJump = false;
+
+	// Stuck detection: barely moved since the last plan while touching rivals
+	// means we're grinding in a scrum instead of playing.
+	float movedX = pos.x - bot->lastX;
+	float movedZ = pos.z - bot->lastZ;
+	bool barelyMoved = movedX * movedX + movedZ * movedZ < 0.8f * 0.8f;
+	int nearby = 0;
+	for ( int j = 0; j < g_playerCount; ++j )
+	{
+		if ( j == slot || !g_players[j].alive )
+		{
+			continue;
+		}
+		b3Pos np = b3Body_GetPosition( g_players[j].body );
+		float ndx = np.x - pos.x;
+		float ndz = np.z - pos.z;
+		if ( ndx * ndx + ndz * ndz < 1.9f * 1.9f )
+		{
+			nearby += 1;
+		}
+	}
+	bot->stuck = ( barelyMoved && nearby > 0 ) ? bot->stuck + 1 : 0;
+	bot->lastX = pos.x;
+	bot->lastZ = pos.z;
 
 	// Priority 1: don't be standing on doomed ground.
 	if ( SupportStateAt( pos.x, pos.z ) < 2 )
 	{
-		NearestSafeTile( pos.x, pos.z, &bot->tx, &bot->tz );
+		NearestSafeTile( pos.x, pos.z, slot, &bot->tx, &bot->tz );
 		if ( bot->difficulty >= 1 && p->jumpCooldown == 0 )
 		{
 			bot->pulseJump = true;
@@ -1693,7 +1724,7 @@ static void BotReplan( int slot )
 			{
 				// Run away, but toward safe ground.
 				float d = sqrtf( d2c );
-				NearestSafeTile( pos.x + dx / d * 4.0f, pos.z + dz / d * 4.0f, &bot->tx, &bot->tz );
+				NearestSafeTile( pos.x + dx / d * 4.0f, pos.z + dz / d * 4.0f, slot, &bot->tx, &bot->tz );
 				return;
 			}
 		}
@@ -1712,8 +1743,10 @@ static void BotReplan( int slot )
 		}
 	}
 
-	// Priority 3: hunt the nearest living rival.
+	// Priority 3: hunt a rival. A per-pair bias spreads the bots across
+	// different victims instead of everyone dog-piling the same one.
 	int target = -1;
+	float bestScore = 1e30f;
 	float bestD2 = 1e30f;
 	for ( int j = 0; j < g_playerCount; ++j )
 	{
@@ -1725,8 +1758,10 @@ static void BotReplan( int slot )
 		float dx = op.x - pos.x;
 		float dz = op.z - pos.z;
 		float d2 = dx * dx + dz * dz;
-		if ( d2 < bestD2 )
+		float score = d2 * ( 1.0f + 0.15f * (float)( ( slot * 5 + j * 3 ) & 3 ) );
+		if ( score < bestScore )
 		{
+			bestScore = score;
 			bestD2 = d2;
 			target = j;
 		}
@@ -1746,7 +1781,7 @@ static void BotReplan( int slot )
 	if ( bot->difficulty == 2 )
 	{
 		float sx, sz;
-		NearestSafeTile( pos.x, pos.z, &sx, &sz );
+		NearestSafeTile( pos.x, pos.z, slot, &sx, &sz );
 		bot->tx += ( sx - bot->tx ) * 0.15f;
 		bot->tz += ( sz - bot->tz ) * 0.15f;
 	}
@@ -1765,34 +1800,77 @@ static void BotReplan( int slot )
 		{
 			safe = safe || ( BotRng() & 3u ) == 0u;
 		}
-		bool eager = bot->difficulty == 2 ? ( BotRng() & 1u ) == 0u : ( BotRng() & 3u ) == 0u;
+		bool eager = bot->difficulty == 2 ? ( BotRng() % 3u ) != 0u : ( BotRng() & 3u ) == 0u;
 		if ( safe && ( lethal || eager ) )
 		{
 			bot->pulseDash = true;
 		}
 	}
 
-	// Brace if the rival just dashed at us (medium+).
-	if ( bot->difficulty >= 1 && dist < 3.2f &&
-		 g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
+	// Sumo, not wrestling: chest-to-chest without attacking is wasted time
+	// and it's how three bots end up grinding on one tile. Kite out, reset,
+	// come back in swinging.
+	if ( dist < 2.2f && !bot->pulseDash && dist > 0.01f )
 	{
-		bot->holdBrace = true;
-		bot->pulseDash = false;
+		float bx = ( pos.x - op.x ) / dist;
+		float bz = ( pos.z - op.z ) / dist;
+		float kx = pos.x + bx * 2.8f;
+		float kz = pos.z + bz * 2.8f;
+		if ( SupportStateAt( kx, kz ) >= 1 )
+		{
+			bot->tx = kx;
+			bot->tz = kz;
+		}
+		else
+		{
+			NearestSafeTile( kx, kz, slot, &bot->tx, &bot->tz );
+		}
+		// A short brace still answers an incoming dash while backing off.
+		if ( bot->difficulty >= 1 && g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
+		{
+			bot->braceFor = 10;
+		}
+		return;
 	}
 
-	// Dodge a spinning beam: jump when an arm is about to sweep through.
-	if ( g_hazardCount > 0 && g_hazards[0].type == HAZARD_BEAM && p->jumpCooldown == 0 )
+	// Scrum breaker: locked in a shoving match, either blast out with a
+	// point-blank dash (only if WE land on solid ground) or flank sideways.
+	if ( bot->stuck >= 3 && dist > 0.01f )
 	{
-		b3Quat q = b3Body_GetRotation( g_hazards[0].body );
-		float yaw = 2.0f * atan2f( q.v.y, q.s );
-		float mine = atan2f( pos.z, pos.x );
-		float d1 = WrapAngle( mine - yaw );
-		float d2 = WrapAngle( mine - yaw - 3.14159265f );
-		float d = fabsf( d1 ) < fabsf( d2 ) ? fabsf( d1 ) : fabsf( d2 );
-		if ( d < 0.55f )
+		float dirx = ( op.x - pos.x ) / dist;
+		float dirz = ( op.z - pos.z ) / dist;
+		if ( p->dashCooldown == 0 && BotDashSafe( pos, dirx, dirz ) )
 		{
-			bot->pulseJump = true;
+			bot->pulseDash = true;
 		}
+		else
+		{
+			// Ground flank only: hopping mid-scrum leaves the bot airborne
+			// and helpless right where the shoving is happening.
+			float side = ( ( slot + (int)( g_frame / 90 ) ) & 1 ) ? 1.0f : -1.0f;
+			float fxp = pos.x - dirz * 2.6f * side;
+			float fzp = pos.z + dirx * 2.6f * side;
+			if ( SupportStateAt( fxp, fzp ) >= 1 )
+			{
+				bot->tx = fxp;
+				bot->tz = fzp;
+			}
+			else
+			{
+				NearestSafeTile( fxp, fzp, slot, &bot->tx, &bot->tz );
+			}
+		}
+		return;
+	}
+
+	// Parry reaction (medium+): a SHORT brace against an incoming dash.
+	// Holding it longer than the parry window just anchors the bot in place —
+	// three bots doing that at each other is a deadlock, not a fight.
+	if ( bot->difficulty >= 1 && nearby <= 1 && dist < 3.2f &&
+		 g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
+	{
+		bot->braceFor = 10;
+		bot->pulseDash = false;
 	}
 }
 
@@ -1840,18 +1918,30 @@ static void StepBots( void )
 		float speed2 = vel.x * vel.x + vel.z * vel.z;
 		uint32_t word = 0;
 
+		// Predicted velocity: standing on a boost pad accelerates us beyond
+		// current momentum, so project that in before checking for the void.
+		float pvx = vel.x;
+		float pvz = vel.z;
+		int under = TileIndexAt( pos.x, pos.z );
+		if ( under >= 0 && g_pieces[under].special == SPECIAL_BOOST )
+		{
+			pvx += g_pieces[under].dirX * 3.0f;
+			pvz += g_pieces[under].dirZ * 3.0f;
+			speed2 = pvx * pvx + pvz * pvz;
+		}
+
 		// EMERGENCY: our own momentum is carrying us over the void. Brake
 		// before anything else — this is what keeps bots alive.
-		float fx = pos.x + vel.x * lookahead[d];
-		float fz = pos.z + vel.z * lookahead[d];
+		float fx = pos.x + pvx * lookahead[d];
+		float fz = pos.z + pvz * lookahead[d];
 		bool slidingToVoid = speed2 > 3.0f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
 
 		// ...unless there is ground beyond the gap and we can jump it.
 		if ( slidingToVoid && speed2 > 16.0f && g_players[i].jumpCooldown == 0 )
 		{
 			float sp = sqrtf( speed2 );
-			float jx = pos.x + vel.x / sp * 3.4f;
-			float jz = pos.z + vel.z / sp * 3.4f;
+			float jx = pos.x + pvx / sp * 3.4f;
+			float jz = pos.z + pvz / sp * 3.4f;
 			if ( SupportStateAt( jx, jz ) >= 1 )
 			{
 				word |= IN_JUMP;
@@ -1915,10 +2005,50 @@ static void StepBots( void )
 			}
 		}
 
-		if ( bot->holdBrace )
+		// Hazard dodging, every tick: jump over beam arms about to sweep
+		// through, and hop away from pistons/orbiters closing in.
+		if ( g_players[i].jumpCooldown == 0 )
 		{
-			word = IN_BRACE;
+			for ( int hz = 0; hz < g_hazardCount; ++hz )
+			{
+				Hazard* h = &g_hazards[hz];
+				if ( h->type == HAZARD_BEAM )
+				{
+					// Jump only when an arm actually arrives within ~0.35s —
+					// hopping nonstop leaves the bot airborne and helpless.
+					b3Vec3 av = b3Body_GetAngularVelocity( h->body );
+					float w = av.y;
+					if ( fabsf( w ) > 0.05f && pos.x * pos.x + pos.z * pos.z < h->halfExtents.x * h->halfExtents.x )
+					{
+						b3Quat q = b3Body_GetRotation( h->body );
+						float yaw = 2.0f * atan2f( q.v.y, q.s );
+						float mine = atan2f( pos.z, pos.x );
+						float gap = ( mine - yaw ) * ( w > 0.0f ? 1.0f : -1.0f );
+						gap = fmodf( gap + 31.4159265f, 3.14159265f ); // two arms, period pi
+						if ( gap / fabsf( w ) < 0.35f )
+						{
+							word |= IN_JUMP;
+						}
+					}
+				}
+				else
+				{
+					b3Pos hp = b3Body_GetPosition( h->body );
+					float rx = pos.x - hp.x;
+					float rz = pos.z - hp.z;
+					float reach = ( h->halfExtents.x > h->halfExtents.z ? h->halfExtents.x : h->halfExtents.z ) + 1.4f;
+					if ( rx * rx + rz * rz < reach * reach )
+					{
+						b3Vec3 hv = b3Body_GetLinearVelocity( h->body );
+						if ( hv.x * rx + hv.z * rz > 0.4f )
+						{
+							word |= IN_JUMP;
+						}
+					}
+				}
+			}
 		}
+
 		if ( bot->pulseDash )
 		{
 			word |= IN_DASH;
@@ -1928,6 +2058,12 @@ static void StepBots( void )
 		{
 			word |= IN_JUMP;
 			bot->pulseJump = false;
+		}
+		// Short parry reaction beats everything else this tick.
+		if ( bot->braceFor > 0 )
+		{
+			bot->braceFor -= 1;
+			word = IN_BRACE;
 		}
 		g_inputs[i] = word;
 	}
