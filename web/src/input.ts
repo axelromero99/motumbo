@@ -7,6 +7,7 @@ export const IN_LEFT = 4;
 export const IN_RIGHT = 8;
 export const IN_DASH = 16;
 export const IN_JUMP = 32;
+export const IN_BRACE = 64;
 
 const P1_KEYS: Record<string, number> = {
   KeyW: IN_UP,
@@ -15,6 +16,7 @@ const P1_KEYS: Record<string, number> = {
   KeyD: IN_RIGHT,
   ShiftLeft: IN_DASH,
   Space: IN_JUMP,
+  ControlLeft: IN_BRACE,
 };
 
 const P2_KEYS: Record<string, number> = {
@@ -24,12 +26,14 @@ const P2_KEYS: Record<string, number> = {
   ArrowRight: IN_RIGHT,
   ShiftRight: IN_DASH,
   ControlRight: IN_JUMP,
+  Period: IN_BRACE,
 };
 
 export class LocalInput {
   readonly words = new Uint32Array(8);
   onReset: (() => void) | null = null;
   onSelectLevel: ((level: number) => void) | null = null;
+  onPause: (() => void) | null = null;
 
   constructor() {
     window.addEventListener('keydown', (e) => {
@@ -39,7 +43,11 @@ export class LocalInput {
       }
       if (e.code.startsWith('Digit')) {
         const n = Number(e.code.slice(5));
-        if (n >= 1 && n <= 4) this.onSelectLevel?.(n - 1);
+        if (n >= 1 && n <= 8) this.onSelectLevel?.(n - 1);
+        return;
+      }
+      if (e.code === 'Escape') {
+        this.onPause?.();
         return;
       }
       if (this.apply(e.code, true)) e.preventDefault();

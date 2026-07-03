@@ -1,10 +1,25 @@
 // Synthesized SFX via WebAudio — zero assets, everything is oscillators,
 // noise buffers and envelopes. Volumes are pre-mixed per effect.
+// Graph: sfx bus -> master gain -> compressor -> destination. The music
+// engine attaches to the master gain via `context`/`musicDestination`.
 
 export class AudioEngine {
+  onUnlock: (() => void) | null = null;
+
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  private sfx: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private sfxVolume = 1;
+
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** Where the music engine should connect its own bus. */
+  get musicDestination(): AudioNode | null {
+    return this.master;
+  }
 
   /** Must be called from a user gesture to satisfy autoplay policies. */
   unlock(): void {
@@ -14,7 +29,10 @@ export class AudioEngine {
       comp.threshold.value = -18;
       comp.ratio.value = 6;
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.5;
+      this.master.gain.value = 1;
+      this.sfx = this.ctx.createGain();
+      this.sfx.gain.value = this.sfxVolume * 0.5;
+      this.sfx.connect(this.master);
       this.master.connect(comp);
       comp.connect(this.ctx.destination);
 
@@ -22,12 +40,24 @@ export class AudioEngine {
       this.noiseBuffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
       const data = this.noiseBuffer.getChannelData(0);
       for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      this.onUnlock?.();
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
+  /** Master volume for everything (music included). 0..1 */
+  setMasterVolume(v: number): void {
+    if (this.master) this.master.gain.value = v;
+  }
+
+  /** SFX-only volume. 0..1 */
+  setSfxVolume(v: number): void {
+    this.sfxVolume = v;
+    if (this.sfx) this.sfx.gain.value = v * 0.5;
+  }
+
   private tone(f0: number, f1: number, dur: number, type: OscillatorType, vol: number, delay = 0): void {
-    if (!this.ctx || !this.master) return;
+    if (!this.ctx || !this.sfx) return;
     const t = this.ctx.currentTime + delay;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
@@ -37,13 +67,13 @@ export class AudioEngine {
     gain.gain.setValueAtTime(vol, t);
     gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     osc.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.sfx);
     osc.start(t);
     osc.stop(t + dur + 0.02);
   }
 
   private noise(dur: number, freq: number, q: number, vol: number, freqEnd?: number): void {
-    if (!this.ctx || !this.master || !this.noiseBuffer) return;
+    if (!this.ctx || !this.sfx || !this.noiseBuffer) return;
     const t = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
@@ -58,7 +88,7 @@ export class AudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(filter);
     filter.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.sfx);
     src.start(t);
     src.stop(t + dur + 0.02);
   }
@@ -76,6 +106,19 @@ export class AudioEngine {
 
   jump(): void {
     this.tone(240, 480, 0.14, 'sine', 0.22);
+  }
+
+  /** Metallic clank: a perfectly timed brace bounced a dash back. */
+  parry(): void {
+    this.tone(1800, 1200, 0.12, 'square', 0.25);
+    this.tone(2700, 2400, 0.08, 'triangle', 0.18, 0.01);
+    this.noise(0.09, 3500, 3, 0.2, 1500);
+  }
+
+  /** Subtle two-tone blip when the local player's dash comes off cooldown. */
+  dashReady(): void {
+    this.tone(660, 660, 0.05, 'square', 0.07);
+    this.tone(990, 990, 0.07, 'square', 0.07, 0.05);
   }
 
   tileWarn(): void {
@@ -96,6 +139,11 @@ export class AudioEngine {
     this.tone(1320, 1320, 0.12, 'sine', 0.1, 0.09);
   }
 
+  /** knocked=true when the orb was smacked out of a carrier's hands. */
+  orbLoose(): void {
+    this.tone(1320, 660, 0.18, 'square', 0.14);
+  }
+
   orbPickup(): void {
     this.tone(660, 660, 0.09, 'square', 0.14);
     this.tone(880, 880, 0.09, 'square', 0.14, 0.08);
@@ -104,6 +152,10 @@ export class AudioEngine {
 
   countdown(final: boolean): void {
     this.tone(final ? 880 : 440, final ? 880 : 440, final ? 0.35 : 0.12, 'square', 0.18);
+  }
+
+  uiClick(): void {
+    this.tone(520, 520, 0.05, 'square', 0.08);
   }
 
   roundEnd(): void {

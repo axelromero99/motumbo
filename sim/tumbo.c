@@ -4,6 +4,7 @@
 // peers stay bit-identical as long as they feed the same inputs.
 
 #include <box3d/box3d.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -17,7 +18,7 @@
 #define MAX_PLAYERS 8
 #define MAX_PIECES 128
 #define MAX_HAZARDS 2
-#define LEVEL_COUNT 4
+#define LEVEL_COUNT 8
 
 #define TICK_DT ( 1.0f / 60.0f )
 #define SUBSTEPS 4
@@ -43,6 +44,16 @@
 #define MIN_STANDING_PIECES 3
 #define COUNTDOWN_TICKS 180
 
+// Feel: inputs pressed slightly early or late still count.
+#define INPUT_BUFFER_TICKS 6
+#define COYOTE_TICKS 6
+
+// Brace: hold to anchor. Blocks your own actions, brakes hard, and blunts
+// incoming dash hits. Brace started within the parry window reflects them.
+#define BRACE_BRAKE_GAIN 8.0f
+#define BRACE_HIT_FACTOR 0.35f
+#define PARRY_WINDOW 8
+
 // Dash-hit bonus: a recent dasher transfers extra knockback on contact.
 #define DASH_HIT_WINDOW 10
 #define DASH_HIT_KNOCKBACK 0.5f
@@ -59,10 +70,12 @@
 #define IN_RIGHT 8u
 #define IN_DASH 16u
 #define IN_JUMP 32u
+#define IN_BRACE 64u
 
 // State buffer layout (floats):
 //   header[8]: frame, aliveMask, playerCount, pieceCount, winner, levelId, hazardCount, powerupActive
-//   per player[8]:  x y z qx qy qz qw flags   (flags: 1 alive, 2 dash ready, 4 has power)
+//   per player[8]:  x y z qx qy qz qw flags
+//     flags: bit0 alive, bit1 dash ready, bit2 has power, bits3-8 dash cooldown ticks, bit9 braced
 //   per piece[8]:   x y z qx qy qz qw state   (0 gone, 1 static, 2 falling, 3 warning)
 //   per hazard[12]: x y z qx qy qz qw sx sy sz type reserved
 //   powerup[4]:     x y z active
@@ -70,12 +83,36 @@
 #define STATE_STRIDE 8
 #define HAZARD_STRIDE 12
 
+#define FLAG_ALIVE 1
+#define FLAG_DASH_READY 2
+#define FLAG_HAS_POWER 4
+#define FLAG_CD_SHIFT 3
+#define FLAG_BRACED 512
+
 enum
 {
 	PIECE_GONE = 0,
 	PIECE_STATIC = 1,
 	PIECE_FALLING = 2,
 	PIECE_WARNING = 3,
+};
+
+enum
+{
+	LEVEL_CLASICA = 0,
+	LEVEL_ANILLO = 1,
+	LEVEL_PUENTES = 2,
+	LEVEL_RULETA = 3,
+	LEVEL_PIRAMIDE = 4,
+	LEVEL_HERRADURA = 5,
+	LEVEL_PASARELA = 6,
+	LEVEL_TARIMAS = 7,
+};
+
+enum
+{
+	HAZARD_BEAM = 0,
+	HAZARD_PISTON = 1,
 };
 
 // Gameplay events for the presentation layer (sound, particles, camera).
@@ -88,28 +125,27 @@ enum
 	EVT_TILE_DROP = 3,	 // tile starts falling
 	EVT_TILE_WARN = 4,	 // tile starts shaking
 	EVT_FALL = 5,		 // b = eliminated player index
-	EVT_ORB_SPAWN = 6,	 //
+	EVT_ORB_SPAWN = 6,	 // a = 1 if knocked loose from a carrier
 	EVT_ORB_PICKUP = 7,	 // b = player index
 	EVT_ROUND_END = 8,	 // a = winner (-2 draw)
+	EVT_DASH_HIT = 9,	 // a = attacker, b = victim
+	EVT_PARRY = 10,		 // a = attacker (reflected), b = parrier
 };
 
 #define MAX_EVENTS 32
 #define EVENT_FLOATS 6
 
-enum
-{
-	LEVEL_CLASICA = 0,
-	LEVEL_ANILLO = 1,
-	LEVEL_PUENTES = 2,
-	LEVEL_RULETA = 3,
-};
-
 typedef struct Player
 {
 	b3BodyId body;
 	b3Vec3 facing;
+	uint32_t prevIn;
 	int dashCooldown;
 	int jumpCooldown;
+	int jumpBuffer;
+	int dashBuffer;
+	int coyote;
+	int braceTicks;
 	bool hasPower;
 	bool alive;
 } Player;
@@ -118,8 +154,8 @@ typedef struct Piece
 {
 	b3BodyId body;
 	int state;
-	int timer;		// ticks left in WARNING before dropping
-	int priority;	// crumble group, lower falls first
+	int timer;	   // ticks left in WARNING before dropping
+	int priority;  // crumble group, lower falls first
 } Piece;
 
 typedef struct Hazard
@@ -136,10 +172,24 @@ typedef struct Powerup
 	uint32_t nextEventTick;
 } Powerup;
 
+// Deterministic bot: reads sim state, writes its input word. Costs zero
+// bytes on the wire — in lockstep both peers run the same bot code.
+typedef struct Bot
+{
+	bool active;
+	int difficulty; // 0 easy, 1 medium, 2 hard
+	int think;
+	float tx, tz;	 // steering target
+	bool holdBrace;
+	bool pulseDash;
+	bool pulseJump;
+} Bot;
+
 static b3WorldId g_world;
 static Player g_players[MAX_PLAYERS];
 static Piece g_pieces[MAX_PIECES];
 static Hazard g_hazards[MAX_HAZARDS];
+static Bot g_bots[MAX_PLAYERS];
 static Powerup g_powerup;
 static int g_playerCount;
 static int g_pieceCount;
@@ -174,16 +224,29 @@ static void PushEvent( int type, float x, float y, float z, float a, float b )
 	g_eventCount += 1;
 }
 
-// PCG32 — deterministic RNG (crumble shuffle, power-up placement).
+// PCG32 — two independent deterministic streams: one for world decisions
+// (crumble shuffle, orb placement), one for bot noise, so enabling bots
+// never perturbs the level/orb stream.
 static uint64_t g_rngState;
+static uint64_t g_botRngState;
 
-static uint32_t RngNext( void )
+static uint32_t PcgNext( uint64_t* state )
 {
-	uint64_t old = g_rngState;
-	g_rngState = old * 6364136223846793005ULL + 1442695040888963407ULL;
+	uint64_t old = *state;
+	*state = old * 6364136223846793005ULL + 1442695040888963407ULL;
 	uint32_t xorshifted = (uint32_t)( ( ( old >> 18u ) ^ old ) >> 27u );
 	uint32_t rot = (uint32_t)( old >> 59u );
 	return ( xorshifted >> rot ) | ( xorshifted << ( ( 32u - rot ) & 31u ) );
+}
+
+static uint32_t RngNext( void )
+{
+	return PcgNext( &g_rngState );
+}
+
+static uint32_t BotRng( void )
+{
+	return PcgNext( &g_botRngState );
 }
 
 TUMBO_EXPORT uint32_t* tumbo_inputs_ptr( void )
@@ -221,6 +284,24 @@ TUMBO_EXPORT int tumbo_countdown_ticks( void )
 	return COUNTDOWN_TICKS;
 }
 
+// Enable a deterministic bot on a player slot. Call between tumbo_init and
+// the first tumbo_step, identically on every lockstep peer.
+TUMBO_EXPORT void tumbo_set_bot( int slot, int difficulty )
+{
+	if ( slot < 0 || slot >= g_playerCount )
+	{
+		return;
+	}
+	g_bots[slot].active = true;
+	g_bots[slot].difficulty = difficulty < 0 ? 0 : ( difficulty > 2 ? 2 : difficulty );
+	g_bots[slot].think = 0;
+	g_bots[slot].tx = 0.0f;
+	g_bots[slot].tz = 0.0f;
+	g_bots[slot].holdBrace = false;
+	g_bots[slot].pulseDash = false;
+	g_bots[slot].pulseJump = false;
+}
+
 static void WriteState( void )
 {
 	g_state[0] = (float)g_frame;
@@ -253,7 +334,10 @@ static void WriteState( void )
 		out[4] = q.v.y;
 		out[5] = q.v.z;
 		out[6] = q.s;
-		int flags = ( p->alive ? 1 : 0 ) | ( p->dashCooldown == 0 ? 2 : 0 ) | ( p->hasPower ? 4 : 0 );
+		int cd = p->dashCooldown > 63 ? 63 : p->dashCooldown;
+		int flags = ( p->alive ? FLAG_ALIVE : 0 ) | ( p->dashCooldown == 0 ? FLAG_DASH_READY : 0 ) |
+					( p->hasPower ? FLAG_HAS_POWER : 0 ) | ( cd << FLAG_CD_SHIFT ) |
+					( p->braceTicks > 0 ? FLAG_BRACED : 0 );
 		out[7] = (float)flags;
 		out += STATE_STRIDE;
 	}
@@ -299,7 +383,7 @@ static void WriteState( void )
 // Level construction
 // ---------------------------------------------------------------------------
 
-static void AddPiece( float cx, float cz, int priority, const b3BoxHull* hull )
+static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxHull* hull )
 {
 	if ( g_pieceCount >= MAX_PIECES )
 	{
@@ -308,7 +392,7 @@ static void AddPiece( float cx, float cz, int priority, const b3BoxHull* hull )
 
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_staticBody;
-	bodyDef.position = ( b3Pos ){ cx, -PIECE_HY, cz };
+	bodyDef.position = ( b3Pos ){ cx, topY - PIECE_HY, cz };
 	b3BodyId body = b3CreateBody( g_world, &bodyDef );
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
@@ -372,17 +456,22 @@ static void ShuffleCrumbleOrder( void )
 	}
 }
 
-static void AddBeamHazard( float halfLength, float angularSpeed )
+// Kinematic hazard. Created inert: StepHazards drives velocities only after
+// the countdown, so nothing sweeps through frozen players at round start.
+static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type )
 {
+	if ( g_hazardCount >= MAX_HAZARDS )
+	{
+		return;
+	}
+
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_kinematicBody;
-	bodyDef.position = ( b3Pos ){ 0.0f, 0.95f, 0.0f };
-	bodyDef.angularVelocity = ( b3Vec3 ){ 0.0f, angularSpeed, 0.0f };
+	bodyDef.position = ( b3Pos ){ pos.x, pos.y, pos.z };
 	bodyDef.enableSleep = false;
 	b3BodyId body = b3CreateBody( g_world, &bodyDef );
 
-	b3Vec3 halfExtents = { halfLength, 0.3f, 0.32f };
-	b3BoxHull hull = b3MakeBoxHull( halfExtents.x, halfExtents.y, halfExtents.z );
+	b3BoxHull hull = b3MakeBoxHull( half.x, half.y, half.z );
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.2f;
 	shapeDef.baseMaterial.restitution = 0.4f;
@@ -391,8 +480,8 @@ static void AddBeamHazard( float halfLength, float angularSpeed )
 	b3CreateHullShape( body, &shapeDef, &hull.base );
 
 	g_hazards[g_hazardCount].body = body;
-	g_hazards[g_hazardCount].halfExtents = halfExtents;
-	g_hazards[g_hazardCount].type = 0;
+	g_hazards[g_hazardCount].halfExtents = half;
+	g_hazards[g_hazardCount].type = type;
 	g_hazardCount += 1;
 }
 
@@ -411,14 +500,14 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			{
 				if ( d2 <= 6.0f * 6.0f )
 				{
-					AddPiece( cx, cz, 0, hull );
+					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
 			}
 			else if ( level == LEVEL_ANILLO )
 			{
 				if ( d2 <= 7.2f * 7.2f && d2 >= 2.9f * 2.9f )
 				{
-					AddPiece( cx, cz, 0, hull );
+					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
 			}
 			else if ( level == LEVEL_PUENTES )
@@ -435,7 +524,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 
 				if ( inCenter )
 				{
-					AddPiece( cx, cz, d2 > 1.4f * 1.4f ? 3 : 4, hull );
+					AddPiece( cx, cz, 0.0f, d2 > 1.4f * 1.4f ? 3 : 4, hull );
 				}
 				else if ( inIsland )
 				{
@@ -447,44 +536,148 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 							best = dc2[k];
 						}
 					}
-					AddPiece( cx, cz, best > 1.3f * 1.3f ? 1 : 2, hull );
+					AddPiece( cx, cz, 0.0f, best > 1.3f * 1.3f ? 1 : 2, hull );
 				}
 				else if ( onBridge )
 				{
-					AddPiece( cx, cz, 0, hull );
+					AddPiece( cx, cz, 0.0f, 0, hull );
 				}
 			}
-			else // LEVEL_RULETA
+			else if ( level == LEVEL_RULETA )
 			{
 				if ( d2 <= 6.5f * 6.5f )
 				{
-					AddPiece( cx, cz, 0, hull );
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_PIRAMIDE )
+			{
+				// Three concentric square terraces; king of the hill.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				int m = ax > az ? ax : az;
+				if ( m <= 4 )
+				{
+					float h = m <= 1 ? 1.6f : ( m == 2 ? 0.8f : 0.0f );
+					int prio = m >= 3 ? 0 : ( m == 2 ? 1 : 2 );
+					AddPiece( cx, cz, h, prio, hull );
+				}
+			}
+			else if ( level == LEVEL_HERRADURA )
+			{
+				// Ring with an opening at -Z; the collapse wave sweeps from
+				// one horn of the U to the other. Push rivals INTO the wave.
+				if ( d2 <= 7.4f * 7.4f && d2 >= 3.0f * 3.0f && !( cz < -2.0f && ( cx < 2.3f && cx > -2.3f ) ) )
+				{
+					float rel = fmodf( atan2f( cz, cx ) + 3.14159265f * 0.5f + 6.2831853f, 6.2831853f );
+					AddPiece( cx, cz, 0.0f, (int)( rel * 10.0f ), hull );
+				}
+			}
+			else if ( level == LEVEL_PASARELA )
+			{
+				// 1D corridor duel with dodge alcoves; collapses inward from
+				// both ends while pistons sweep the lane.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				bool corridor = ax <= 5 && az <= 1;
+				bool alcove = ax == 2 && az == 2;
+				if ( corridor || alcove )
+				{
+					AddPiece( cx, cz, 0.0f, 5 - ax, hull );
+				}
+			}
+			else // LEVEL_TARIMAS
+			{
+				// Archipelago of pads split by exactly one-tile gaps; pads
+				// sink in a fixed, learnable order. Central plaza dies last.
+				int prio = -1;
+				float h = 0.0f;
+				if ( gx >= -1 && gx <= 1 && gz >= -1 && gz <= 1 )
+				{
+					prio = 5;
+				}
+				else if ( gx >= 3 && gx <= 4 && gz >= -1 && gz <= 1 )
+				{
+					prio = 0;
+					h = 0.8f;
+				}
+				else if ( gx >= -4 && gx <= -3 && gz >= -1 && gz <= 1 )
+				{
+					prio = 1;
+					h = 0.8f;
+				}
+				else if ( gx >= -1 && gx <= 1 && gz >= 3 && gz <= 4 )
+				{
+					prio = 2;
+				}
+				else if ( gx >= -1 && gx <= 1 && gz >= -4 && gz <= -3 )
+				{
+					prio = 3;
+				}
+				else if ( gx >= 3 && gx <= 4 && gz >= 3 && gz <= 4 )
+				{
+					prio = 4;
+					h = 0.8f;
+				}
+				if ( prio >= 0 )
+				{
+					AddPiece( cx, cz, h, prio, hull );
 				}
 			}
 		}
 	}
 
-	if ( level == LEVEL_RULETA )
+	switch ( level )
 	{
-		ShuffleCrumbleOrder();
-		AddBeamHazard( 5.8f, 0.9f );
-		g_crumbleStart = 420;
-		g_crumbleInterval = 35;
-	}
-	else
-	{
-		SortCrumbleOrder();
-		g_crumbleStart = level == LEVEL_PUENTES ? 480 : 600;
-		g_crumbleInterval = level == LEVEL_PUENTES ? 40 : 50;
+		case LEVEL_RULETA:
+			ShuffleCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 5.8f, 0.3f, 0.32f }, HAZARD_BEAM );
+			g_crumbleStart = 420;
+			g_crumbleInterval = 35;
+			break;
+		case LEVEL_PIRAMIDE:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 30;
+			break;
+		case LEVEL_HERRADURA:
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 25;
+			break;
+		case LEVEL_PASARELA:
+			SortCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ -3.0f, 0.5f, -2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
+			AddBoxHazard( ( b3Vec3 ){ 3.0f, 0.5f, 2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
+			g_crumbleStart = 540;
+			g_crumbleInterval = 45;
+			break;
+		case LEVEL_TARIMAS:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 35;
+			break;
+		case LEVEL_PUENTES:
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 40;
+			break;
+		default:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 50;
+			break;
 	}
 }
 
-static void SpawnPoint( int level, int index, float* outX, float* outZ )
+static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
 {
 	static const float dirs[MAX_PLAYERS][2] = {
 		{ 1.0f, 0.0f },	  { -1.0f, 0.0f },		{ 0.0f, 1.0f },		  { 0.0f, -1.0f },
 		{ 0.7071f, 0.7071f }, { -0.7071f, -0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, 0.7071f },
 	};
+
+	*outY = 0.0f;
 
 	if ( level == LEVEL_PUENTES )
 	{
@@ -499,6 +692,54 @@ static void SpawnPoint( int level, int index, float* outX, float* outZ )
 			*outX = 1.5f * dirs[index][0];
 			*outZ = 1.5f * dirs[index][1];
 		}
+		return;
+	}
+
+	if ( level == LEVEL_PIRAMIDE )
+	{
+		// Corners of the low ring, then edge midpoints.
+		static const float corners[MAX_PLAYERS][2] = {
+			{ 1.0f, 1.0f }, { -1.0f, -1.0f }, { 1.0f, -1.0f }, { -1.0f, 1.0f },
+			{ 1.0f, 0.0f }, { -1.0f, 0.0f },  { 0.0f, 1.0f },	{ 0.0f, -1.0f },
+		};
+		*outX = 6.0f * corners[index][0];
+		*outZ = 6.0f * corners[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_HERRADURA )
+	{
+		// Around the U, never inside the opening (which faces -Z).
+		static const float ring[MAX_PLAYERS][2] = {
+			{ 1.0f, 0.0f },		  { -1.0f, 0.0f },		 { 0.0f, 1.0f },	   { 0.7071f, -0.7071f },
+			{ -0.7071f, -0.7071f }, { 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.3827f, 0.9239f },
+		};
+		*outX = 5.2f * ring[index][0];
+		*outZ = 5.2f * ring[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_PASARELA )
+	{
+		static const float lane[MAX_PLAYERS][2] = {
+			{ 6.0f, 0.0f }, { -6.0f, 0.0f }, { 4.5f, 1.5f }, { -4.5f, -1.5f },
+			{ 3.0f, -1.5f }, { -3.0f, 1.5f }, { 1.5f, 1.5f }, { -1.5f, -1.5f },
+		};
+		*outX = lane[index][0];
+		*outZ = lane[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_TARIMAS )
+	{
+		// Outer pads first (their tops sit at 0.8 or 0), plaza corners after.
+		static const float pads[MAX_PLAYERS][3] = {
+			{ 5.25f, 0.8f, 0.0f }, { -5.25f, 0.8f, 0.0f }, { 0.0f, 0.0f, 5.25f }, { 0.0f, 0.0f, -5.25f },
+			{ 5.25f, 0.8f, 5.25f }, { 1.5f, 0.0f, 1.5f },  { -1.5f, 0.0f, -1.5f }, { 1.5f, 0.0f, -1.5f },
+		};
+		*outX = pads[index][0];
+		*outY = pads[index][1];
+		*outZ = pads[index][2];
 		return;
 	}
 
@@ -517,6 +758,7 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	}
 
 	g_rngState = ( (uint64_t)seed << 1u ) | 1u;
+	g_botRngState = ( ( (uint64_t)seed ^ 0xB07B07ull ) << 1u ) | 1u;
 	g_frame = 0;
 	g_winner = -1;
 	g_crumbleNext = 0;
@@ -528,6 +770,7 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	g_powerup.pos = ( b3Vec3 ){ 0.0f, -100.0f, 0.0f };
 	g_powerup.nextEventTick = 240;
 	memset( g_inputs, 0, sizeof( g_inputs ) );
+	memset( g_bots, 0, sizeof( g_bots ) );
 
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = ( b3Vec3 ){ 0.0f, -14.0f, 0.0f };
@@ -540,12 +783,12 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 
 	for ( int i = 0; i < g_playerCount; ++i )
 	{
-		float sx, sz;
-		SpawnPoint( g_level, i, &sx, &sz );
+		float sx, sy, sz;
+		SpawnPoint( g_level, i, &sx, &sy, &sz );
 
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_dynamicBody;
-		bodyDef.position = ( b3Pos ){ sx, PLAYER_RADIUS + 0.05f, sz };
+		bodyDef.position = ( b3Pos ){ sx, sy + PLAYER_RADIUS + 0.05f, sz };
 		bodyDef.linearDamping = 0.4f;
 		bodyDef.angularDamping = 0.8f;
 		bodyDef.enableSleep = false;
@@ -567,8 +810,13 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 		float len = sx * sx + sz * sz;
 		g_players[i].facing = len > 0.001f ? ( b3Vec3 ){ -sx, 0.0f, -sz } : ( b3Vec3 ){ 0.0f, 0.0f, -1.0f };
 		g_players[i].body = body;
+		g_players[i].prevIn = 0;
 		g_players[i].dashCooldown = 0;
 		g_players[i].jumpCooldown = 0;
+		g_players[i].jumpBuffer = 0;
+		g_players[i].dashBuffer = 0;
+		g_players[i].coyote = 0;
+		g_players[i].braceTicks = 0;
 		g_players[i].hasPower = false;
 		g_players[i].alive = true;
 	}
@@ -590,6 +838,275 @@ static bool IsGrounded( const Player* p )
 	return result.hit;
 }
 
+// 2 = standing on solid ground here, 1 = tile is about to drop, 0 = nothing.
+static int SupportStateAt( float x, float z )
+{
+	int best = 0;
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state != PIECE_STATIC && g_pieces[i].state != PIECE_WARNING )
+		{
+			continue;
+		}
+		b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+		float dx = x - tp.x;
+		float dz = z - tp.z;
+		if ( dx > -0.78f && dx < 0.78f && dz > -0.78f && dz < 0.78f )
+		{
+			int s = g_pieces[i].state == PIECE_STATIC ? 2 : 1;
+			if ( s > best )
+			{
+				best = s;
+			}
+		}
+	}
+	return best;
+}
+
+static void NearestSafeTile( float x, float z, float* outX, float* outZ )
+{
+	// Bias toward the centroid of remaining solid ground so bots retreat
+	// inward instead of hugging a doomed rim.
+	float cx = 0.0f, cz = 0.0f;
+	int n = 0;
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state == PIECE_STATIC )
+		{
+			b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+			cx += tp.x;
+			cz += tp.z;
+			n += 1;
+		}
+	}
+	if ( n == 0 )
+	{
+		*outX = 0.0f;
+		*outZ = 0.0f;
+		return;
+	}
+	cx /= (float)n;
+	cz /= (float)n;
+
+	float bestScore = 1e30f;
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state != PIECE_STATIC )
+		{
+			continue;
+		}
+		b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+		float dx = tp.x - x;
+		float dz = tp.z - z;
+		float ex = tp.x - cx;
+		float ez = tp.z - cz;
+		float score = dx * dx + dz * dz + 0.25f * ( ex * ex + ez * ez );
+		if ( score < bestScore )
+		{
+			bestScore = score;
+			*outX = tp.x;
+			*outZ = tp.z;
+		}
+	}
+}
+
+static float WrapAngle( float a )
+{
+	while ( a > 3.14159265f )
+	{
+		a -= 6.2831853f;
+	}
+	while ( a < -3.14159265f )
+	{
+		a += 6.2831853f;
+	}
+	return a;
+}
+
+static void BotReplan( int slot )
+{
+	Bot* bot = &g_bots[slot];
+	Player* p = &g_players[slot];
+	b3Pos pos = b3Body_GetPosition( p->body );
+
+	bot->holdBrace = false;
+	bot->pulseDash = false;
+	bot->pulseJump = false;
+
+	// Priority 1: don't be standing on doomed ground.
+	if ( SupportStateAt( pos.x, pos.z ) < 2 )
+	{
+		NearestSafeTile( pos.x, pos.z, &bot->tx, &bot->tz );
+		if ( bot->difficulty >= 1 && p->jumpCooldown == 0 )
+		{
+			bot->pulseJump = true;
+		}
+		return;
+	}
+
+	// Priority 2: grab the orb when it's close and uncontested-ish.
+	if ( g_powerup.active && !p->hasPower )
+	{
+		float ox = g_powerup.pos.x - pos.x;
+		float oz = g_powerup.pos.z - pos.z;
+		if ( ox * ox + oz * oz < 4.5f * 4.5f && ( BotRng() & 3u ) != 0u )
+		{
+			bot->tx = g_powerup.pos.x;
+			bot->tz = g_powerup.pos.z;
+			return;
+		}
+	}
+
+	// Priority 3: hunt the nearest living rival.
+	int target = -1;
+	float bestD2 = 1e30f;
+	for ( int j = 0; j < g_playerCount; ++j )
+	{
+		if ( j == slot || !g_players[j].alive )
+		{
+			continue;
+		}
+		b3Pos op = b3Body_GetPosition( g_players[j].body );
+		float dx = op.x - pos.x;
+		float dz = op.z - pos.z;
+		float d2 = dx * dx + dz * dz;
+		if ( d2 < bestD2 )
+		{
+			bestD2 = d2;
+			target = j;
+		}
+	}
+	if ( target < 0 )
+	{
+		bot->tx = 0.0f;
+		bot->tz = 0.0f;
+		return;
+	}
+
+	b3Pos op = b3Body_GetPosition( g_players[target].body );
+	bot->tx = op.x;
+	bot->tz = op.z;
+
+	float dist = sqrtf( bestD2 );
+
+	// Dash when close, roughly at the rival, and the shove would carry them
+	// past solid ground (or just aggressively, on hard).
+	if ( p->dashCooldown == 0 && dist < 2.4f && dist > 0.01f )
+	{
+		float dirx = ( op.x - pos.x ) / dist;
+		float dirz = ( op.z - pos.z ) / dist;
+		int landing = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f );
+		bool aggressive = bot->difficulty == 2 || ( BotRng() & 1u ) == 0u;
+		if ( landing == 0 || aggressive )
+		{
+			bot->pulseDash = true;
+		}
+	}
+
+	// Brace if the rival just dashed at us (medium+).
+	if ( bot->difficulty >= 1 && dist < 3.2f &&
+		 g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
+	{
+		bot->holdBrace = true;
+		bot->pulseDash = false;
+	}
+
+	// Dodge the beam on RULETA: jump when an arm is about to sweep through.
+	if ( g_level == LEVEL_RULETA && g_hazardCount > 0 && p->jumpCooldown == 0 )
+	{
+		b3Quat q = b3Body_GetRotation( g_hazards[0].body );
+		float yaw = 2.0f * atan2f( q.v.y, q.s );
+		float mine = atan2f( pos.z, pos.x );
+		float d1 = WrapAngle( mine - yaw );
+		float d2 = WrapAngle( mine - yaw - 3.14159265f );
+		float d = fabsf( d1 ) < fabsf( d2 ) ? fabsf( d1 ) : fabsf( d2 );
+		if ( d < 0.55f )
+		{
+			bot->pulseJump = true;
+		}
+	}
+}
+
+static void StepBots( void )
+{
+	if ( g_frame < COUNTDOWN_TICKS )
+	{
+		return;
+	}
+
+	// Noise/interval tuning per difficulty: easy is sloppy, hard is sharp.
+	static const int thinkBase[3] = { 16, 11, 8 };
+	static const int thinkJitter[3] = { 7, 5, 3 };
+	static const float aimNoise[3] = { 0.6f, 0.25f, 0.08f };
+
+	for ( int i = 0; i < g_playerCount; ++i )
+	{
+		Bot* bot = &g_bots[i];
+		if ( !bot->active || !g_players[i].alive )
+		{
+			continue;
+		}
+
+		bot->think -= 1;
+		if ( bot->think <= 0 )
+		{
+			BotReplan( i );
+			int d = bot->difficulty;
+			bot->think = thinkBase[d] + (int)( BotRng() % (uint32_t)( thinkJitter[d] + 1 ) );
+		}
+
+		b3Pos pos = b3Body_GetPosition( g_players[i].body );
+		float dx = bot->tx - pos.x;
+		float dz = bot->tz - pos.z;
+		float len = sqrtf( dx * dx + dz * dz );
+
+		uint32_t word = 0;
+		if ( len > 0.35f )
+		{
+			dx /= len;
+			dz /= len;
+			// Aim noise: rotate the steering vector a touch.
+			float noise = aimNoise[bot->difficulty];
+			float a = ( (float)( BotRng() % 1000u ) / 1000.0f - 0.5f ) * 2.0f * noise;
+			float ca = cosf( a );
+			float sa = sinf( a );
+			float rx = dx * ca - dz * sa;
+			float rz = dx * sa + dz * ca;
+			if ( rz < -0.38f )
+			{
+				word |= IN_UP;
+			}
+			if ( rz > 0.38f )
+			{
+				word |= IN_DOWN;
+			}
+			if ( rx < -0.38f )
+			{
+				word |= IN_LEFT;
+			}
+			if ( rx > 0.38f )
+			{
+				word |= IN_RIGHT;
+			}
+		}
+		if ( bot->holdBrace )
+		{
+			word = IN_BRACE;
+		}
+		if ( bot->pulseDash )
+		{
+			word |= IN_DASH;
+			bot->pulseDash = false;
+		}
+		if ( bot->pulseJump )
+		{
+			word |= IN_JUMP;
+			bot->pulseJump = false;
+		}
+		g_inputs[i] = word;
+	}
+}
+
 static void StepPlayers( void )
 {
 	// Inputs are frozen during the round-start countdown.
@@ -604,6 +1121,51 @@ static void StepPlayers( void )
 		}
 
 		uint32_t in = frozen ? 0u : g_inputs[i];
+		uint32_t pressed = in & ~p->prevIn;
+		p->prevIn = in;
+
+		float mass = b3Body_GetMass( p->body );
+		bool grounded = IsGrounded( p );
+
+		// Timers: cooldowns, buffered presses, coyote time.
+		if ( p->dashCooldown > 0 )
+		{
+			p->dashCooldown -= 1;
+		}
+		if ( p->jumpCooldown > 0 )
+		{
+			p->jumpCooldown -= 1;
+		}
+		if ( p->jumpBuffer > 0 )
+		{
+			p->jumpBuffer -= 1;
+		}
+		if ( p->dashBuffer > 0 )
+		{
+			p->dashBuffer -= 1;
+		}
+		if ( pressed & IN_JUMP )
+		{
+			p->jumpBuffer = INPUT_BUFFER_TICKS;
+		}
+		if ( pressed & IN_DASH )
+		{
+			p->dashBuffer = INPUT_BUFFER_TICKS;
+		}
+		p->coyote = grounded ? COYOTE_TICKS : ( p->coyote > 0 ? p->coyote - 1 : 0 );
+
+		// Brace: anchor in place. No moving, dashing or jumping while held.
+		bool bracing = ( in & IN_BRACE ) != 0 && grounded;
+		if ( bracing )
+		{
+			p->braceTicks = p->braceTicks < 1000 ? p->braceTicks + 1 : 1000;
+			b3Vec3 v = b3Body_GetLinearVelocity( p->body );
+			b3Vec3 brake = { -v.x * BRACE_BRAKE_GAIN * mass, 0.0f, -v.z * BRACE_BRAKE_GAIN * mass };
+			b3Body_ApplyForceToCenter( p->body, brake, true );
+			continue;
+		}
+		p->braceTicks = 0;
+
 		float dx = ( ( in & IN_RIGHT ) ? 1.0f : 0.0f ) - ( ( in & IN_LEFT ) ? 1.0f : 0.0f );
 		float dz = ( ( in & IN_DOWN ) ? 1.0f : 0.0f ) - ( ( in & IN_UP ) ? 1.0f : 0.0f );
 		if ( dx != 0.0f && dz != 0.0f )
@@ -611,9 +1173,6 @@ static void StepPlayers( void )
 			dx *= 0.7071f;
 			dz *= 0.7071f;
 		}
-
-		float mass = b3Body_GetMass( p->body );
-		bool grounded = IsGrounded( p );
 
 		if ( dx != 0.0f || dz != 0.0f )
 		{
@@ -628,11 +1187,8 @@ static void StepPlayers( void )
 			}
 		}
 
-		if ( p->jumpCooldown > 0 )
-		{
-			p->jumpCooldown -= 1;
-		}
-		else if ( ( in & IN_JUMP ) && grounded )
+		// Jump: buffered press + coyote window instead of exact-tick timing.
+		if ( p->jumpBuffer > 0 && p->coyote > 0 && p->jumpCooldown == 0 )
 		{
 			b3Vec3 v = b3Body_GetLinearVelocity( p->body );
 			if ( v.y <= 3.0f )
@@ -640,16 +1196,15 @@ static void StepPlayers( void )
 				b3Vec3 impulse = { 0.0f, JUMP_SPEED * mass, 0.0f };
 				b3Body_ApplyLinearImpulseToCenter( p->body, impulse, true );
 				p->jumpCooldown = JUMP_COOLDOWN_TICKS;
+				p->jumpBuffer = 0;
+				p->coyote = 0;
 				b3Pos pos = b3Body_GetPosition( p->body );
 				PushEvent( EVT_JUMP, pos.x, pos.y, pos.z, 0.0f, (float)i );
 			}
 		}
 
-		if ( p->dashCooldown > 0 )
-		{
-			p->dashCooldown -= 1;
-		}
-		else if ( in & IN_DASH )
+		// Dash: buffered press fires the moment cooldown ends.
+		if ( p->dashBuffer > 0 && p->dashCooldown == 0 )
 		{
 			bool powered = p->hasPower;
 			float mult = powered ? POWER_DASH_MULT : 1.0f;
@@ -657,6 +1212,7 @@ static void StepPlayers( void )
 			b3Vec3 impulse = { DASH_SPEED * mult * mass * p->facing.x, 0.0f, DASH_SPEED * mult * mass * p->facing.z };
 			b3Body_ApplyLinearImpulseToCenter( p->body, impulse, true );
 			p->dashCooldown = DASH_COOLDOWN_TICKS;
+			p->dashBuffer = 0;
 			b3Pos pos = b3Body_GetPosition( p->body );
 			PushEvent( EVT_DASH, pos.x, pos.y, pos.z, powered ? 1.0f : 0.0f, (float)i );
 		}
@@ -669,8 +1225,49 @@ static int PlayerIndexFromShape( b3ShapeId shapeId )
 	return (int)(intptr_t)userData - 1;
 }
 
-// Read Box3D hit events: emit feedback events and give recent dashers extra
-// knockback so a well-timed dash launches the victim.
+// Apply the dash-hit interaction from `att` onto `vic` along `nx,nz`
+// (already pointing attacker -> victim).
+static void ResolveDashHit( int att, int vic, float nx, float nz, float speed, b3Pos point )
+{
+	Player* victim = &g_players[vic];
+	if ( !victim->alive )
+	{
+		return;
+	}
+
+	// Parry: brace started within the window bounces the hit back.
+	if ( victim->braceTicks > 0 && victim->braceTicks <= PARRY_WINDOW )
+	{
+		Player* attacker = &g_players[att];
+		float mass = b3Body_GetMass( attacker->body );
+		float k = DASH_HIT_KNOCKBACK * speed * mass;
+		b3Vec3 impulse = { -nx * k, 0.3f * k, -nz * k };
+		b3Body_ApplyLinearImpulseToCenter( attacker->body, impulse, true );
+		PushEvent( EVT_PARRY, point.x, point.y, point.z, (float)att, (float)vic );
+		return;
+	}
+
+	float factor = victim->braceTicks > 0 ? BRACE_HIT_FACTOR : 1.0f;
+	float pop = victim->braceTicks > 0 ? 0.0f : 0.3f;
+	float mass = b3Body_GetMass( victim->body );
+	float k = DASH_HIT_KNOCKBACK * factor * speed * mass;
+	b3Vec3 impulse = { nx * k, pop * k, nz * k };
+	b3Body_ApplyLinearImpulseToCenter( victim->body, impulse, true );
+	PushEvent( EVT_DASH_HIT, point.x, point.y, point.z, (float)att, (float)vic );
+
+	// Knock the orb loose: carrying it paints a target on you.
+	if ( victim->hasPower )
+	{
+		victim->hasPower = false;
+		b3Pos vp = b3Body_GetPosition( victim->body );
+		g_powerup.pos = ( b3Vec3 ){ vp.x, vp.y + 1.1f, vp.z };
+		g_powerup.active = true;
+		g_powerup.nextEventTick = g_frame + 600;
+		PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 1.0f, (float)vic );
+	}
+}
+
+// Read Box3D hit events: emit feedback events and resolve dash shoves.
 static void ProcessHits( void )
 {
 	b3ContactEvents events = b3World_GetContactEvents( g_world );
@@ -690,20 +1287,14 @@ static void ProcessHits( void )
 		{
 			bool dashA = g_players[ia].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW;
 			bool dashB = g_players[ib].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW;
-			// Normal points from A to B. Add a small upward pop for drama.
-			if ( dashA && !dashB && g_players[ib].alive )
+			// Normal points from A to B.
+			if ( dashA && !dashB )
 			{
-				float mass = b3Body_GetMass( g_players[ib].body );
-				float k = DASH_HIT_KNOCKBACK * hit->approachSpeed * mass;
-				b3Vec3 impulse = { hit->normal.x * k, 0.3f * k, hit->normal.z * k };
-				b3Body_ApplyLinearImpulseToCenter( g_players[ib].body, impulse, true );
+				ResolveDashHit( ia, ib, hit->normal.x, hit->normal.z, hit->approachSpeed, hit->point );
 			}
-			else if ( dashB && !dashA && g_players[ia].alive )
+			else if ( dashB && !dashA )
 			{
-				float mass = b3Body_GetMass( g_players[ia].body );
-				float k = DASH_HIT_KNOCKBACK * hit->approachSpeed * mass;
-				b3Vec3 impulse = { -hit->normal.x * k, 0.3f * k, -hit->normal.z * k };
-				b3Body_ApplyLinearImpulseToCenter( g_players[ia].body, impulse, true );
+				ResolveDashHit( ib, ia, -hit->normal.x, -hit->normal.z, hit->approachSpeed, hit->point );
 			}
 		}
 	}
@@ -745,16 +1336,36 @@ static void StepCrumble( void )
 	}
 }
 
+// Hazards are inert until the countdown ends, then driven as pure functions
+// of the elapsed frame — no accumulated state to drift.
 static void StepHazards( void )
 {
-	if ( g_level == LEVEL_RULETA && g_hazardCount > 0 && g_frame > 0 && g_frame % 900 == 0 )
+	if ( g_frame < COUNTDOWN_TICKS )
 	{
-		float speed = 0.9f + 0.35f * (float)( g_frame / 900 );
-		if ( speed > 2.3f )
+		return;
+	}
+	uint32_t t = g_frame - COUNTDOWN_TICKS;
+
+	for ( int i = 0; i < g_hazardCount; ++i )
+	{
+		Hazard* h = &g_hazards[i];
+		if ( h->type == HAZARD_BEAM )
 		{
-			speed = 2.3f;
+			if ( t == 0 || t % 900 == 0 )
+			{
+				float speed = 0.9f + 0.35f * (float)( t / 900 );
+				if ( speed > 2.3f )
+				{
+					speed = 2.3f;
+				}
+				b3Body_SetAngularVelocity( h->body, ( b3Vec3 ){ 0.0f, speed, 0.0f } );
+			}
 		}
-		b3Body_SetAngularVelocity( g_hazards[0].body, ( b3Vec3 ){ 0.0f, speed, 0.0f } );
+		else if ( h->type == HAZARD_PISTON )
+		{
+			uint32_t phase = ( t + (uint32_t)i * 140u ) % 280u;
+			b3Body_SetLinearVelocity( h->body, ( b3Vec3 ){ 0.0f, 0.0f, phase < 140u ? 2.2f : -2.2f } );
+		}
 	}
 }
 
@@ -776,7 +1387,7 @@ static void StepPowerup( void )
 		{
 			int pick = candidates[RngNext() % (uint32_t)count];
 			b3Pos tile = b3Body_GetPosition( g_pieces[pick].body );
-			g_powerup.pos = ( b3Vec3 ){ tile.x, 1.1f, tile.z };
+			g_powerup.pos = ( b3Vec3 ){ tile.x, tile.y + PIECE_HY + 1.1f, tile.z };
 			g_powerup.active = true;
 			PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 0.0f, -1.0f );
 		}
@@ -814,6 +1425,7 @@ TUMBO_EXPORT void tumbo_step( void )
 {
 	g_eventCount = 0;
 
+	StepBots();
 	StepPlayers();
 	StepCrumble();
 	StepHazards();

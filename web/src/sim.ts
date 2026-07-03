@@ -16,8 +16,17 @@ export const PIECE_WARNING = 3;
 export const FLAG_ALIVE = 1;
 export const FLAG_DASH_READY = 2;
 export const FLAG_HAS_POWER = 4;
+export const FLAG_CD_SHIFT = 3;
+export const FLAG_CD_MASK = 63;
+export const FLAG_BRACED = 512;
+export const DASH_COOLDOWN_TICKS = 45;
 
-export const LEVEL_NAMES = ['CLÁSICA', 'ANILLO', 'PUENTES', 'RULETA'];
+/** Dash cooldown ticks remaining, decoded from a player's packed flags. */
+export function dashCooldownFrom(flags: number): number {
+  return (flags >> FLAG_CD_SHIFT) & FLAG_CD_MASK;
+}
+
+export const LEVEL_NAMES = ['CLÁSICA', 'ANILLO', 'PUENTES', 'RULETA', 'PIRÁMIDE', 'HERRADURA', 'PASARELA', 'TARIMAS'];
 
 // Gameplay events emitted by the sim each tick: [type, x, y, z, a, b] × count.
 export const EVT_HIT = 0;
@@ -29,6 +38,8 @@ export const EVT_FALL = 5;
 export const EVT_ORB_SPAWN = 6;
 export const EVT_ORB_PICKUP = 7;
 export const EVT_ROUND_END = 8;
+export const EVT_DASH_HIT = 9;
+export const EVT_PARRY = 10;
 export const EVENT_FLOATS = 6;
 
 interface TumboModule {
@@ -41,6 +52,7 @@ interface TumboModule {
   _tumbo_events_ptr(): number;
   _tumbo_event_count(): number;
   _tumbo_countdown_ticks(): number;
+  _tumbo_set_bot(slot: number, difficulty: number): void;
   _tumbo_hash(): number;
   HEAPF32: Float32Array;
   HEAPU32: Uint32Array;
@@ -98,6 +110,14 @@ export class Sim {
     const count = this.module._tumbo_event_count();
     const ebase = this.eventsPtr >> 2;
     return this.module.HEAPF32.slice(ebase, ebase + count * EVENT_FLOATS);
+  }
+
+  /**
+   * Enable a deterministic bot on a slot (difficulty 0-2). Call after init
+   * and before the first step; in lockstep, call identically on every peer.
+   */
+  setBot(slot: number, difficulty: number): void {
+    this.module._tumbo_set_bot(slot, difficulty);
   }
 
   hash(): number {

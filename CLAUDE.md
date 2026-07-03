@@ -10,8 +10,14 @@ fuera de una plataforma que se desmorona; el último en pie gana la ronda.
   Es la fuente de verdad determinista para el multiplayer lockstep: JS solo escribe
   inputs empaquetados (uint32 por jugador) y lee un buffer de floats con el estado.
 - **`web/`** — Vite + TypeScript + Three.js. Solo presentación e I/O:
-  `sim.ts` (wrapper WASM), `render.ts` (Three), `input.ts` (teclado), `main.ts` (loop).
-  Fixed timestep 60Hz con interpolación de render.
+  `sim.ts` (wrapper WASM), `render.ts` (Three: skybox/abismo por shader, squash&stretch,
+  anillo de cooldown, texturas de bola con patrón+número), `fx.ts` (partículas, shockwaves,
+  shake+punch), `audio.ts` (SFX sintetizados, buses), `music.ts` (música procedural
+  adaptativa por nivel, capas por tensión), `input.ts` (teclado), `ui.ts` (shell de
+  pantallas: título/setup/online/pausa/resultados/opciones, settings en localStorage),
+  `minimap.ts` (thumbs de nivel autogenerados), `stats.ts` (stats de match y de por vida),
+  `main.ts` (conductor). Fixed timestep 60Hz con interpolación de render. Attract mode:
+  detrás del título corre una partida de 4 bots.
 - **Netcode (`web/src/net.ts`)** — lockstep por WebRTC DataChannel (confiable+ordenado),
   input delay de 4 ticks, señalización por copiar/pegar código (sin servidores, STUN de
   Google), hash de estado cada 60 ticks como detector de desync. El host (slot 0) elige
@@ -44,10 +50,21 @@ de aplicaciones y navegador) o usar WSL2. El tooling web (node/vite) no está af
 ## Layout del estado compartido C→JS
 
 Header de 8 floats: `[frame, aliveMask, playerCount, pieceCount, winner, levelId, hazardCount, powerupActive]`.
-Luego 8 floats por jugador (`x y z qx qy qz qw flags`; flags: 1=vivo, 2=dash listo, 4=con power),
-8 por pieza (`x y z qx qy qz qw estado`; 1=estática, 2=cayendo, 3=aviso, 0=eliminada),
-12 por hazard (`x y z qx qy qz qw sx sy sz tipo _`) y 4 del power-up (`x y z activo`).
+Luego 8 floats por jugador (`x y z qx qy qz qw flags`; flags: bit0 vivo, bit1 dash listo,
+bit2 con power, bits3-8 cooldown de dash, bit9 anclado), 8 por pieza (`x y z qx qy qz qw estado`;
+1=estática, 2=cayendo, 3=aviso, 0=eliminada), 12 por hazard (`x y z qx qy qz qw sx sy sz tipo _`;
+tipo 0=viga, 1=pistón) y 4 del power-up (`x y z activo`).
 `winner`: -1 en curso, -2 empate, si no índice del ganador.
+
+## Mecánicas (todas en el sim)
+
+Mover (fuerzas, control aéreo 45%), dash con cooldown 45 ticks + knockback extra al
+golpear, salto (raycast de suelo con categorías), **anclarse** (IN_BRACE=64: frena y
+aguanta empujones ×0.35; si el brace tiene ≤8 ticks al recibir un dash = **parry**, el
+impulso rebota al atacante), input buffer + coyote time (6 ticks), robo de orbe al
+golpear al portador. **Bots deterministas** (`tumbo_set_bot(slot, dif 0-2)` tras init,
+idéntico en cada peer): PCG32 propio (seed^0xB07B07), huyen de baldosas condenadas,
+van al orbe, dashean hacia el borde, esquivan la viga, bracean contra dashes.
 
 ## Eventos de gameplay (sim → presentación)
 
@@ -62,5 +79,9 @@ slow-mo al final de ronda). Los golpes de dash aplican knockback extra en el sim
 ## Niveles
 
 `tumbo_init(seed, players, level)` — 0 CLÁSICA (disco), 1 ANILLO (donut),
-2 PUENTES (5 islas + puentes que caen primero), 3 RULETA (disco + barra giratoria
-kinemática + desmoronamiento aleatorio por PCG). Teclas 1-4 en el juego.
+2 PUENTES (5 islas + puentes que caen primero), 3 RULETA (disco + viga giratoria +
+desmoronamiento aleatorio por PCG), 4 PIRÁMIDE (3 terrazas a 0/0.8/1.6m, derrumbe de
+abajo hacia arriba), 5 HERRADURA (U con ola de derrumbe angular), 6 PASARELA (corredor
+3×11 + alcobas + 2 pistones kinemáticos), 7 TARIMAS (6 tarimas con huecos de 1 baldosa).
+Los hazards están inertes durante el countdown (fix: la viga ya no arrolla en el spawn).
+Eventos extra: 9 DASH_HIT (a=atacante, b=víctima), 10 PARRY. Teclas 1-8 en el juego.

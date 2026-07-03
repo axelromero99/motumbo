@@ -5,74 +5,446 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TUMBO</title>
   <style>
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e1a; }
+    :root {
+      --bg: #0b0e1a;
+      --panel: rgba(16, 20, 42, 0.94);
+      --panel-solid: #141931;
+      --line: #2a3154;
+      --line-hi: #5563a8;
+      --text: #e8eaf6;
+      --muted: #8b93b8;
+      --accent: #35a7ff;
+      --accent2: #ff5964;
+      --good: #2ecc71;
+      --warn: #ffd24d;
+      --bad: #ff5964;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+    body { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--text); }
     #app { position: fixed; inset: 0; }
     canvas { display: block; }
-    .hud {
-      position: fixed; left: 0; right: 0; pointer-events: none;
-      color: #e8eaf6; font-family: system-ui, sans-serif; text-align: center;
-      text-shadow: 0 2px 8px rgba(0,0,0,.8);
+    button { font-family: inherit; }
+
+    /* ================= HUD in-game ================= */
+    #hud { pointer-events: none; }
+    #hud > div {
+      position: fixed; left: 0; right: 0; text-align: center;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
     }
-    #status { top: 16px; font-size: 20px; font-weight: 700; letter-spacing: .08em; }
+    #scorebar {
+      top: 12px; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap;
+    }
+    #scorebar:empty { display: none; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(12, 16, 34, 0.78); border: 1px solid var(--line);
+      border-radius: 999px; padding: 5px 12px 5px 7px;
+      transition: opacity 0.25s, border-color 0.25s, transform 0.25s;
+    }
+    .chip.you { border-color: var(--line-hi); box-shadow: 0 0 0 1px var(--line-hi), 0 4px 14px rgba(53, 167, 255, 0.18); }
+    .chip.dead { opacity: 0.35; transform: scale(0.94); }
+    .chip-ball {
+      width: 18px; height: 18px; border-radius: 50%; flex: none;
+      box-shadow: inset -3px -4px 6px rgba(0, 0, 0, 0.35), inset 3px 4px 5px rgba(255, 255, 255, 0.3);
+    }
+    .chip .pips { font-size: 12px; letter-spacing: 2px; line-height: 1; }
+    .pip-on { color: var(--text); }
+    .pip-off { color: rgba(139, 147, 184, 0.4); }
+    .chip .you-tag { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; color: var(--accent); }
+
+    #status { top: 58px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; color: var(--muted); }
     #banner { top: 40%; font-size: 44px; font-weight: 800; display: none; }
-    #banner small { font-size: 20px; font-weight: 600; opacity: .8; }
+    #banner small { font-size: 20px; font-weight: 600; opacity: 0.8; }
     #countdown {
       top: 30%; font-size: 110px; font-weight: 900; display: none;
-      -webkit-text-stroke: 2px rgba(255,255,255,.25);
+      -webkit-text-stroke: 2px rgba(255, 255, 255, 0.25);
     }
-    #netwait { bottom: 44px; font-size: 14px; color: #ffd24d; display: none; }
-    #menu {
-      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      background: rgba(6, 8, 16, .88); color: #e8eaf6; font-family: system-ui, sans-serif; z-index: 10;
-    }
-    #menu .card { width: min(520px, 92vw); text-align: center; }
-    #menu h1 { font-size: 64px; letter-spacing: .2em; margin: 0 0 24px; }
-    #menu button {
-      display: block; width: 100%; margin: 10px 0; padding: 14px; font-size: 17px; font-weight: 700;
-      color: #e8eaf6; background: #1c2138; border: 1px solid #3a4166; border-radius: 10px; cursor: pointer;
-    }
-    #menu button:hover { background: #262d4d; }
-    #menu textarea {
-      width: 100%; height: 64px; margin: 8px 0; padding: 8px; box-sizing: border-box;
-      background: #10142a; color: #aab3e0; border: 1px solid #3a4166; border-radius: 8px;
-      font-size: 11px; resize: none;
-    }
-    #menu .hint { font-size: 14px; opacity: .8; margin: 6px 0; }
-    #net-panel[hidden] { display: none; }
-    #help { bottom: 14px; font-size: 13px; opacity: .75; }
+    #netwait { bottom: 44px; font-size: 14px; color: var(--warn); display: none; }
+    #help { bottom: 14px; font-size: 13px; opacity: 0.75; }
     kbd {
       background: #1c2138; border: 1px solid #3a4166; border-radius: 4px;
-      padding: 1px 5px; font-family: inherit;
+      padding: 1px 5px; font-family: inherit; font-size: 0.92em;
     }
+
+    /* ================= Toasts ================= */
+    #toasts {
+      position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      z-index: 40; pointer-events: none;
+    }
+    .toast {
+      background: rgba(20, 25, 49, 0.95); border: 1px solid var(--line-hi);
+      border-radius: 10px; padding: 9px 18px; font-size: 14px; font-weight: 600;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+      animation: toast-in 0.22s ease;
+    }
+    .toast.out { opacity: 0; transform: translateY(8px); transition: opacity 0.3s, transform 0.3s; }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(10px) scale(0.96); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* ================= Screen system ================= */
+    .screen {
+      position: fixed; inset: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none; visibility: hidden; transform: translateY(14px);
+      transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+      background:
+        radial-gradient(1100px 640px at 50% 12%, rgba(53, 167, 255, 0.07), transparent 70%),
+        rgba(6, 8, 16, 0.92);
+    }
+    .screen.active {
+      opacity: 1; pointer-events: auto; visibility: visible; transform: none;
+      transition-delay: 0s;
+    }
+    .screen[data-screen='pause'] { background: rgba(6, 8, 16, 0.72); }
+    .screen[data-screen='results'] { background: rgba(6, 8, 16, 0.58); }
+
+    .panel {
+      width: min(640px, 94vw); max-height: 92vh; overflow-y: auto;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+      padding: 26px 30px 30px; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+    }
+    .panel h2 {
+      margin: 0 0 18px; font-size: 15px; font-weight: 800;
+      letter-spacing: 0.22em; color: var(--muted); text-align: center;
+    }
+
+    .btn {
+      display: inline-block; padding: 11px 18px; font-size: 15px; font-weight: 700;
+      color: var(--text); background: linear-gradient(180deg, #1e2444, #171c36);
+      border: 1px solid #3a4166; border-radius: 10px; cursor: pointer; letter-spacing: 0.04em;
+      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: var(--line-hi); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+    .btn.primary {
+      background: linear-gradient(180deg, #2e86d9, #1f6ab3); border-color: #4fa8ec;
+      box-shadow: 0 6px 22px rgba(53, 167, 255, 0.28);
+    }
+    .btn.primary:hover { box-shadow: 0 8px 28px rgba(53, 167, 255, 0.4); }
+    .btn.big { width: 100%; padding: 15px; font-size: 18px; letter-spacing: 0.1em; }
+    .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    .btn.ghost:hover { color: var(--text); border-color: var(--line); }
+    .back-row { margin-top: 18px; text-align: center; }
+
+    /* ================= Title ================= */
+    .title-wrap { text-align: center; }
+    .logo {
+      font-size: clamp(58px, 13vw, 124px); font-weight: 900; letter-spacing: 0.1em;
+      line-height: 1; margin: 0 0 10px; user-select: none;
+      text-shadow: 0 6px 40px rgba(53, 167, 255, 0.35);
+    }
+    .logo-ball {
+      display: inline-block; width: 0.74em; height: 0.74em; margin: 0 0.05em;
+      vertical-align: -0.06em; border-radius: 50%;
+      background: radial-gradient(circle at 32% 28%, #ff9aa2, #ff5964 52%, #a92f3b 95%);
+      box-shadow: inset -0.06em -0.1em 0.12em rgba(0, 0, 0, 0.35), 0 0.08em 0.35em rgba(255, 89, 100, 0.45);
+      animation: ball-bounce 1.15s ease-in-out infinite;
+    }
+    @keyframes ball-bounce {
+      0%, 100% { transform: translateY(-0.34em); }
+      42% { transform: translateY(0.02em) scale(1.1, 0.86); }
+      52% { transform: translateY(0) scale(0.96, 1.05); }
+    }
+    .tagline { margin: 0 0 26px; color: var(--muted); font-size: 14px; letter-spacing: 0.28em; }
+    .menu-btn {
+      display: block; width: min(340px, 82vw); margin: 10px auto; padding: 13px 18px;
+      font-size: 17px; font-weight: 800; letter-spacing: 0.08em; text-align: center;
+      color: var(--text); background: linear-gradient(180deg, #1e2444, #161b34);
+      border: 1px solid #3a4166; border-radius: 12px; cursor: pointer;
+      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+    }
+    .menu-btn:hover { transform: translateY(-2px); border-color: var(--line-hi); box-shadow: 0 8px 26px rgba(53, 167, 255, 0.16); }
+    .menu-btn .sub { display: block; margin-top: 2px; font-size: 11px; font-weight: 600; letter-spacing: 0.12em; color: var(--muted); }
+    #lifetime-line { margin-top: 26px; font-size: 13px; color: var(--muted); letter-spacing: 0.04em; }
+
+    /* ================= Setup ================= */
+    #setup-mode { text-align: center; margin: -8px 0 14px; font-size: 12px; font-weight: 800; letter-spacing: 0.3em; color: var(--accent); }
+    #level-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px;
+    }
+    .level-card {
+      position: relative; padding: 0; border: 2px solid var(--line); border-radius: 12px;
+      background: #0e1226; cursor: pointer; overflow: hidden;
+      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+    }
+    .level-card:hover { transform: translateY(-2px); border-color: var(--line-hi); }
+    .level-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35), 0 6px 20px rgba(53, 167, 255, 0.25); }
+    .level-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+    .level-card .lname {
+      display: block; padding: 6px 4px 7px; font-size: 11px; font-weight: 800;
+      letter-spacing: 0.14em; color: var(--text); text-align: center; background: rgba(10, 13, 28, 0.9);
+    }
+    .level-card .random-thumb {
+      display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 1;
+      font-size: 44px; font-weight: 900; color: var(--muted);
+      background: repeating-linear-gradient(45deg, #10142a, #10142a 12px, #141931 12px, #141931 24px);
+    }
+    .setup-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 14px 0; flex-wrap: wrap; }
+    .setup-row .lbl { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
+    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .seg button {
+      padding: 9px 18px; font-size: 14px; font-weight: 700; color: var(--muted);
+      background: transparent; border: none; cursor: pointer; letter-spacing: 0.04em;
+    }
+    .seg button + button { border-left: 1px solid var(--line); }
+    .seg button.active { background: var(--accent); color: #06101f; }
+
+    /* ================= Online wizard ================= */
+    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+    .tab {
+      flex: 1; padding: 10px; font-size: 14px; font-weight: 800; letter-spacing: 0.08em;
+      color: var(--muted); background: transparent; border: 1px solid var(--line);
+      border-radius: 10px; cursor: pointer;
+    }
+    .tab.active { color: var(--text); background: #1c2340; border-color: var(--line-hi); }
+    #wizard { list-style: none; margin: 0; padding: 0; counter-reset: wstep; }
+    #wizard li {
+      counter-increment: wstep; position: relative; padding: 4px 0 18px 46px; min-height: 46px;
+    }
+    #wizard li::after {
+      content: ''; position: absolute; left: 15px; top: 36px; bottom: 2px; width: 2px;
+      background: var(--line);
+    }
+    #wizard li:last-child::after { display: none; }
+    #wizard li::before {
+      content: counter(wstep); position: absolute; left: 0; top: 2px;
+      width: 32px; height: 32px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 800; color: var(--muted);
+      background: #10142a; border: 2px solid var(--line);
+    }
+    #wizard li[data-state='active']::before { border-color: var(--accent); color: var(--text); }
+    #wizard li[data-state='busy']::before {
+      content: ''; border: 3px solid var(--line); border-top-color: var(--accent);
+      animation: spin 0.8s linear infinite;
+    }
+    #wizard li[data-state='done']::before { content: '✓'; background: var(--good); border-color: var(--good); color: #06101f; }
+    #wizard li[data-state='error']::before { content: '!'; background: var(--bad); border-color: var(--bad); color: #06101f; }
+    #wizard li[data-state='idle'] { opacity: 0.45; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .wtitle { margin: 6px 0 8px; font-size: 14px; font-weight: 700; }
+    .whint { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+    .code-area {
+      width: 100%; height: 62px; padding: 8px; resize: none;
+      background: #10142a; color: #aab3e0; border: 1px solid #3a4166; border-radius: 8px;
+      font-size: 11px; font-family: ui-monospace, monospace;
+    }
+    .code-btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .code-btns .btn { font-size: 13px; padding: 8px 14px; }
+    #conn-status { font-size: 14px; color: var(--muted); margin: 6px 0; min-height: 20px; }
+    #online-error {
+      margin: 4px 0 0; min-height: 18px; font-size: 13px; font-weight: 600; color: var(--bad); text-align: center;
+    }
+
+    /* ================= Pause ================= */
+    .pause-panel { text-align: center; }
+    .pause-panel .btn { display: block; width: min(300px, 80vw); margin: 10px auto; }
+
+    /* ================= Results ================= */
+    #results-champion {
+      display: none; text-align: center; margin: 0 0 18px; padding: 16px 10px;
+      border: 1px solid var(--warn); border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255, 210, 77, 0.12), rgba(255, 210, 77, 0.03));
+      font-size: 26px; font-weight: 900; letter-spacing: 0.08em;
+    }
+    #results-champion small { display: block; margin-top: 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.28em; color: var(--warn); }
+    #results-rows { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+    .rrow {
+      display: grid; grid-template-columns: 26px minmax(72px, auto) auto 1fr; gap: 10px; align-items: center;
+      padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: rgba(12, 16, 34, 0.6);
+    }
+    .rrow.winner { border-color: var(--warn); background: rgba(255, 210, 77, 0.07); }
+    .rname { font-size: 14px; font-weight: 800; letter-spacing: 0.06em; }
+    .rpips { font-size: 13px; letter-spacing: 2px; white-space: nowrap; }
+    .rstats { display: flex; flex-direction: column; gap: 3px; min-width: 140px; }
+    .rstat { display: grid; grid-template-columns: 74px 1fr 44px; gap: 8px; align-items: center; }
+    .rstat .rlabel { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); text-align: right; }
+    .rstat .rtrack { height: 6px; border-radius: 3px; background: rgba(139, 147, 184, 0.18); overflow: hidden; }
+    .rstat .rfill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .rstat .rval { font-size: 11px; font-weight: 700; color: var(--muted); }
+    #results-next { text-align: center; font-size: 14px; font-weight: 700; color: var(--muted); min-height: 20px; margin: 4px 0 12px; }
+    .results-btns { display: flex; gap: 10px; justify-content: center; }
+
+    /* ================= Options ================= */
+    .opt-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 12px 2px; border-bottom: 1px solid rgba(42, 49, 84, 0.6);
+    }
+    .opt-row .lbl { font-size: 14px; font-weight: 700; }
+    .opt-row .lbl small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); }
+    input[type='range'] { width: 180px; accent-color: var(--accent); }
+    .switch { position: relative; width: 46px; height: 26px; flex: none; }
+    .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+    .switch .track {
+      position: absolute; inset: 0; border-radius: 999px; background: #1c2138;
+      border: 1px solid var(--line); transition: background 0.15s, border-color 0.15s; pointer-events: none;
+    }
+    .switch .track::after {
+      content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+      border-radius: 50%; background: var(--muted); transition: transform 0.15s, background 0.15s;
+    }
+    .switch input:checked + .track { background: rgba(53, 167, 255, 0.35); border-color: var(--accent); }
+    .switch input:checked + .track::after { transform: translateX(20px); background: var(--accent); }
+    .controls-note {
+      margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px;
+      background: rgba(12, 16, 34, 0.6); font-size: 12.5px; line-height: 2; color: var(--muted);
+    }
+    .controls-note b { color: var(--text); }
+
+    /* ================= Reduced motion ================= */
+    body.reduced-motion .logo-ball,
+    body.reduced-motion .toast { animation: none; }
+    body.reduced-motion .screen { transition-duration: 0.01s; }
+    body.reduced-motion .btn, body.reduced-motion .menu-btn, body.reduced-motion .level-card { transition: none; }
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <div id="status" class="hud"></div>
-  <div id="banner" class="hud"></div>
-  <div id="countdown" class="hud"></div>
-  <div id="netwait" class="hud">⏳ esperando al rival…</div>
-  <div id="menu">
-    <div class="card">
-      <h1>TUMBO</h1>
-      <button id="btn-local">🎮 LOCAL — 2 en un teclado</button>
-      <button id="btn-host">🌐 CREAR PARTIDA ONLINE</button>
-      <button id="btn-join">🔗 UNIRSE A PARTIDA</button>
-      <div id="net-panel" hidden>
-        <p class="hint" id="net-instructions"></p>
-        <textarea id="net-out" readonly placeholder="tu código aparecerá acá"></textarea>
-        <button id="btn-copy">📋 Copiar mi código</button>
-        <textarea id="net-in" placeholder="pegá el código del rival acá"></textarea>
-        <button id="btn-connect">Conectar</button>
-        <p class="hint" id="net-status"></p>
+
+  <!-- ============ HUD in-game (ids legacy: los usa main.ts) ============ -->
+  <div id="hud">
+    <div id="scorebar"></div>
+    <div id="status"></div>
+    <div id="banner"></div>
+    <div id="countdown"></div>
+    <div id="netwait">esperando al rival…</div>
+    <div id="help"></div>
+  </div>
+  <div id="toasts"></div>
+
+  <!-- ============ TITLE ============ -->
+  <section class="screen" data-screen="title">
+    <div class="title-wrap">
+      <h1 class="logo">TUMB<span class="logo-ball" aria-label="O"></span></h1>
+      <p class="tagline">SUMO · FÍSICA · PLATAFORMA QUE SE CAE</p>
+      <button class="menu-btn" id="btn-solo">SOLO<span class="sub">CONTRA BOTS</span></button>
+      <button class="menu-btn" id="btn-local">LOCAL<span class="sub">2 EN UN TECLADO</span></button>
+      <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 POR INTERNET</span></button>
+      <button class="menu-btn" id="btn-options">OPCIONES</button>
+      <div id="lifetime-line"></div>
+    </div>
+  </section>
+
+  <!-- ============ SETUP (nivel + rondas) ============ -->
+  <section class="screen" data-screen="setup">
+    <div class="panel">
+      <h2>ELEGÍ ARENA</h2>
+      <div id="setup-mode"></div>
+      <div id="level-grid"></div>
+      <div class="setup-row">
+        <span class="lbl">PRIMERO A</span>
+        <div class="seg" id="seg-rounds">
+          <button data-rounds="3">3</button>
+          <button data-rounds="5" class="active">5</button>
+          <button data-rounds="7">7</button>
+        </div>
+      </div>
+      <button class="btn primary big" id="btn-play">JUGAR</button>
+      <div class="back-row"><button class="btn ghost" id="btn-setup-back">← Volver</button></div>
+    </div>
+  </section>
+
+  <!-- ============ ONLINE (wizard) ============ -->
+  <section class="screen" data-screen="online">
+    <div class="panel">
+      <h2>ONLINE · 1V1</h2>
+      <div class="tabs">
+        <button class="tab active" id="tab-crear">CREAR PARTIDA</button>
+        <button class="tab" id="tab-unirse">UNIRSE</button>
+      </div>
+      <ol id="wizard">
+        <li id="wstep-code" data-state="idle">
+          <p class="wtitle" id="wstep-code-title">Generá tu código</p>
+          <p class="whint" id="wstep-code-hint">Mandáselo al rival por donde quieras.</p>
+          <textarea class="code-area" id="code-out" readonly placeholder="tu código aparece acá…"></textarea>
+          <div class="code-btns">
+            <button class="btn" id="btn-copy-code">Copiar código</button>
+            <button class="btn" id="btn-copy-link">Copiar link de invitación</button>
+          </div>
+        </li>
+        <li id="wstep-paste" data-state="idle">
+          <p class="wtitle" id="wstep-paste-title">Pegá la respuesta del rival</p>
+          <textarea class="code-area" id="code-in" placeholder="pegá el código acá…"></textarea>
+          <div class="code-btns">
+            <button class="btn primary" id="btn-connect">Conectar</button>
+          </div>
+        </li>
+        <li id="wstep-conn" data-state="idle">
+          <p class="wtitle">Conexión</p>
+          <p id="conn-status">esperando los pasos anteriores…</p>
+        </li>
+      </ol>
+      <p id="online-error"></p>
+      <div class="back-row"><button class="btn ghost" id="btn-online-back">← Volver</button></div>
+    </div>
+  </section>
+
+  <!-- ============ PAUSE ============ -->
+  <section class="screen" data-screen="pause">
+    <div class="panel pause-panel" style="width:min(380px,94vw)">
+      <h2>PAUSA</h2>
+      <button class="btn primary" id="btn-resume">Reanudar</button>
+      <button class="btn" id="btn-pause-options">Opciones</button>
+      <button class="btn" id="btn-quit">Salir al menú</button>
+    </div>
+  </section>
+
+  <!-- ============ RESULTS ============ -->
+  <section class="screen" data-screen="results">
+    <div class="panel">
+      <h2 id="results-title">FIN DE RONDA</h2>
+      <div id="results-champion"></div>
+      <div id="results-rows"></div>
+      <div id="results-next"></div>
+      <div class="results-btns">
+        <button class="btn primary" id="btn-rematch">Revancha</button>
+        <button class="btn" id="btn-results-menu">Menú</button>
       </div>
     </div>
-  </div>
-  <div id="help" class="hud">
-    P1 <kbd>WASD</kbd> · dash <kbd>Shift izq.</kbd> · salto <kbd>Espacio</kbd> &nbsp;|&nbsp;
-    P2 <kbd>Flechas</kbd> · dash <kbd>Shift der.</kbd> · salto <kbd>Ctrl der.</kbd> &nbsp;|&nbsp;
-    <kbd>1</kbd>–<kbd>4</kbd> nivel · <kbd>R</kbd> revancha
-  </div>
+  </section>
+
+  <!-- ============ OPTIONS ============ -->
+  <section class="screen" data-screen="options">
+    <div class="panel" style="width:min(520px,94vw)">
+      <h2>OPCIONES</h2>
+      <div class="opt-row">
+        <span class="lbl">Volumen general</span>
+        <input type="range" id="opt-vol-master" min="0" max="1" step="0.05" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl">Música</span>
+        <input type="range" id="opt-vol-music" min="0" max="1" step="0.05" />
+      </div>
+      <div class="opt-row">
+        <span class="lbl">Sombras</span>
+        <label class="switch"><input type="checkbox" id="opt-shadows" /><span class="track"></span></label>
+      </div>
+      <div class="opt-row">
+        <span class="lbl">Partículas</span>
+        <div class="seg" id="opt-particles">
+          <button data-q="baja">BAJA</button>
+          <button data-q="media">MEDIA</button>
+          <button data-q="alta" class="active">ALTA</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <span class="lbl">Reducir sacudidas<small>menos screen-shake y animaciones</small></span>
+        <label class="switch"><input type="checkbox" id="opt-reduced" /><span class="track"></span></label>
+      </div>
+      <div class="controls-note">
+        <b>P1</b> <kbd>WASD</kbd> mover · <kbd>Shift izq.</kbd> dash · <kbd>Espacio</kbd> salto<br />
+        <b>P2</b> <kbd>Flechas</kbd> mover · <kbd>Shift der.</kbd> dash · <kbd>Ctrl der.</kbd> salto<br />
+        <b>Partida</b> <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha · mantené el dash para frenarte (brace) y parriar empujones
+      </div>
+      <div class="back-row"><button class="btn ghost" id="btn-options-back">← Volver</button></div>
+    </div>
+  </section>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

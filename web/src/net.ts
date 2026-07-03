@@ -33,14 +33,15 @@ export function msgHash(round: number, tick: number, hash: number): ArrayBuffer 
   return buf;
 }
 
-export function msgStart(round: number, seed: number, level: number, resetWins: boolean): ArrayBuffer {
-  const buf = new ArrayBuffer(8);
+export function msgStart(round: number, seed: number, level: number, resetWins: boolean, winTarget: number): ArrayBuffer {
+  const buf = new ArrayBuffer(9);
   const v = new DataView(buf);
   v.setUint8(0, MSG_START);
   v.setUint8(1, round);
   v.setUint32(2, seed, true);
   v.setUint8(6, level);
   v.setUint8(7, resetWins ? 1 : 0);
+  v.setUint8(8, winTarget);
   return buf;
 }
 
@@ -48,9 +49,41 @@ function encodeCode(desc: RTCSessionDescriptionInit): string {
   return btoa(JSON.stringify({ t: desc.type, s: desc.sdp }));
 }
 
-function decodeCode(code: string): RTCSessionDescriptionInit {
-  const parsed = JSON.parse(atob(code.trim()));
-  return { type: parsed.t, sdp: parsed.s };
+/** Throws Error with a user-readable Spanish message on malformed input. */
+function decodeCode(code: string, expectedType: 'offer' | 'answer'): RTCSessionDescriptionInit {
+  let parsed: { t?: string; s?: string };
+  try {
+    parsed = JSON.parse(atob(code.trim()));
+  } catch {
+    throw new Error('El código está incompleto o cortado — copialo entero y probá de nuevo.');
+  }
+  if (!parsed.t || !parsed.s) {
+    throw new Error('Eso no parece un código de TUMBO.');
+  }
+  if (parsed.t !== expectedType) {
+    throw new Error(
+      expectedType === 'answer'
+        ? 'Ese es un código de invitación, no una respuesta. Pegá el código que te devolvió tu rival.'
+        : 'Ese es un código de respuesta. Pedile a tu rival el código de invitación.',
+    );
+  }
+  return { type: parsed.t as RTCSdpType, sdp: parsed.s };
+}
+
+/** Shareable URL that lands the guest directly in the join flow. */
+export function inviteLink(offerCode: string): string {
+  return `${location.origin}${location.pathname}#j=${encodeURIComponent(offerCode)}`;
+}
+
+/** Offer code embedded in the current URL, if any. */
+export function offerFromLocation(): string | null {
+  if (location.hash.startsWith('#join=')) {
+    return decodeURIComponent(location.hash.slice(6));
+  }
+  if (location.hash.startsWith('#j=')) {
+    return decodeURIComponent(location.hash.slice(3));
+  }
+  return null;
 }
 
 function waitIceComplete(pc: RTCPeerConnection, timeoutMs = 2000): Promise<void> {
@@ -93,7 +126,7 @@ export class NetSession {
   /** Guest side: consumes the host's offer, returns the answer code. */
   async acceptOfferCode(code: string): Promise<string> {
     this.pc.addEventListener('datachannel', (e) => this.attachChannel(e.channel));
-    await this.pc.setRemoteDescription(decodeCode(code));
+    await this.pc.setRemoteDescription(decodeCode(code, 'offer'));
     await this.pc.setLocalDescription(await this.pc.createAnswer());
     await waitIceComplete(this.pc);
     return encodeCode(this.pc.localDescription!);
@@ -101,11 +134,17 @@ export class NetSession {
 
   /** Host side: consumes the guest's answer. The channel opens shortly after. */
   async acceptAnswerCode(code: string): Promise<void> {
-    await this.pc.setRemoteDescription(decodeCode(code));
+    await this.pc.setRemoteDescription(decodeCode(code, 'answer'));
   }
 
   send(buf: ArrayBuffer): void {
     if (this.channel?.readyState === 'open') this.channel.send(buf);
+  }
+
+  close(): void {
+    this.onClose = null;
+    this.channel?.close();
+    this.pc.close();
   }
 
   private attachChannel(channel: RTCDataChannel): void {

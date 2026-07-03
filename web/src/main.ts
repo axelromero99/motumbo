@@ -1,8 +1,13 @@
+// Conductor: owns the mode state machine (menu/attract, solo, local, online),
+// steps the sim, and routes sim events to audio/music/fx/UI. All gameplay
+// truth lives in the WASM sim; everything here is presentation and I/O.
 import {
   Sim,
   TICK_MS,
   LEVEL_NAMES,
   EVENT_FLOATS,
+  FLAG_ALIVE,
+  FLAG_DASH_READY,
   EVT_HIT,
   EVT_DASH,
   EVT_JUMP,
@@ -12,25 +17,25 @@ import {
   EVT_ORB_SPAWN,
   EVT_ORB_PICKUP,
   EVT_ROUND_END,
+  EVT_DASH_HIT,
+  EVT_PARRY,
+  PIECE_STATIC,
 } from './sim';
 import { LocalInput } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
-import { NetSession, Lockstep, msgStart, MSG_INPUT, MSG_HASH, MSG_START } from './net';
+import { MusicEngine } from './music';
+import { NetSession, Lockstep, msgStart, MSG_INPUT, MSG_HASH, MSG_START, offerFromLocation } from './net';
+import { UiShell, type Settings } from './ui';
+import { renderLevelThumbs } from './minimap';
+import { MatchStats } from './stats';
 
 const PLAYER_NAMES = ['ROJO', 'AZUL', 'AMARILLO', 'VERDE', 'VIOLETA', 'NARANJA', 'TURQUESA', 'ROSA'];
-const WIN_TARGET = 5;
 const TILE_DUST = 0x9aa4c0;
-
-const HELP_LOCAL =
-  'P1 <kbd>WASD</kbd> · dash <kbd>Shift izq.</kbd> · salto <kbd>Espacio</kbd> &nbsp;|&nbsp; ' +
-  'P2 <kbd>Flechas</kbd> · dash <kbd>Shift der.</kbd> · salto <kbd>Ctrl der.</kbd> &nbsp;|&nbsp; ' +
-  '<kbd>1</kbd>–<kbd>4</kbd> nivel · <kbd>R</kbd> revancha';
-const HELP_NET =
-  '<kbd>WASD</kbd> mover · dash <kbd>Shift izq.</kbd> · salto <kbd>Espacio</kbd>' +
-  ' &nbsp;|&nbsp; el anfitrión elige nivel (<kbd>1</kbd>–<kbd>4</kbd>) y revancha (<kbd>R</kbd>)';
+const ORB_GOLD = 0xffc93c;
 
 type Mode = 'menu' | 'local' | 'net';
+type Intent = 'solo' | 'local' | 'net-host';
 
 function randomSeed(): number {
   return (Math.random() * 0xffffffff) >>> 0;
@@ -44,34 +49,40 @@ async function main(): Promise<void> {
   const countdownEl = $('countdown');
   const netwait = $('netwait');
   const help = $('help');
-  const menu = $('menu');
-  const netPanel = $('net-panel');
-  const netInstructions = $('net-instructions');
-  const netStatus = $('net-status');
-  const netOut = $('net-out') as HTMLTextAreaElement;
-  const netIn = $('net-in') as HTMLTextAreaElement;
 
   const sim = await Sim.create();
   const renderer = new GameRenderer(app);
   const input = new LocalInput();
   const audio = new AudioEngine();
+  const music = new MusicEngine();
+  const stats = new MatchStats();
 
-  // Browsers require a user gesture before audio can start.
-  const unlock = (): void => audio.unlock();
-  window.addEventListener('keydown', unlock);
-  window.addEventListener('pointerdown', unlock);
+  // ---------------------------------------------------------------------
+  // Session state
+  // ---------------------------------------------------------------------
 
   let mode: Mode = 'menu';
+  let intent: Intent = 'local';
   let seed = 1;
-  let level = 0;
-  const playerCount = 2;
-  const wins = new Array<number>(playerCount).fill(0);
+  let levelChoice: number | 'random' = 0;
+  let currentLevel = 0;
+  let winTarget = 5;
+  let playerCount = 2;
+  let botSlots: number[] = [];
+  let wins: number[] = [];
   let matchOver = false;
+  let paused = false;
   let timeScale = 1;
   let slowmoUntil = 0;
   let restartAt = 0;
   let lastCountShown = -1;
   let acc = 0;
+  let crumbleToastShown = false;
+  let lastScoreKey = '';
+  let prevLocalDashReady = true;
+  let reducedMotion = false;
+  let attractTimer = 0;
+  let attractLevel = 0;
 
   // Netplay state.
   let session: NetSession | null = null;
@@ -79,15 +90,87 @@ async function main(): Promise<void> {
   let isHost = false;
   let mySlot = 0;
   let roundId = 0;
+  let currentOfferCode = '';
+  let connectTimeout = 0;
   let lastNetProgress = 0;
   let desyncShown = false;
 
-  const colorName = (i: number): string => {
-    const you = mode === 'net' && i === mySlot ? ' (vos)' : '';
-    return `<span style="color:#${PLAYER_COLORS[i].toString(16).padStart(6, '0')}">${PLAYER_NAMES[i]}${you}</span>`;
+  const isNetGuest = (): boolean => mode === 'net' && !isHost;
+
+  const displayName = (i: number): string => {
+    const you = (mode === 'net' && i === mySlot) || (intent === 'solo' && i === 0 && mode !== 'net') ? ' (vos)' : '';
+    const bot = botSlots.includes(i) ? ' BOT' : '';
+    return `${PLAYER_NAMES[i]}${bot}${you}`;
   };
 
-  const scoreLine = (): string => wins.map((w, i) => `${colorName(i)}&nbsp;${w}`).join(' &nbsp;·&nbsp; ');
+  const resolveLevel = (): number =>
+    levelChoice === 'random' ? randomSeed() % sim.levelCount : levelChoice % sim.levelCount;
+
+  // ---------------------------------------------------------------------
+  // UI shell
+  // ---------------------------------------------------------------------
+
+  const applySettings = (s: Settings): void => {
+    audio.setMasterVolume(s.volMaster);
+    music.setVolume(s.volMusic);
+    renderer.setQuality({ shadows: s.shadows, pixelRatioCap: 2 });
+    renderer.fx.setDensity(s.particles);
+    reducedMotion = s.reducedMotion;
+  };
+
+  const ui = new UiShell({
+    onSolo: () => {
+      audio.uiClick();
+      intent = 'solo';
+      ui.show('setup');
+    },
+    onLocal: () => {
+      audio.uiClick();
+      intent = 'local';
+      ui.show('setup');
+    },
+    onOnline: (host: boolean) => {
+      audio.uiClick();
+      void beginOnline(host);
+    },
+    onConnectClicked: (code: string) => void connectWithCode(code),
+    // UiShell already wrote code/link to the clipboard; we just confirm.
+    onCopyCode: () => ui.toast('código copiado'),
+    onInviteLink: () => ui.toast('link de invitación copiado'),
+    onStartMatch: (level: number | 'random', target: number) => {
+      audio.uiClick();
+      levelChoice = level;
+      winTarget = target;
+      if (mode === 'net' || intent === 'net-host') {
+        if (isHost) hostStartMatch();
+      } else {
+        startMatch();
+      }
+    },
+    onResume: () => setPaused(false),
+    onQuitToTitle: () => quitToTitle(),
+    onSettingsChanged: applySettings,
+  });
+  applySettings(ui.settings);
+  ui.setLifetimeLine(stats.summaryLine());
+
+  // Browsers require a user gesture before audio can start.
+  const unlock = (): void => audio.unlock();
+  window.addEventListener('keydown', unlock);
+  window.addEventListener('pointerdown', unlock);
+  audio.onUnlock = () => {
+    if (audio.context && audio.musicDestination) {
+      music.attach(audio.context, audio.musicDestination);
+      music.setVolume(ui.settings.volMusic);
+    }
+  };
+
+  // Level thumbnails: cheap sim inits at boot, then hand the sim to attract.
+  ui.setLevelThumbs(renderLevelThumbs(sim), LEVEL_NAMES);
+
+  // ---------------------------------------------------------------------
+  // Round / match lifecycle
+  // ---------------------------------------------------------------------
 
   const resetRoundLocals = (): void => {
     banner.style.display = 'none';
@@ -97,67 +180,86 @@ async function main(): Promise<void> {
     lastCountShown = -1;
     acc = 0;
     desyncShown = false;
+    crumbleToastShown = false;
+    lastScoreKey = '';
+    prevLocalDashReady = true;
+  };
+
+  const initRound = (roundSeed: number, lvl: number): void => {
+    currentLevel = lvl;
+    sim.init(roundSeed, playerCount, lvl);
+    for (const slot of botSlots) sim.setBot(slot, slot === playerCount - 1 ? 2 : 1);
+    renderer.setup(sim);
+    stats.onRoundStart(0);
+    resetRoundLocals();
+  };
+
+  const startAttract = (): void => {
+    mode = 'menu';
+    playerCount = 4;
+    botSlots = [0, 1, 2, 3];
+    wins = [0, 0, 0, 0];
+    matchOver = false;
+    attractLevel = (attractLevel + 1) % sim.levelCount;
+    sim.init(randomSeed(), 4, attractLevel);
+    for (const slot of botSlots) sim.setBot(slot, 2);
+    renderer.setup(sim);
+    resetRoundLocals();
+    attractTimer = performance.now() + 45000;
+  };
+
+  const startMatch = (): void => {
+    mode = 'local';
+    if (intent === 'solo') {
+      playerCount = 4;
+      botSlots = [1, 2, 3];
+    } else {
+      playerCount = 2;
+      botSlots = [];
+    }
+    wins = new Array(playerCount).fill(0);
+    matchOver = false;
+    stats.reset(playerCount);
+    initRound(seed++, resolveLevel());
+    ui.show('none');
+    help.innerHTML = helpText();
+    updateScorebar(true);
   };
 
   const startLocalRound = (): void => {
     if (matchOver) {
       wins.fill(0);
       matchOver = false;
+      stats.reset(playerCount);
     }
-    sim.init(seed++, playerCount, level);
-    renderer.setup(sim);
-    resetRoundLocals();
+    initRound(seed++, resolveLevel());
+    ui.show('none');
   };
 
-  const startNetRound = (netSeed: number, lvl: number, round: number): void => {
-    level = lvl;
-    roundId = round;
-    sim.init(netSeed, playerCount, lvl);
-    renderer.setup(sim);
-    lockstep = new Lockstep(session!, mySlot, round);
-    lastNetProgress = performance.now();
-    resetRoundLocals();
-    menu.style.display = 'none';
-    mode = 'net';
-    help.innerHTML = HELP_NET;
+  const quitToTitle = (): void => {
+    session?.close();
+    session = null;
+    lockstep = null;
+    paused = false;
+    ui.setLifetimeLine(stats.summaryLine());
+    startAttract();
+    ui.show('title');
   };
 
-  const hostNextRound = (resetWins: boolean): void => {
-    if (!session) return;
-    if (resetWins) {
-      wins.fill(0);
-      matchOver = false;
-    }
-    roundId = (roundId + 1) & 0xff;
-    const netSeed = randomSeed();
-    session.send(msgStart(roundId, netSeed, level, resetWins));
-    startNetRound(netSeed, level, roundId);
-  };
-
-  // Boot with an idle arena behind the menu.
-  sim.init(1, playerCount, 0);
-  renderer.setup(sim);
-
-  input.onReset = () => {
-    if (mode === 'local') startLocalRound();
-    else if (mode === 'net' && isHost) hostNextRound(matchOver);
-  };
-  input.onSelectLevel = (l: number) => {
-    if (mode === 'local') {
-      level = l % sim.levelCount;
-      startLocalRound();
-    } else if (mode === 'net' && isHost) {
-      level = l % sim.levelCount;
-      hostNextRound(matchOver);
-    }
+  const setPaused = (value: boolean): void => {
+    if (mode === 'menu') return;
+    paused = value;
+    ui.show(paused ? 'pause' : 'none');
+    if (!paused) acc = 0;
   };
 
   // ---------------------------------------------------------------------
-  // Menu / signaling UI
+  // Online flow
   // ---------------------------------------------------------------------
 
   const wireSession = (): NetSession => {
     const s = new NetSession();
+    s.onOpen = () => onChannelOpen();
     s.onMessage = (v: DataView) => {
       const type = v.getUint8(0);
       if (type === MSG_INPUT) lockstep?.onRemoteInput(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
@@ -167,90 +269,186 @@ async function main(): Promise<void> {
         const netSeed = v.getUint32(2, true);
         const lvl = v.getUint8(6);
         if (v.getUint8(7) === 1) {
-          wins.fill(0);
           matchOver = false;
+          wins = [0, 0];
+          stats.reset(2);
         }
+        winTarget = v.getUint8(8);
+        roundId = round;
         startNetRound(netSeed, lvl, round);
       }
     };
     s.onClose = () => {
       if (mode === 'net') {
-        mode = 'menu';
-        lockstep = null;
-        menu.style.display = 'flex';
-        netStatus.textContent = '❌ conexión perdida';
+        ui.toast('❌ se cortó la conexión');
+        quitToTitle();
+      } else {
+        ui.setOnlineState('error', 'Se cortó la conexión. Volvé a intentar.');
       }
     };
     return s;
   };
 
-  $('btn-local').addEventListener('click', () => {
-    menu.style.display = 'none';
-    mode = 'local';
-    help.innerHTML = HELP_LOCAL;
-    startLocalRound();
-  });
-
-  $('btn-host').addEventListener('click', async () => {
-    isHost = true;
-    mySlot = 0;
+  async function beginOnline(host: boolean): Promise<void> {
+    session?.close();
+    isHost = host;
+    mySlot = host ? 0 : 1;
+    intent = 'net-host';
     session = wireSession();
-    session.onOpen = () => {
-      roundId = 0;
-      const netSeed = randomSeed();
-      wins.fill(0);
-      matchOver = false;
-      session!.send(msgStart(0, netSeed, level, true));
-      startNetRound(netSeed, level, 0);
-    };
-    netPanel.hidden = false;
-    netInstructions.innerHTML =
-      '1) Copiá tu código y mandáselo al rival.<br>2) Pegá abajo el código que te devuelva y tocá <b>Conectar</b>.';
-    netStatus.textContent = 'generando código…';
-    netOut.value = await session.createOfferCode();
-    netStatus.textContent = 'código listo ✔';
-  });
+    if (host) {
+      ui.setOnlineState('creating', 'generando tu código…');
+      try {
+        currentOfferCode = await session.createOfferCode();
+        ui.setOfferCode(currentOfferCode);
+        ui.setOnlineState('offer-ready', 'Mandale el código o el link a tu rival y pegá su respuesta.');
+      } catch (err) {
+        ui.setOnlineState('error', String(err));
+      }
+    } else {
+      ui.setOnlineState('idle', 'Pegá el código o abrí el link que te mandaron.');
+    }
+  }
 
-  $('btn-join').addEventListener('click', () => {
-    isHost = false;
-    mySlot = 1;
-    session = wireSession();
-    session.onOpen = () => {
-      netStatus.textContent = 'conectado ✔ esperando al anfitrión…';
-    };
-    netPanel.hidden = false;
-    netOut.value = '';
-    netInstructions.innerHTML =
-      '1) Pegá abajo el código del anfitrión y tocá <b>Conectar</b>.<br>2) Copiá el código generado y mandáselo.';
-    netStatus.textContent = '';
-  });
-
-  $('btn-connect').addEventListener('click', async () => {
-    if (!session || !netIn.value.trim()) return;
+  async function connectWithCode(code: string): Promise<void> {
+    if (!session || !code.trim()) return;
     try {
       if (isHost) {
-        netStatus.textContent = 'conectando…';
-        await session.acceptAnswerCode(netIn.value);
+        ui.setOnlineState('connecting', 'conectando…');
+        await session.acceptAnswerCode(code);
+        connectTimeout = window.setTimeout(() => {
+          ui.setOnlineState(
+            'error',
+            'No se pudo conectar (probablemente un NAT restrictivo). Probá con el hotspot del celular.',
+          );
+        }, 12000);
       } else {
-        netStatus.textContent = 'generando respuesta…';
-        netOut.value = await session.acceptOfferCode(netIn.value);
-        netStatus.textContent = 'respuesta lista ✔ mandásela al anfitrión';
+        ui.setOnlineState('creating', 'generando tu respuesta…');
+        currentOfferCode = await session.acceptOfferCode(code);
+        ui.setOfferCode(currentOfferCode);
+        ui.setOnlineState('answer-ready', 'Mandale este código de respuesta al anfitrión.');
       }
-    } catch {
-      netStatus.textContent = '⚠ código inválido, revisalo';
+    } catch (err) {
+      ui.setOnlineState('error', err instanceof Error ? err.message : String(err));
     }
-  });
+  }
 
-  $('btn-copy').addEventListener('click', () => {
-    netOut.select();
-    void navigator.clipboard.writeText(netOut.value);
-  });
+  const onChannelOpen = (): void => {
+    window.clearTimeout(connectTimeout);
+    playerCount = 2;
+    botSlots = [];
+    wins = [0, 0];
+    matchOver = false;
+    stats.reset(2);
+    if (isHost) {
+      ui.setOnlineState('connected', 'conectados ✔ elegí nivel y arrancamos');
+      ui.show('setup');
+    } else {
+      ui.setOnlineState('connected', 'conectados ✔ el anfitrión elige el nivel…');
+    }
+  };
+
+  const startNetRound = (netSeed: number, lvl: number, round: number): void => {
+    mode = 'net';
+    playerCount = 2;
+    botSlots = [];
+    initRound(netSeed, lvl);
+    lockstep = new Lockstep(session!, mySlot, round);
+    lastNetProgress = performance.now();
+    ui.show('none');
+    help.innerHTML = helpText();
+    updateScorebar(true);
+  };
+
+  const hostStartMatch = (): void => {
+    roundId = 0;
+    wins = [0, 0];
+    matchOver = false;
+    stats.reset(2);
+    const netSeed = randomSeed();
+    const lvl = resolveLevel();
+    session!.send(msgStart(0, netSeed, lvl, true, winTarget));
+    startNetRound(netSeed, lvl, 0);
+  };
+
+  const hostNextRound = (resetWins: boolean): void => {
+    if (!session) return;
+    if (resetWins) {
+      wins.fill(0);
+      matchOver = false;
+      stats.reset(2);
+    }
+    roundId = (roundId + 1) & 0xff;
+    const netSeed = randomSeed();
+    const lvl = resolveLevel();
+    session.send(msgStart(roundId, netSeed, lvl, resetWins, winTarget));
+    startNetRound(netSeed, lvl, roundId);
+  };
+
+  // Deep link: ?#j=<offer> lands straight in the join flow.
+  const linkedOffer = offerFromLocation();
 
   // ---------------------------------------------------------------------
-  // Gameplay event dispatch (sound / particles / match flow)
+  // Input routing
   // ---------------------------------------------------------------------
+
+  input.onReset = () => {
+    if (paused || mode === 'menu') return;
+    if (mode === 'local') startLocalRound();
+    else if (mode === 'net' && isHost) hostNextRound(matchOver);
+  };
+  input.onSelectLevel = (l: number) => {
+    if (paused || mode === 'menu') return;
+    if (mode === 'local') {
+      levelChoice = l % sim.levelCount;
+      startLocalRound();
+    } else if (mode === 'net' && isHost) {
+      levelChoice = l % sim.levelCount;
+      hostNextRound(matchOver);
+    }
+  };
+  input.onPause = () => {
+    if (mode === 'menu') return;
+    setPaused(!paused);
+  };
+
+  function helpText(): string {
+    const p1 =
+      'P1 <kbd>WASD</kbd> · dash <kbd>Shift</kbd> · salto <kbd>Espacio</kbd> · anclarse <kbd>Ctrl</kbd>';
+    if (mode === 'net') return `${p1} &nbsp;|&nbsp; <kbd>Esc</kbd> pausa`;
+    if (intent === 'solo') return `${p1} &nbsp;|&nbsp; <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha`;
+    return (
+      `${p1} &nbsp;|&nbsp; P2 <kbd>Flechas</kbd> · <kbd>Shift der.</kbd> · <kbd>Ctrl der.</kbd> · <kbd>.</kbd>` +
+      ' &nbsp;|&nbsp; <kbd>Esc</kbd> pausa'
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Sim event dispatch
+  // ---------------------------------------------------------------------
+
+  const trauma = (amount: number): void => {
+    renderer.fx.addTrauma(reducedMotion ? Math.min(amount, 0.1) : amount);
+  };
+
+  const showResults = (championIdx: number | null): void => {
+    ui.showResults({
+      rows: wins.map((w, i) => ({
+        name: displayName(i),
+        color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+        wins: w,
+        aliveTicks: stats.aliveTicks(i),
+        shoves: stats.shoves(i),
+        kos: stats.kos(i),
+        winner: championIdx === i,
+      })),
+      winTarget,
+      champion: championIdx,
+      nextInMs: championIdx === null && restartAt > 0 ? restartAt - performance.now() : null,
+    });
+  };
 
   const handleEvents = (events: Float32Array): void => {
+    const attract = mode === 'menu';
     for (let e = 0; e < events.length; e += EVENT_FLOATS) {
       const type = events[e];
       const x = events[e + 1];
@@ -259,75 +457,145 @@ async function main(): Promise<void> {
       const a = events[e + 4];
       const b = events[e + 5];
       const pcolor = b >= 0 ? PLAYER_COLORS[b % PLAYER_COLORS.length] : 0xffffff;
+      if (!attract) stats.onEvent(type, a, b, sim.frame);
 
       switch (type) {
         case EVT_HIT:
-          audio.hit(a);
+          if (!attract) audio.hit(a);
           renderer.fx.burst(x, y, z, 0xffffff, { count: Math.min(24, Math.floor(a * 2.5)), speed: a * 0.5, life: 450 });
-          if (a > 5) renderer.fx.addTrauma(Math.min(0.45, a * 0.035));
+          if (a > 5 && !attract) trauma(Math.min(0.45, a * 0.035));
+          if (b >= 0) renderer.squash(b, Math.min(0.5, a * 0.05));
           break;
         case EVT_DASH:
-          audio.dash(a > 0.5);
-          renderer.fx.burst(x, y, z, a > 0.5 ? 0xffaa00 : pcolor, { count: a > 0.5 ? 26 : 10, speed: 2.5, life: 380 });
-          renderer.fx.addTrauma(a > 0.5 ? 0.18 : 0.06);
+          if (!attract) audio.dash(a > 0.5);
+          renderer.fx.burst(x, y, z, a > 0.5 ? ORB_GOLD : pcolor, { count: a > 0.5 ? 26 : 10, speed: 2.5, life: 380 });
+          if (!attract) trauma(a > 0.5 ? 0.18 : 0.06);
+          if (b >= 0) renderer.squash(b, 0.35);
           break;
         case EVT_JUMP:
-          audio.jump();
+          if (!attract) audio.jump();
           renderer.fx.burst(x, y - 0.5, z, TILE_DUST, { count: 6, speed: 1.2, up: 0.5, life: 300 });
+          if (b >= 0) renderer.squash(b, 0.3);
           break;
         case EVT_TILE_WARN:
-          audio.tileWarn();
+          if (!attract) {
+            audio.tileWarn();
+            if (!crumbleToastShown) {
+              crumbleToastShown = true;
+              ui.toast('⚠ ¡SE DERRUMBA!');
+            }
+          }
           break;
         case EVT_TILE_DROP:
-          audio.tileDrop();
+          if (!attract) audio.tileDrop();
           renderer.fx.burst(x, y + 0.4, z, TILE_DUST, { count: 14, speed: 1.6, up: 1, life: 550 });
-          renderer.fx.addTrauma(0.08);
+          renderer.fx.ring(x, y + 0.4, z, TILE_DUST, 2);
+          if (!attract) trauma(0.08);
+          break;
+        case EVT_DASH_HIT: {
+          renderer.fx.ring(x, y, z, 0xffffff, 2.5);
+          if (b >= 0) renderer.squash(b, 0.55);
+          if (!attract) {
+            trauma(0.12);
+            renderer.fx.addPunch(x * 0.04, z * 0.04);
+          }
+          break;
+        }
+        case EVT_PARRY:
+          if (!attract) audio.parry();
+          renderer.fx.ring(x, y, z, 0xffffff, 4);
+          renderer.fx.burst(x, y, z, 0xffffff, { count: 30, speed: 4, life: 500 });
+          if (!attract) trauma(0.3);
+          if (a >= 0) renderer.squash(a, 0.6);
+          if (b >= 0) renderer.squash(b, 0.4);
           break;
         case EVT_FALL:
-          audio.fall();
+          if (!attract) {
+            audio.fall();
+            music.duck(500);
+            trauma(0.3);
+            renderer.fx.addPunch(x * 0.05, z * 0.05);
+          }
           renderer.fx.burst(x, Math.max(y, -6), z, pcolor, { count: 36, speed: 4, up: 4, life: 800 });
-          renderer.fx.addTrauma(0.3);
+          renderer.fx.ring(x, 0.2, z, pcolor, 5);
           break;
         case EVT_ORB_SPAWN:
-          audio.orbSpawn();
-          renderer.fx.burst(x, y, z, 0xffc93c, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
+          if (!attract) (a > 0.5 ? audio.orbLoose() : audio.orbSpawn());
+          renderer.fx.burst(x, y, z, ORB_GOLD, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
           break;
         case EVT_ORB_PICKUP:
-          audio.orbPickup();
-          renderer.fx.burst(x, y, z, 0xffc93c, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
+          if (!attract) audio.orbPickup();
+          renderer.fx.burst(x, y, z, ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
           break;
         case EVT_ROUND_END: {
           const winner = a;
-          renderer.fx.addTrauma(0.25);
-          timeScale = 0.3;
-          slowmoUntil = performance.now() + 1300;
+          if (attract) {
+            restartAt = performance.now() + 3000;
+            break;
+          }
+          trauma(0.25);
+          music.duck(900);
+          if (!reducedMotion) {
+            timeScale = 0.3;
+            slowmoUntil = performance.now() + 1300;
+          }
+          let championIdx: number | null = null;
           if (winner >= 0) {
             wins[winner]++;
-            if (wins[winner] >= WIN_TARGET) {
+            stats.recordRound(isWinnerLocal(winner));
+            if (wins[winner] >= winTarget) {
               matchOver = true;
+              championIdx = winner;
               audio.champion();
-              const again = mode === 'net' && !isHost ? 'el anfitrión decide la revancha' : 'R para nuevo match';
-              banner.innerHTML = `🏆 CAMPEÓN ${colorName(winner)} 🏆<br><small>${again}</small>`;
+              stats.recordMatch(isWinnerLocal(winner));
+              ui.setLifetimeLine(stats.summaryLine());
             } else {
               audio.roundEnd();
-              banner.innerHTML = `GANA ${colorName(winner)}`;
-              if (mode === 'local' || isHost) restartAt = performance.now() + 3200;
+              if (mode === 'local' || isHost) restartAt = performance.now() + 3600;
             }
           } else {
             audio.roundEnd();
-            banner.innerHTML = 'EMPATE';
-            if (mode === 'local' || isHost) restartAt = performance.now() + 3200;
+            if (mode === 'local' || isHost) restartAt = performance.now() + 3600;
           }
-          banner.style.display = 'block';
+          showResults(championIdx);
           break;
         }
       }
     }
   };
 
+  const isWinnerLocal = (winner: number): boolean => {
+    if (mode === 'net') return winner === mySlot;
+    if (intent === 'solo') return winner === 0;
+    return true; // couch play: every human counts
+  };
+
+  const updateScorebar = (force: boolean): void => {
+    const alive = sim.aliveMask;
+    const key = `${wins.join(',')}|${alive}`;
+    if (!force && key === lastScoreKey) return;
+    lastScoreKey = key;
+    ui.updateScorebar(
+      wins.map((w, i) => ({
+        color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+        wins: w,
+        alive: (alive & (1 << i)) !== 0,
+        you: (mode === 'net' && i === mySlot) || (intent === 'solo' && mode !== 'net' && i === 0),
+      })),
+      winTarget,
+    );
+  };
+
   // ---------------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------------
+
+  startAttract();
+  ui.show('title');
+  if (linkedOffer) {
+    ui.show('online');
+    void beginOnline(false).then(() => connectWithCode(linkedOffer));
+  }
 
   let last = performance.now();
 
@@ -339,17 +607,21 @@ async function main(): Promise<void> {
     }
     if (restartAt > 0 && now >= restartAt) {
       restartAt = 0;
-      if (mode === 'local') startLocalRound();
+      if (mode === 'menu') startAttract();
+      else if (mode === 'local') startLocalRound();
       else if (mode === 'net' && isHost) hostNextRound(false);
     }
+    if (mode === 'menu' && now >= attractTimer) startAttract();
 
     const dt = now - last;
     last = now;
-    acc += dt * timeScale;
+    if (!paused) acc += dt * timeScale;
     // Cap catch-up work after a background tab pause.
     if (acc > 250) acc = 250;
 
-    if (mode === 'local') {
+    if (paused) {
+      acc = 0;
+    } else if (mode === 'local' || mode === 'menu') {
       while (acc >= TICK_MS) {
         const events = sim.step(input.words);
         acc -= TICK_MS;
@@ -382,6 +654,24 @@ async function main(): Promise<void> {
     renderer.update(sim, acc / TICK_MS, now);
     renderer.render(dt, now);
 
+    // Music follows the round's dramatic arc (attract mode included).
+    {
+      let standing = 0;
+      for (let i = 0; i < sim.pieceCount; i++) {
+        if (sim.curr[sim.pieceBase(i) + 7] === PIECE_STATIC) standing++;
+      }
+      let aliveCount = 0;
+      for (let i = 0; i < playerCount; i++) if (sim.aliveMask & (1 << i)) aliveCount++;
+      music.setState({
+        level: currentLevel,
+        aliveCount,
+        playerCount,
+        crumbleRatio: sim.pieceCount > 0 ? 1 - standing / sim.pieceCount : 0,
+        countdown: sim.frame < sim.countdownTicks,
+        roundOver: sim.winner !== -1,
+      });
+    }
+
     if (mode !== 'menu') {
       // Round-start countdown display.
       const framesLeft = sim.countdownTicks - sim.frame;
@@ -404,10 +694,18 @@ async function main(): Promise<void> {
         countdownEl.style.display = 'none';
       }
 
-      const modeTag = mode === 'net' ? (isHost ? 'ONLINE (anfitrión)' : 'ONLINE') : 'LOCAL';
-      status.innerHTML = `${modeTag} &nbsp;·&nbsp; ${LEVEL_NAMES[level]} &nbsp;·&nbsp; primero a ${WIN_TARGET} &nbsp;·&nbsp; ${scoreLine()}`;
+      // Dash-ready blip for the local player.
+      const localSlot = mode === 'net' ? mySlot : 0;
+      const flags = sim.curr[sim.playerBase(localSlot) + 7];
+      const ready = (flags & FLAG_DASH_READY) !== 0 && (flags & FLAG_ALIVE) !== 0;
+      if (ready && !prevLocalDashReady) audio.dashReady();
+      prevLocalDashReady = ready;
+
+      updateScorebar(false);
+      const modeTag = mode === 'net' ? (isHost ? 'ONLINE · anfitrión' : 'ONLINE') : intent === 'solo' ? 'SOLO' : 'LOCAL';
+      status.textContent = `${modeTag} · ${LEVEL_NAMES[currentLevel]}`;
     } else {
-      status.innerHTML = '';
+      status.textContent = '';
       countdownEl.style.display = 'none';
     }
   };
