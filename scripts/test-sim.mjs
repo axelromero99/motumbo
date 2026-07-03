@@ -52,7 +52,8 @@ async function run(level, label, useBots) {
   let gone = 0;
   let warning = 0;
   for (let i = 0; i < pieceCount; i++) {
-    const st = S[stateBase + STATE_HEADER + STATE_STRIDE * (PLAYERS + i) + 7];
+    // Piece float packs state + special*16 — unpack before comparing.
+    const st = Math.round(S[stateBase + STATE_HEADER + STATE_STRIDE * (PLAYERS + i) + 7]) & 15;
     if (st === 2) falling++;
     if (st === 0) gone++;
     if (st === 3) warning++;

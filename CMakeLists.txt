@@ -10,7 +10,9 @@ add_executable(sim sim/tumbo.c)
 target_link_libraries(sim PRIVATE box3d::box3d)
 
 if(EMSCRIPTEN)
-	target_compile_options(sim PRIVATE -msimd128 -msse2)
+	# -ffp-contract=off: no fused multiply-add, so float results are stable —
+	# the same guarantee Box3D sets for its own sources.
+	target_compile_options(sim PRIVATE -msimd128 -msse2 -ffp-contract=off)
 	set_target_properties(sim PROPERTIES OUTPUT_NAME "tumbo" SUFFIX ".js")
 	target_link_options(sim PRIVATE
 		"-sMODULARIZE=1"

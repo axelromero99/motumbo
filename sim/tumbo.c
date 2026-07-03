@@ -190,12 +190,25 @@ typedef struct Player
 	bool alive;
 } Player;
 
+// Tile specials, packed into the state float as state + special*16.
+enum
+{
+	SPECIAL_NONE = 0,
+	SPECIAL_BOOST = 1,	 // accelerates along (dirX, dirZ) while you roll on it
+	SPECIAL_BOUNCY = 2,	 // trampoline material
+};
+
+#define BOOST_ACCEL 42.0f
+#define BOOST_MAX_SPEED 15.0f
+
 typedef struct Piece
 {
 	b3BodyId body;
 	int state;
 	int timer;	   // ticks left in WARNING before dropping
 	int priority;  // crumble group, lower falls first
+	int special;
+	float dirX, dirZ; // boost direction (unit, XZ)
 } Piece;
 
 typedef struct Hazard
@@ -425,7 +438,7 @@ static void WriteState( void )
 		out[4] = q.v.y;
 		out[5] = q.v.z;
 		out[6] = q.s;
-		out[7] = (float)g_pieces[i].state;
+		out[7] = (float)( g_pieces[i].state + g_pieces[i].special * 16 );
 		out += STATE_STRIDE;
 	}
 	for ( int i = 0; i < g_hazardCount; ++i )
@@ -474,7 +487,11 @@ static void WriteState( void )
 // Level construction
 // ---------------------------------------------------------------------------
 
-static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxHull* hull )
+// Full-control tile: optional special behavior and an optional pitch that
+// turns the slab into a ramp. rampDir: -1 flat, 0 rises toward +X, 1 toward
+// -X, 2 toward +Z, 3 toward -Z (one tile climbs 0.8m — jumpable, not dashable).
+static void AddPieceEx( float cx, float cz, float topY, int priority, const b3BoxHull* hull, int special, float dirX,
+						float dirZ, int rampDir )
 {
 	if ( g_pieceCount >= MAX_PIECES )
 	{
@@ -483,12 +500,39 @@ static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxH
 
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_staticBody;
-	bodyDef.position = ( b3Pos ){ cx, topY - PIECE_HY, cz };
+
+	if ( rampDir >= 0 )
+	{
+		// Ramp slab: center sits halfway up the climb, pitched ~28°.
+		float half = 0.4899f * 0.5f; // atan2(0.8, 1.5) / 2
+		float s = sinf( half );
+		float c = cosf( half );
+		switch ( rampDir )
+		{
+			case 0: // rises toward +X: rotate about +Z
+				bodyDef.rotation = ( b3Quat ){ { 0.0f, 0.0f, s }, c };
+				break;
+			case 1: // rises toward -X
+				bodyDef.rotation = ( b3Quat ){ { 0.0f, 0.0f, -s }, c };
+				break;
+			case 2: // rises toward +Z: rotate about -X
+				bodyDef.rotation = ( b3Quat ){ { -s, 0.0f, 0.0f }, c };
+				break;
+			default: // rises toward -Z
+				bodyDef.rotation = ( b3Quat ){ { s, 0.0f, 0.0f }, c };
+				break;
+		}
+		bodyDef.position = ( b3Pos ){ cx, topY + 0.4f - PIECE_HY, cz };
+	}
+	else
+	{
+		bodyDef.position = ( b3Pos ){ cx, topY - PIECE_HY, cz };
+	}
 	b3BodyId body = b3CreateBody( g_world, &bodyDef );
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.7f;
-	shapeDef.baseMaterial.restitution = 0.0f;
+	shapeDef.baseMaterial.restitution = special == SPECIAL_BOUNCY ? 1.05f : 0.0f;
 	shapeDef.density = 800.0f;
 	shapeDef.filter.categoryBits = CAT_WORLD;
 	b3CreateHullShape( body, &shapeDef, &hull->base );
@@ -497,7 +541,15 @@ static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxH
 	g_pieces[g_pieceCount].state = PIECE_STATIC;
 	g_pieces[g_pieceCount].timer = 0;
 	g_pieces[g_pieceCount].priority = priority;
+	g_pieces[g_pieceCount].special = special;
+	g_pieces[g_pieceCount].dirX = dirX;
+	g_pieces[g_pieceCount].dirZ = dirZ;
 	g_pieceCount += 1;
+}
+
+static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxHull* hull )
+{
+	AddPieceEx( cx, cz, topY, priority, hull, SPECIAL_NONE, 0.0f, 0.0f, -1 );
 }
 
 // Crumble order: ascending priority group, then farthest-from-origin first,
@@ -601,7 +653,17 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			{
 				if ( d2 <= 10.1f * 10.1f && d2 >= 4.06f * 4.06f )
 				{
-					AddPiece( cx, cz, 0.0f, 0, hull );
+					// Velodrome: the ring's centerline is a counterclockwise
+					// speed lane. Fighting against the current is a choice.
+					float r = sqrtf( d2 );
+					if ( r >= 6.4f && r <= 7.8f )
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, -cz / r, cx / r, -1 );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.0f, 0, hull );
+					}
 				}
 			}
 			else if ( level == LEVEL_PUENTES )
@@ -646,7 +708,8 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			}
 			else if ( level == LEVEL_PIRAMIDE )
 			{
-				// Three concentric square terraces; king of the hill.
+				// Three concentric square terraces; king of the hill. Ramps
+				// on the four axis midlines let you ROLL up with momentum.
 				int ax = gx < 0 ? -gx : gx;
 				int az = gz < 0 ? -gz : gz;
 				int m = ax > az ? ax : az;
@@ -654,7 +717,17 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				{
 					float h = m <= 2 ? 1.6f : ( m <= 4 ? 0.8f : 0.0f );
 					int prio = m >= 5 ? 0 : ( m >= 3 ? 1 : 2 );
-					AddPiece( cx, cz, h, prio, hull );
+					bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
+					if ( onAxis && ( m == 3 || m == 5 ) )
+					{
+						// Rises toward the center: -X for +x arm, +X for -x arm...
+						int dir = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );
+						AddPieceEx( cx, cz, m == 3 ? 0.8f : 0.0f, prio, hull, SPECIAL_NONE, 0.0f, 0.0f, dir );
+					}
+					else
+					{
+						AddPiece( cx, cz, h, prio, hull );
+					}
 				}
 			}
 			else if ( level == LEVEL_HERRADURA )
@@ -689,6 +762,14 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				if ( gx >= -2 && gx <= 2 && gz >= -2 && gz <= 2 )
 				{
 					prio = 5;
+					// Plaza corners are trampolines: bounce back up to the pads.
+					int axT = gx < 0 ? -gx : gx;
+					int azT = gz < 0 ? -gz : gz;
+					if ( axT == 2 && azT == 2 )
+					{
+						AddPieceEx( cx, cz, 0.0f, prio, hull, SPECIAL_BOUNCY, 0.0f, 0.0f, -1 );
+						continue;
+					}
 				}
 				else if ( gx >= 4 && gx <= 6 && gz >= -1 && gz <= 1 )
 				{
@@ -744,7 +825,8 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			}
 			else if ( level == LEVEL_GEMELAS )
 			{
-				// Twin discs and a single doomed crossing.
+				// Twin discs and a single doomed crossing — the bridge is a
+				// launcher that flings you toward the far island.
 				float dl = ( cx + 6.75f ) * ( cx + 6.75f ) + cz * cz;
 				float dr = ( cx - 6.75f ) * ( cx - 6.75f ) + cz * cz;
 				bool disc = dl <= 4.4f * 4.4f || dr <= 4.4f * 4.4f;
@@ -756,7 +838,15 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 				}
 				else if ( bridge )
 				{
-					AddPiece( cx, cz, 0.0f, 0, hull );
+					if ( gx == 0 )
+					{
+						// Keep the center tile neutral so the level stays mirror-symmetric.
+						AddPiece( cx, cz, 0.0f, 0, hull );
+					}
+					else
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, cx < 0.0f ? 1.0f : -1.0f, 0.0f, -1 );
+					}
 				}
 			}
 			else if ( level == LEVEL_PANAL )
@@ -789,22 +879,42 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			else if ( level == LEVEL_VOLCAN )
 			{
 				// The crater grows: crumble radiates from the center outward.
+				// The raised rim is a trampoline — your last-ditch escape.
 				float r = sqrtf( d2 );
 				if ( r <= 9.1f && r >= 1.6f )
 				{
-					AddPiece( cx, cz, r >= 7.9f ? 0.8f : 0.0f, (int)( r * 2.0f ), hull );
+					if ( r >= 7.9f )
+					{
+						AddPieceEx( cx, cz, 0.8f, (int)( r * 2.0f ), hull, SPECIAL_BOUNCY, 0.0f, 0.0f, -1 );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.0f, (int)( r * 2.0f ), hull );
+					}
 				}
 			}
 			else if ( level == LEVEL_ZIGURAT )
 			{
-				// Four square terraces up to 2.4m; the base erodes first.
+				// Four square terraces up to 2.4m with ramp staircases on the
+				// axis midlines; the base erodes first.
 				int ax = gx < 0 ? -gx : gx;
 				int az = gz < 0 ? -gz : gz;
 				int m = ax > az ? ax : az;
 				if ( m <= 7 && d2 <= 10.4f * 10.4f )
 				{
 					int tier = m <= 1 ? 3 : ( m <= 3 ? 2 : ( m <= 5 ? 1 : 0 ) );
-					AddPiece( cx, cz, 0.8f * (float)tier, tier, hull );
+					// Ramps only on the inner tier boundaries: the outer ring
+					// stays flat so nobody spawns on (or rolls off) a slope.
+					bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
+					if ( onAxis && ( m == 2 || m == 4 ) )
+					{
+						int dir = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );
+						AddPieceEx( cx, cz, 0.8f * (float)tier, tier, hull, SPECIAL_NONE, 0.0f, 0.0f, dir );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.8f * (float)tier, tier, hull );
+					}
 				}
 			}
 			else if ( level == LEVEL_TORRES )
@@ -855,11 +965,23 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			else // LEVEL_CALLES
 			{
 				// Street lattice; random collapse keeps rerouting everyone.
+				// The two main avenues are one-way speed lanes.
 				int mx = ( ( gx % 3 ) + 3 ) % 3;
 				int mz = ( ( gz % 3 ) + 3 ) % 3;
 				if ( ( mx == 0 || mz == 0 ) && d2 <= 10.4f * 10.4f )
 				{
-					AddPiece( cx, cz, 0.0f, 0, hull );
+					if ( gz == 0 && gx != 0 )
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, 1.0f, 0.0f, -1 );
+					}
+					else if ( gx == 0 && gz != 0 )
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, 0.0f, 1.0f, -1 );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.0f, 0, hull );
+					}
 				}
 			}
 		}
@@ -1129,16 +1251,27 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 		return;
 	}
 
-	if ( level == LEVEL_CRUZ || level == LEVEL_CALLES )
+	if ( level == LEVEL_CRUZ )
 	{
-		// Axis-aligned spawns: the diagonals are void on these layouts.
+		// Axis-aligned spawns: the diagonals are void on this layout.
 		static const float axis[MAX_PLAYERS][2] = {
 			{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
 			{ 0.5f, 0.0f }, { -0.5f, 0.0f }, { 0.0f, 0.5f }, { 0.0f, -0.5f },
 		};
-		float r = level == LEVEL_CRUZ ? 7.5f : 9.0f;
-		*outX = r * axis[index][0];
-		*outZ = r * axis[index][1];
+		*outX = 7.5f * axis[index][0];
+		*outZ = 7.5f * axis[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_CALLES )
+	{
+		// Side-street tiles: on the lattice but OFF the boost avenues.
+		static const float street[MAX_PLAYERS][2] = {
+			{ 9.0f, 4.5f }, { -9.0f, -4.5f }, { -4.5f, 9.0f }, { 4.5f, -9.0f },
+			{ 9.0f, -4.5f }, { -9.0f, 4.5f }, { 4.5f, 9.0f },	{ -4.5f, -9.0f },
+		};
+		*outX = street[index][0];
+		*outZ = street[index][1];
 		return;
 	}
 
@@ -1174,10 +1307,11 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 
 	if ( level == LEVEL_ZIGURAT )
 	{
-		// Axis spawns on the ground tier; extras one terrace up.
+		// Axis spawns on the flat ground tier; extras on flat diagonal tiles
+		// of the second terrace (the axis midlines are ramps).
 		static const float zig[MAX_PLAYERS][3] = {
-			{ 9.0f, 0.0f, 0.0f }, { -9.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 9.0f }, { 0.0f, 0.0f, -9.0f },
-			{ 6.0f, 0.8f, 0.0f }, { -6.0f, 0.8f, 0.0f }, { 0.0f, 0.8f, 6.0f }, { 0.0f, 0.8f, -6.0f },
+			{ 9.0f, 0.0f, 0.0f },	{ -9.0f, 0.0f, 0.0f },	 { 0.0f, 0.0f, 9.0f },	 { 0.0f, 0.0f, -9.0f },
+			{ 4.5f, 1.6f, 4.5f }, { -4.5f, 1.6f, -4.5f }, { 4.5f, 1.6f, -4.5f }, { -4.5f, 1.6f, 4.5f },
 		};
 		*outX = zig[index][0];
 		*outY = zig[index][1];
@@ -1215,7 +1349,8 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	float radius = 4.9f;
 	if ( level == LEVEL_ANILLO )
 	{
-		radius = 7.07f;
+		// Inside the ring but OFF the boost lane (which spans r 6.4-7.8).
+		radius = 5.5f;
 	}
 	else if ( level == LEVEL_RULETA )
 	{
@@ -1367,6 +1502,26 @@ static bool IsGrounded( const Player* p )
 	filter.maskBits = CAT_WORLD;
 	b3RayResult result = b3World_CastRayClosest( g_world, origin, translation, filter );
 	return result.hit;
+}
+
+// Index of the standing/warning tile under (x, z), or -1.
+static int TileIndexAt( float x, float z )
+{
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state != PIECE_STATIC && g_pieces[i].state != PIECE_WARNING )
+		{
+			continue;
+		}
+		b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+		float dx = x - tp.x;
+		float dz = z - tp.z;
+		if ( dx > -0.78f && dx < 0.78f && dz > -0.78f && dz < 0.78f )
+		{
+			return i;
+		}
+	}
+	return -1;
 }
 
 // 2 = standing on solid ground here, 1 = tile is about to drop, 0 = nothing.
@@ -1836,6 +1991,23 @@ static void StepPlayers( void )
 			continue;
 		}
 		p->braceTicks = 0;
+
+		// Boost pads: the floor itself accelerates you (bracing opts out,
+		// and nothing pushes helpless players during the countdown).
+		if ( grounded && !frozen )
+		{
+			b3Pos bpos = b3Body_GetPosition( p->body );
+			int ti = TileIndexAt( bpos.x, bpos.z );
+			if ( ti >= 0 && g_pieces[ti].special == SPECIAL_BOOST )
+			{
+				b3Vec3 v = b3Body_GetLinearVelocity( p->body );
+				if ( v.x * g_pieces[ti].dirX + v.z * g_pieces[ti].dirZ < BOOST_MAX_SPEED )
+				{
+					b3Vec3 f = { BOOST_ACCEL * mass * g_pieces[ti].dirX, 0.0f, BOOST_ACCEL * mass * g_pieces[ti].dirZ };
+					b3Body_ApplyForceToCenter( p->body, f, true );
+				}
+			}
+		}
 
 		float dx = ( ( in & IN_RIGHT ) ? 1.0f : 0.0f ) - ( ( in & IN_LEFT ) ? 1.0f : 0.0f );
 		float dz = ( ( in & IN_DOWN ) ? 1.0f : 0.0f ) - ( ( in & IN_UP ) ? 1.0f : 0.0f );

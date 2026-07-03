@@ -51,9 +51,11 @@ de aplicaciones y navegador) o usar WSL2. El tooling web (node/vite) no está af
 
 Header de 8 floats: `[frame, aliveMask, playerCount, pieceCount, winner, levelId, hazardCount, powerupActive]`.
 Luego 8 floats por jugador (`x y z qx qy qz qw flags`; flags: bit0 vivo, bit1 dash listo,
-bit2 con power, bits3-8 cooldown de dash, bit9 anclado), 8 por pieza (`x y z qx qy qz qw estado`;
-1=estática, 2=cayendo, 3=aviso, 0=eliminada), 12 por hazard (`x y z qx qy qz qw sx sy sz tipo _`;
-tipo 0=viga, 1=pistón) y 4 del power-up (`x y z activo`).
+bit2 con power, bits3-8 cooldown de dash, bit9 anclado, bit10 maldito), 8 por pieza
+(`x y z qx qy qz qw estado+special*16`; estado: 1=estática, 2=cayendo, 3=aviso, 0=eliminada;
+special: 0=nada, 1=boost, 2=rebotadora — desempaquetar con pieceStateOf/pieceSpecialOf de sim.ts),
+12 por hazard (`x y z qx qy qz qw sx sy sz tipo _`; tipo 0=viga, 1=pistón Z, 2=orbitador,
+3=pistón X) y 4 del power-up (`x y z activo`). Las rampas son piezas con rotación en el quat.
 `winner`: -1 en curso, -2 empate, si no índice del ganador.
 
 ## Mecánicas (todas en el sim)

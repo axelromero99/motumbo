@@ -222,7 +222,7 @@ function buildPips(wins: number, target: number, color: string): HTMLSpanElement
 export class UiShell {
   private cb: UiCallbacks;
   private settingsData: Settings;
-  private current: ScreenName | 'options' = 'none';
+  private current: ScreenName | 'options' | 'howto' = 'none';
   private optionsReturnTo: ScreenName | 'options' = 'title';
 
   private screens = new Map<string, HTMLElement>();
@@ -615,7 +615,7 @@ export class UiShell {
   // Internals
   // -------------------------------------------------------------------
 
-  private showAny(screen: ScreenName | 'options'): void {
+  private showAny(screen: ScreenName | 'options' | 'howto'): void {
     if (this.current === 'results' && screen !== 'results') {
       window.clearInterval(this.nextTimer);
     }
@@ -650,6 +650,8 @@ export class UiShell {
       this.showAny('none');
       this.cb.onEditor();
     });
+    $('btn-howto').addEventListener('click', () => this.showAny('howto'));
+    $('btn-howto-back').addEventListener('click', () => this.showAny('title'));
   }
 
   private wireSetup(): void {

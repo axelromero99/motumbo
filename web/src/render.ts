@@ -15,6 +15,10 @@ import {
   MODE_MALDITO,
   DASH_COOLDOWN_TICKS,
   dashCooldownFrom,
+  pieceStateOf,
+  pieceSpecialOf,
+  SPECIAL_BOOST,
+  SPECIAL_BOUNCY,
 } from './sim';
 import { FxSystem } from './fx';
 
@@ -197,6 +201,8 @@ export function makeBallTexture(colorHex: number, patternId: number, playerNumbe
 }
 
 // Gradient dome (skyBottom → skyTop) with cheap hashed twinkling stars.
+// Sky dome: aurora curtains drifting over a vertical gradient, a soft moon
+// halo and a handful of big slow stars. Everything tinted by the theme.
 function makeSkyMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -204,6 +210,7 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uSkyTop: { value: new THREE.Color(0x04060e) },
       uSkyBottom: { value: new THREE.Color(0x1c2750) },
+      uAccent: { value: new THREE.Color(0x9fb4ff) },
       uTime: { value: 0 },
     },
     vertexShader: `
@@ -216,11 +223,32 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
     fragmentShader: `
       uniform vec3 uSkyTop;
       uniform vec3 uSkyBottom;
+      uniform vec3 uAccent;
       uniform float uTime;
       varying vec3 vDir;
 
-      float hash(vec3 p) {
-        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      float vnoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+          mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x),
+          f.y
+        );
+      }
+      float fbm(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int k = 0; k < 3; k++) {
+          v += a * vnoise(p);
+          p *= 2.15;
+          a *= 0.5;
+        }
+        return v;
       }
 
       void main() {
@@ -228,16 +256,30 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
         float h = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
         vec3 col = mix(uSkyBottom, uSkyTop, pow(h, 1.35));
 
-        // Twinkling stars: one candidate per direction-grid cell.
-        vec3 g = d * 42.0;
-        vec3 cell = floor(g);
-        float rnd = hash(cell);
-        if (rnd > 0.955) {
-          vec3 off = vec3(hash(cell + 1.7), hash(cell + 3.1), hash(cell + 5.3)) - 0.5;
-          float dist = length(fract(g) - 0.5 - off * 0.55);
-          float star = smoothstep(0.14, 0.0, dist);
-          float tw = 0.5 + 0.5 * sin(uTime * (1.5 + rnd * 4.0) + rnd * 100.0);
-          col += star * tw * smoothstep(-0.05, 0.25, d.y) * (0.35 + 0.65 * hash(cell + 9.2));
+        // Aurora curtains: domain-warped noise sampled on a circle (periodic
+        // in azimuth — no seam), drifting slowly with height and time.
+        float az = atan(d.z, d.x);
+        vec2 circ = vec2(cos(az), sin(az)) * 1.8;
+        vec2 ap = circ + vec2(0.0, d.y * 2.4 - uTime * 0.045);
+        float n = fbm(ap + fbm(ap + uTime * 0.05) * 1.5);
+        float band = smoothstep(0.5, 0.85, n);
+        band *= smoothstep(-0.12, 0.3, d.y) * (1.0 - smoothstep(0.55, 0.95, d.y));
+        col += uAccent * band * 0.32;
+
+        // Soft moon with a wide halo.
+        vec3 moonDir = normalize(vec3(0.55, 0.38, -0.6));
+        float md = max(dot(d, moonDir), 0.0);
+        col += uAccent * smoothstep(0.9982, 0.99965, md) * 0.85;
+        col += uAccent * pow(md, 48.0) * 0.10;
+
+        // Sparse, slow stars: 3D direction cells, seamless everywhere.
+        vec3 g3 = d * 26.0;
+        vec3 cell3 = floor(g3);
+        float rnd = fract(sin(dot(cell3, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+        if (rnd > 0.972 && d.y > 0.02) {
+          float dist = length(fract(g3) - 0.5);
+          float tw = 0.6 + 0.4 * sin(uTime * (0.6 + rnd * 1.6) + rnd * 100.0);
+          col += vec3(1.0) * smoothstep(0.3, 0.0, dist) * tw * 0.5;
         }
         gl_FragColor = vec4(col, 1.0);
       }
@@ -245,7 +287,8 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
   });
 }
 
-// Abyss floor: an animated grid drifting toward the center, fading to bg.
+// Abyss floor: a slow energy well — spiral streaks and mist drawn toward a
+// faint glowing core, so falling reads as being swallowed.
 function makeAbyssMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -266,16 +309,38 @@ function makeAbyssMaterial(): THREE.ShaderMaterial {
       uniform float uTime;
       varying vec3 vWorld;
 
+      float hash21(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      float vnoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+          mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x),
+          f.y
+        );
+      }
+
       void main() {
         vec2 p = vWorld.xz;
         float r = length(p);
-        vec2 dir = p / max(r, 0.0001);
-        // Sampling further out over time makes the pattern flow toward the center.
-        vec2 uv = p / 3.0 + dir * uTime * 0.6;
-        vec2 grid = abs(fract(uv - 0.5) - 0.5) / fwidth(uv);
-        float line = 1.0 - min(min(grid.x, grid.y), 1.0);
+        float ang = atan(p.y, p.x);
+
+        // Two counter-drifting spiral streak sets plus a mist layer. The
+        // sin() spirals use integer harmonics (periodic in ang, no seam) and
+        // the mist samples noise on a circle for the same reason.
+        float s1 = 0.5 + 0.5 * sin(ang * 3.0 + r * 0.5 - uTime * 0.55);
+        float s2 = 0.5 + 0.5 * sin(ang * 5.0 - r * 0.32 + uTime * 0.35);
+        vec2 ring = vec2(cos(ang), sin(ang));
+        float mist = vnoise(ring * 1.6 + vec2(r * 0.4 - uTime * 0.22, r * 0.2)) * 0.6 +
+                     vnoise(ring * 3.1 + vec2(r * 0.9 + uTime * 0.1, 7.0)) * 0.4;
+
         float fade = exp(-r * 0.05);
-        vec3 col = mix(uBg, uBeam, line * fade * 0.85);
+        float core = exp(-r * 0.16);
+        float glow = (s1 * s2 * 0.5 + mist * 0.35) * fade + core * 0.55;
+        vec3 col = mix(uBg, uBeam, clamp(glow, 0.0, 1.0) * 0.8);
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -419,6 +484,7 @@ export class GameRenderer {
   private qStretch = new THREE.Quaternion();
   private vTmp = new THREE.Vector3();
   private warnColor = new THREE.Color();
+  private specColor = new THREE.Color();
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -524,6 +590,7 @@ export class GameRenderer {
     this.hemi.groundColor.set(this.theme.ground);
     (this.skyMat.uniforms.uSkyTop.value as THREE.Color).setHex(this.theme.skyTop);
     (this.skyMat.uniforms.uSkyBottom.value as THREE.Color).setHex(this.theme.skyBottom);
+    (this.skyMat.uniforms.uAccent.value as THREE.Color).setHex(this.theme.sky);
     (this.abyssMat.uniforms.uBeam.value as THREE.Color).setHex(this.theme.beam);
     (this.abyssMat.uniforms.uBg.value as THREE.Color).setHex(this.theme.bg);
 
@@ -780,7 +847,9 @@ export class GameRenderer {
     if (this.pieces) {
       for (let i = 0; i < sim.pieceCount; i++) {
         const base = sim.pieceBase(i);
-        const state = curr[base + 7];
+        const packed = curr[base + 7];
+        const state = pieceStateOf(packed);
+        const special = pieceSpecialOf(packed);
         if (state === PIECE_GONE) {
           this.dummy.position.set(0, -1000, 0);
           this.dummy.quaternion.identity();
@@ -796,8 +865,19 @@ export class GameRenderer {
         this.pieces.setMatrixAt(i, this.dummy.matrix);
 
         const pulse = 0.5 + 0.5 * Math.sin(timeMs * 0.02 + i);
-        const target =
-          state === PIECE_WARNING ? this.warnColor.set(this.theme.warn).lerp(this.tileColors[i], pulse * 0.5) : this.tileColors[i];
+        let target: THREE.Color;
+        if (state === PIECE_WARNING) {
+          target = this.warnColor.set(this.theme.warn).lerp(this.tileColors[i], pulse * 0.5);
+        } else if (special === SPECIAL_BOOST) {
+          // Flowing beam-colored pulse so speed lanes read as moving.
+          const flow = 0.5 + 0.5 * Math.sin(timeMs * 0.006 - (curr[base] + curr[base + 2]) * 0.6);
+          target = this.specColor.set(this.theme.beam).lerp(this.tileColors[i], 0.45 + 0.35 * flow);
+        } else if (special === SPECIAL_BOUNCY) {
+          const soft = 0.55 + 0.25 * Math.sin(timeMs * 0.003 + i);
+          target = this.specColor.set(0xffffff).lerp(this.tileColors[i], soft);
+        } else {
+          target = this.tileColors[i];
+        }
         this.pieces.setColorAt(i, target);
       }
       this.pieces.instanceMatrix.needsUpdate = true;
@@ -854,7 +934,7 @@ export class GameRenderer {
     let y = -Infinity;
     for (let i = 0; i < sim.pieceCount; i++) {
       const base = sim.pieceBase(i);
-      const state = curr[base + 7];
+      const state = pieceStateOf(curr[base + 7]);
       if (state !== PIECE_STATIC && state !== PIECE_WARNING) continue;
       if (Math.abs(curr[base] - zx) > 1.2 || Math.abs(curr[base + 2] - zz) > 1.2) continue;
       y = Math.max(y, curr[base + 1] + PIECE_SIZE.y / 2);

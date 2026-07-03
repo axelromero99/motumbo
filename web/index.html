@@ -3,7 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TUMBO</title>
+  <title>TUMBO — sumo físico multijugador en el navegador</title>
+  <meta name="description" content="Party game de sumo físico 3D: empujá a tus rivales fuera de una arena que se desmorona. 20 arenas, editor de mapas, bots y 1v1 online sin servidores. Física determinista en C compilada a WASM." />
+  <meta property="og:title" content="TUMBO — sumo físico multijugador" />
+  <meta property="og:description" content="Empujá a tus rivales al vacío antes de que el piso desaparezca. 20 arenas, 4 modos, editor de mapas y multiplayer online sin servidores — física determinista C→WASM con lockstep por WebRTC." />
+  <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#0b0e1a" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2244%22 fill=%22%23ff5964%22/><circle cx=%2236%22 cy=%2236%22 r=%2212%22 fill=%22%23ff9aa2%22/></svg>" />
   <style>
     :root {
       --bg: #0b0e1a;
@@ -136,6 +142,25 @@
     .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
     .btn.ghost:hover { color: var(--text); border-color: var(--line); }
     .back-row { margin-top: 18px; text-align: center; }
+
+    .howto-rows { display: flex; flex-direction: column; gap: 12px; }
+    .howto-row { display: flex; align-items: baseline; gap: 14px; font-size: 14px; line-height: 1.45; }
+    .howto-row .howto-keys { flex: 0 0 84px; text-align: right; }
+    .howto-row b { color: var(--warn); }
+    .panel > .hint { font-size: 13px; color: var(--muted); margin: 16px 0 0; text-align: center; }
+
+    #boot {
+      position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px; background: var(--bg);
+      font-weight: 800; letter-spacing: 0.3em; color: var(--muted); font-size: 14px;
+      transition: opacity 0.35s; pointer-events: none;
+    }
+    #boot .boot-ball {
+      width: 34px; height: 34px; border-radius: 50%;
+      background: radial-gradient(circle at 32% 28%, #ff9aa2, #ff5964 52%, #a92f3b 95%);
+      animation: ball-bounce 1.15s ease-in-out infinite;
+    }
+    #boot.done { opacity: 0; }
 
     /* ================= Title ================= */
     .title-wrap { text-align: center; }
@@ -397,6 +422,7 @@
   </style>
 </head>
 <body>
+  <div id="boot"><div class="boot-ball"></div>TUMBO</div>
   <div id="app"></div>
 
   <!-- ============ HUD in-game (ids legacy: los usa main.ts) ============ -->
@@ -419,6 +445,7 @@
       <button class="menu-btn" id="btn-local">LOCAL<span class="sub">2 EN UN TECLADO</span></button>
       <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 POR INTERNET</span></button>
       <button class="menu-btn" id="btn-options">OPCIONES</button>
+      <button class="menu-btn" id="btn-howto">CÓMO JUGAR</button>
       <button class="menu-btn" id="btn-editor">EDITOR<span class="sub">CREÁ TU PROPIA ARENA</span></button>
       <div id="lifetime-line"></div>
     </div>
@@ -474,6 +501,22 @@
       </div>
       <button class="btn primary big" id="btn-play">JUGAR</button>
       <div class="back-row"><button class="btn ghost" id="btn-setup-back">← Volver</button></div>
+    </div>
+  </section>
+
+  <section class="screen" data-screen="howto">
+    <div class="panel">
+      <h2>CÓMO JUGAR</h2>
+      <div class="howto-rows">
+        <div class="howto-row"><span class="howto-keys"><kbd>WASD</kbd></span><span>Moverte. La bola tiene inercia: frená antes del borde.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Shift</kbd></span><span><b>Dash</b> — tu arma. Golpear con el dash empuja MUCHO más fuerte.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Espacio</kbd></span><span>Salto. Sirve para huecos, rampas y esquivar barras.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Ctrl</kbd> / <kbd>.</kbd></span><span><b>Anclarte</b> (Ctrl izq. P1 · punto P2) — frena en seco y aguanta empujones. Si te anclás JUSTO antes de recibir un dash, lo devolvés (parry).</span></div>
+        <div class="howto-row"><span class="howto-keys"><span style="display:inline-block;width:13px;height:13px;border-radius:50%;background:var(--warn);vertical-align:-1px"></span></span><span>El orbe dorado carga tu próximo dash ×2.3. Si te golpean, lo soltás.</span></div>
+        <div class="howto-row"><span class="howto-keys"><kbd>Esc</kbd></span><span>Pausa · <kbd>R</kbd> revancha</span></div>
+      </div>
+      <p class="hint">El último en pie gana la ronda. En los modos REY, COSECHA y MALDITO se gana distinto — leé la descripción de cada uno al elegirlo.</p>
+      <div class="back-row"><button class="btn ghost" id="btn-howto-back">← Volver</button></div>
     </div>
   </section>
 
@@ -565,9 +608,9 @@
         <label class="switch"><input type="checkbox" id="opt-reduced" /><span class="track"></span></label>
       </div>
       <div class="controls-note">
-        <b>P1</b> <kbd>WASD</kbd> mover · <kbd>Shift izq.</kbd> dash · <kbd>Espacio</kbd> salto<br />
-        <b>P2</b> <kbd>Flechas</kbd> mover · <kbd>Shift der.</kbd> dash · <kbd>Ctrl der.</kbd> salto<br />
-        <b>Partida</b> <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha · mantené el dash para frenarte (brace) y parriar empujones
+        <b>P1</b> <kbd>WASD</kbd> mover · <kbd>Shift izq.</kbd> dash · <kbd>Espacio</kbd> salto · <kbd>Ctrl izq.</kbd> anclarse<br />
+        <b>P2</b> <kbd>Flechas</kbd> mover · <kbd>Shift der.</kbd> dash · <kbd>Ctrl der.</kbd> salto · <kbd>.</kbd> anclarse<br />
+        <b>Partida</b> <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha · anclate justo antes de un dash rival para devolverlo (parry)
       </div>
       <div class="back-row"><button class="btn ghost" id="btn-options-back">← Volver</button></div>
     </div>

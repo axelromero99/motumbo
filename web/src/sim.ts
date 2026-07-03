@@ -13,6 +13,19 @@ export const PIECE_STATIC = 1;
 export const PIECE_FALLING = 2;
 export const PIECE_WARNING = 3;
 
+// Tile specials, packed into the piece state float as state + special*16.
+export const SPECIAL_NONE = 0;
+export const SPECIAL_BOOST = 1;
+export const SPECIAL_BOUNCY = 2;
+
+export function pieceStateOf(packed: number): number {
+  return Math.round(packed) & 15;
+}
+
+export function pieceSpecialOf(packed: number): number {
+  return Math.round(packed) >> 4;
+}
+
 export const FLAG_ALIVE = 1;
 export const FLAG_DASH_READY = 2;
 export const FLAG_HAS_POWER = 4;

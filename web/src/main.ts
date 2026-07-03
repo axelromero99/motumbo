@@ -23,6 +23,7 @@ import {
   EVT_ZONE,
   EVT_MODE_POINT,
   PIECE_STATIC,
+  pieceStateOf,
   FLAG_CURSED,
   MODE_SUMO,
   MODE_KOTH,
@@ -714,6 +715,11 @@ async function main(): Promise<void> {
 
   startAttract();
   ui.show('title');
+  const boot = document.getElementById('boot');
+  if (boot) {
+    boot.classList.add('done');
+    window.setTimeout(() => boot.remove(), 400);
+  }
   if (linkedOffer) {
     ui.show('online');
     void beginOnline(false).then(() => connectWithCode(linkedOffer));
@@ -780,7 +786,7 @@ async function main(): Promise<void> {
     {
       let standing = 0;
       for (let i = 0; i < sim.pieceCount; i++) {
-        if (sim.curr[sim.pieceBase(i) + 7] === PIECE_STATIC) standing++;
+        if (pieceStateOf(sim.curr[sim.pieceBase(i) + 7]) === PIECE_STATIC) standing++;
       }
       let aliveCount = 0;
       for (let i = 0; i < playerCount; i++) if (sim.aliveMask & (1 << i)) aliveCount++;

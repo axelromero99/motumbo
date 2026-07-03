@@ -9,7 +9,7 @@
 // (típico: generar los thumbs una sola vez en el arranque, antes de la init
 // del juego).
 
-import { Sim, PIECE_GONE } from './sim';
+import { Sim, PIECE_GONE, pieceStateOf } from './sim';
 import { THEMES } from './render';
 
 const SIZE = 120;
@@ -74,7 +74,7 @@ export function drawLevelThumb(sim: Sim, level: number): string {
   const pieces: P[] = [];
   for (let i = 0; i < sim.pieceCount; i++) {
     const base = sim.pieceBase(i);
-    if (st[base + 7] === PIECE_GONE) continue;
+    if (pieceStateOf(st[base + 7]) === PIECE_GONE) continue;
     pieces.push({ x: st[base], y: st[base + 1], z: st[base + 2], idx: i });
   }
 

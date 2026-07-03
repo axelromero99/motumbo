@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the vendored commit: lockstep peers must run identical physics.
+      - name: Clone Box3D
+        run: |
+          git clone https://github.com/erincatto/box3d.git vendor/box3d
+          git -C vendor/box3d checkout 1c5ac42c376eb216734df1f35d14bf33c29bb6e7
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.2
+
+      - name: Build simulation (WASM)
+        run: |
+          emcmake cmake -S . -B build/wasm -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/wasm --target sim
+          mkdir -p web/src/gen
+          cp build/wasm/tumbo.js build/wasm/tumbo.wasm web/src/gen/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Determinism tests (20 levels, modes, bots, custom maps, lockstep)
+        run: |
+          node scripts/test-sim.mjs
+          node scripts/test-lockstep.mjs
+
+      - name: Typecheck + build site
+        run: npm run build
+        working-directory: web
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4

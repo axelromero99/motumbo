@@ -10,7 +10,8 @@ export const INPUT_DELAY = 4;
 //   HASH:  u8 type=1, u8 round, u32 tick, u32 hash
 //   START: u8 type=2, u8 round, u32 seed, u8 level, u8 resetWins, u8 winTarget
 //   MAP:   u8 type=3, u16 len, bytes (custom map blob; sent before a START
-//          with level 8 — the channel is ordered, so arrival order is safe)
+//          with level 20 = LEVEL_CUSTOM — the channel is ordered, so arrival
+//          order is safe)
 export const MSG_INPUT = 0;
 export const MSG_HASH = 1;
 export const MSG_START = 2;
