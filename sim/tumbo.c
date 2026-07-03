@@ -17,14 +17,27 @@
 
 #define MAX_PLAYERS 8
 #define MAX_PIECES 256
-#define MAX_HAZARDS 2
-#define LEVEL_COUNT 8
+#define MAX_HAZARDS 4
+#define LEVEL_COUNT 20
 
 // Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
 // format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
 // deterministic setup, so lockstep peers must load identical bytes.
-#define LEVEL_CUSTOM 8
+#define LEVEL_CUSTOM 20
 #define CUSTOM_DATA_MAX 1024
+
+// Game modes (tumbo_set_mode). All win conditions resolve inside the sim.
+enum
+{
+	MODE_SUMO = 0,	   // last one standing (default)
+	MODE_KOTH = 1,	   // hold the zone ALONE for param seconds
+	MODE_COSECHA = 2,  // first to param orbs
+	MODE_MALDITO = 3,  // hot potato: the cursed one explodes at 0
+};
+
+#define ZONE_RADIUS 2.3f
+#define ZONE_MOVE_TICKS 600
+#define CURSE_IMMUNITY_TICKS 90
 
 #define TICK_DT ( 1.0f / 60.0f )
 #define SUBSTEPS 4
@@ -94,6 +107,10 @@
 #define FLAG_HAS_POWER 4
 #define FLAG_CD_SHIFT 3
 #define FLAG_BRACED 512
+#define FLAG_CURSED 1024
+
+// Mode section appended to the state buffer: [mode, m0, m1, m2] + 8 scores.
+#define MODE_FLOATS 12
 
 enum
 {
@@ -113,12 +130,26 @@ enum
 	LEVEL_HERRADURA = 5,
 	LEVEL_PASARELA = 6,
 	LEVEL_TARIMAS = 7,
+	LEVEL_CRUZ = 8,
+	LEVEL_ASPAS = 9,
+	LEVEL_GEMELAS = 10,
+	LEVEL_PANAL = 11,
+	LEVEL_DIANA = 12,
+	LEVEL_VOLCAN = 13,
+	LEVEL_ZIGURAT = 14,
+	LEVEL_TORRES = 15,
+	LEVEL_RULETA2 = 16,
+	LEVEL_FABRICA = 17,
+	LEVEL_MARTILLO = 18,
+	LEVEL_CALLES = 19,
 };
 
 enum
 {
-	HAZARD_BEAM = 0,
-	HAZARD_PISTON = 1,
+	HAZARD_BEAM = 0,	   // spins in place; a = base angular speed
+	HAZARD_PISTON = 1,	   // sweeps along Z; a = speed, b = phase ticks
+	HAZARD_ORBITER = 2,	   // orbits the center; a = angular speed, b = phase, c = radius
+	HAZARD_PISTON_X = 3,   // sweeps along X; a = speed, b = phase ticks
 };
 
 // Gameplay events for the presentation layer (sound, particles, camera).
@@ -136,6 +167,9 @@ enum
 	EVT_ROUND_END = 8,	 // a = winner (-2 draw)
 	EVT_DASH_HIT = 9,	 // a = attacker, b = victim
 	EVT_PARRY = 10,		 // a = attacker (reflected), b = parrier
+	EVT_CURSE = 11,		 // a = newly cursed, b = previous (-1 at round start)
+	EVT_ZONE = 12,		 // zone moved to (x, z)
+	EVT_MODE_POINT = 13, // a = player, b = new score (zone seconds / orbs)
 };
 
 #define MAX_EVENTS 32
@@ -169,6 +203,7 @@ typedef struct Hazard
 	b3BodyId body;
 	b3Vec3 halfExtents;
 	int type;
+	float a, b, c; // per-type params, see hazard enum
 } Hazard;
 
 typedef struct Powerup
@@ -214,7 +249,19 @@ static uint8_t g_customData[CUSTOM_DATA_MAX];
 static int g_customLen;
 static float g_customSpawns[MAX_PLAYERS][2];
 static int g_customSpawnCount;
-static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS + 4];
+static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS + 4 +
+					 MODE_FLOATS];
+
+// Game-mode state.
+static int g_mode;
+static int g_modeParam;
+static int g_scores[MAX_PLAYERS];
+static float g_zoneX, g_zoneZ;
+static bool g_zoneActive;
+static uint32_t g_zoneMoveAt;
+static int g_cursed;
+static int g_curseTicks;
+static int g_curseImmunity;
 static float g_events[MAX_EVENTS * EVENT_FLOATS];
 static int g_eventCount;
 
@@ -271,7 +318,8 @@ TUMBO_EXPORT float* tumbo_state_ptr( void )
 
 TUMBO_EXPORT int tumbo_state_floats( void )
 {
-	return STATE_HEADER + STATE_STRIDE * ( g_playerCount + g_pieceCount ) + HAZARD_STRIDE * g_hazardCount + 4;
+	return STATE_HEADER + STATE_STRIDE * ( g_playerCount + g_pieceCount ) + HAZARD_STRIDE * g_hazardCount + 4 +
+		   MODE_FLOATS;
 }
 
 TUMBO_EXPORT int tumbo_level_count( void )
@@ -293,6 +341,11 @@ TUMBO_EXPORT int tumbo_countdown_ticks( void )
 {
 	return COUNTDOWN_TICKS;
 }
+
+// Set the game mode. Call after tumbo_init and before the first step,
+// identically on every lockstep peer. KOTH: param = seconds to hold alone.
+// COSECHA: param = orbs. MALDITO: param = curse timer seconds.
+TUMBO_EXPORT void tumbo_set_mode( int mode, int param );
 
 TUMBO_EXPORT uint8_t* tumbo_custom_ptr( void )
 {
@@ -357,7 +410,7 @@ static void WriteState( void )
 		int cd = p->dashCooldown > 63 ? 63 : p->dashCooldown;
 		int flags = ( p->alive ? FLAG_ALIVE : 0 ) | ( p->dashCooldown == 0 ? FLAG_DASH_READY : 0 ) |
 					( p->hasPower ? FLAG_HAS_POWER : 0 ) | ( cd << FLAG_CD_SHIFT ) |
-					( p->braceTicks > 0 ? FLAG_BRACED : 0 );
+					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 );
 		out[7] = (float)flags;
 		out += STATE_STRIDE;
 	}
@@ -397,6 +450,24 @@ static void WriteState( void )
 	out[1] = g_powerup.pos.y;
 	out[2] = g_powerup.pos.z;
 	out[3] = g_powerup.active ? 1.0f : 0.0f;
+	out += 4;
+
+	out[0] = (float)g_mode;
+	if ( g_mode == MODE_MALDITO )
+	{
+		out[1] = (float)g_cursed;
+		out[2] = (float)g_curseTicks;
+	}
+	else
+	{
+		out[1] = g_zoneActive ? g_zoneX : 0.0f;
+		out[2] = g_zoneActive ? g_zoneZ : -1000.0f;
+	}
+	out[3] = (float)g_modeParam;
+	for ( int i = 0; i < MAX_PLAYERS; ++i )
+	{
+		out[4 + i] = (float)g_scores[i];
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +549,7 @@ static void ShuffleCrumbleOrder( void )
 
 // Kinematic hazard. Created inert: StepHazards drives velocities only after
 // the countdown, so nothing sweeps through frozen players at round start.
-static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type )
+static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type, float a, float b, float c )
 {
 	if ( g_hazardCount >= MAX_HAZARDS )
 	{
@@ -502,6 +573,9 @@ static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type )
 	g_hazards[g_hazardCount].body = body;
 	g_hazards[g_hazardCount].halfExtents = half;
 	g_hazards[g_hazardCount].type = type;
+	g_hazards[g_hazardCount].a = a;
+	g_hazards[g_hazardCount].b = b;
+	g_hazards[g_hazardCount].c = c;
 	g_hazardCount += 1;
 }
 
@@ -606,7 +680,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 					AddPiece( cx, cz, 0.0f, 7 - ax, hull );
 				}
 			}
-			else // LEVEL_TARIMAS
+			else if ( level == LEVEL_TARIMAS )
 			{
 				// Archipelago of pads split by exactly one-tile gaps; pads
 				// sink in a fixed, learnable order. Central plaza dies last.
@@ -644,6 +718,150 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 					AddPiece( cx, cz, h, prio, hull );
 				}
 			}
+			else if ( level == LEVEL_CRUZ )
+			{
+				// Plus-shaped cross; arms rot from the tips into a center melee.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				if ( ( az <= 1 && ax <= 6 ) || ( ax <= 1 && az <= 6 ) )
+				{
+					int m = ax > az ? ax : az;
+					AddPiece( cx, cz, 0.0f, m, hull );
+				}
+			}
+			else if ( level == LEVEL_ASPAS )
+			{
+				// Pinwheel: four arms bent by radius, plus a safe hub.
+				if ( d2 <= 9.4f * 9.4f )
+				{
+					float r = sqrtf( d2 );
+					float rel = fmodf( atan2f( cz, cx ) + r * 0.32f + 12.566371f, 1.5707963f );
+					if ( r <= 2.2f || rel < 0.85f )
+					{
+						AddPiece( cx, cz, 0.0f, r <= 2.2f ? 20 : (int)( 12.0f - r ), hull );
+					}
+				}
+			}
+			else if ( level == LEVEL_GEMELAS )
+			{
+				// Twin discs and a single doomed crossing.
+				float dl = ( cx + 6.75f ) * ( cx + 6.75f ) + cz * cz;
+				float dr = ( cx - 6.75f ) * ( cx - 6.75f ) + cz * cz;
+				bool disc = dl <= 4.4f * 4.4f || dr <= 4.4f * 4.4f;
+				bool bridge = gz == 0 && cx > -6.75f && cx < 6.75f;
+				if ( disc )
+				{
+					float best = dl < dr ? dl : dr;
+					AddPiece( cx, cz, 0.0f, best > 2.9f * 2.9f ? 1 : 2, hull );
+				}
+				else if ( bridge )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_PANAL )
+			{
+				// Field of 2x2 pads with one-tile gaps everywhere: pure jumps.
+				int mx = ( ( gx % 3 ) + 3 ) % 3;
+				int mz = ( ( gz % 3 ) + 3 ) % 3;
+				if ( mx != 2 && mz != 2 && d2 <= 10.2f * 10.2f )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_DIANA )
+			{
+				// Concentric rings with real gaps; migrate inward by jumping.
+				float r = sqrtf( d2 );
+				if ( r <= 2.2f )
+				{
+					AddPiece( cx, cz, 0.0f, 2, hull );
+				}
+				else if ( r >= 4.2f && r <= 5.8f )
+				{
+					AddPiece( cx, cz, 0.0f, 1, hull );
+				}
+				else if ( r >= 7.6f && r <= 9.4f )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_VOLCAN )
+			{
+				// The crater grows: crumble radiates from the center outward.
+				float r = sqrtf( d2 );
+				if ( r <= 9.1f && r >= 1.6f )
+				{
+					AddPiece( cx, cz, r >= 7.9f ? 0.8f : 0.0f, (int)( r * 2.0f ), hull );
+				}
+			}
+			else if ( level == LEVEL_ZIGURAT )
+			{
+				// Four square terraces up to 2.4m; the base erodes first.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				int m = ax > az ? ax : az;
+				if ( m <= 7 && d2 <= 10.4f * 10.4f )
+				{
+					int tier = m <= 1 ? 3 : ( m <= 3 ? 2 : ( m <= 5 ? 1 : 0 ) );
+					AddPiece( cx, cz, 0.8f * (float)tier, tier, hull );
+				}
+			}
+			else if ( level == LEVEL_TORRES )
+			{
+				// Low battlefield that collapses from the middle, with two
+				// high towers (and ramps) as endgame refuges.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				if ( ax >= 6 && ax <= 7 && az <= 1 )
+				{
+					AddPiece( cx, cz, 1.6f, 20, hull );
+				}
+				else if ( ax == 5 && az <= 1 )
+				{
+					AddPiece( cx, cz, 0.8f, 15, hull );
+				}
+				else if ( ax <= 4 && az <= 3 )
+				{
+					AddPiece( cx, cz, 0.0f, ax, hull );
+				}
+			}
+			else if ( level == LEVEL_RULETA2 )
+			{
+				// Donut with two counter-rotating beams at different speeds.
+				if ( d2 <= 9.4f * 9.4f && d2 >= 3.0f * 3.0f )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_FABRICA )
+			{
+				// Square floor swept by four staggered pistons.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				if ( ax <= 6 && az <= 6 )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else if ( level == LEVEL_MARTILLO )
+			{
+				// Big disc patrolled by an orbiting wrecking block.
+				if ( d2 <= 8.4f * 8.4f )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
+			else // LEVEL_CALLES
+			{
+				// Street lattice; random collapse keeps rerouting everyone.
+				int mx = ( ( gx % 3 ) + 3 ) % 3;
+				int mz = ( ( gz % 3 ) + 3 ) % 3;
+				if ( ( mx == 0 || mz == 0 ) && d2 <= 10.4f * 10.4f )
+				{
+					AddPiece( cx, cz, 0.0f, 0, hull );
+				}
+			}
 		}
 	}
 
@@ -651,7 +869,7 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 	{
 		case LEVEL_RULETA:
 			ShuffleCrumbleOrder();
-			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 8.1f, 0.3f, 0.32f }, HAZARD_BEAM );
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 8.1f, 0.3f, 0.32f }, HAZARD_BEAM, 0.9f, 0.0f, 0.0f );
 			g_crumbleStart = 420;
 			g_crumbleInterval = 20;
 			break;
@@ -667,8 +885,8 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			break;
 		case LEVEL_PASARELA:
 			SortCrumbleOrder();
-			AddBoxHazard( ( b3Vec3 ){ -3.0f, 0.5f, -2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
-			AddBoxHazard( ( b3Vec3 ){ 3.0f, 0.5f, 2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON );
+			AddBoxHazard( ( b3Vec3 ){ -3.0f, 0.5f, -2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON, 2.2f, 0.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 3.0f, 0.5f, 2.6f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON, 2.2f, 140.0f, 0.0f );
 			g_crumbleStart = 540;
 			g_crumbleInterval = 28;
 			break;
@@ -681,6 +899,73 @@ static void BuildLevel( int level, const b3BoxHull* hull )
 			SortCrumbleOrder();
 			g_crumbleStart = 480;
 			g_crumbleInterval = 24;
+			break;
+		case LEVEL_CRUZ:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 22;
+			break;
+		case LEVEL_ASPAS:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 20;
+			break;
+		case LEVEL_GEMELAS:
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 22;
+			break;
+		case LEVEL_PANAL:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 18;
+			break;
+		case LEVEL_DIANA:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 20;
+			break;
+		case LEVEL_VOLCAN:
+			SortCrumbleOrder();
+			g_crumbleStart = 420;
+			g_crumbleInterval = 16;
+			break;
+		case LEVEL_ZIGURAT:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 14;
+			break;
+		case LEVEL_TORRES:
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 20;
+			break;
+		case LEVEL_RULETA2:
+			ShuffleCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 8.1f, 0.3f, 0.32f }, HAZARD_BEAM, 0.8f, 0.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 4.2f, 0.3f, 0.32f }, HAZARD_BEAM, -1.7f, 0.0f, 0.0f );
+			g_crumbleStart = 480;
+			g_crumbleInterval = 20;
+			break;
+		case LEVEL_FABRICA:
+			SortCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ -4.5f, 0.5f, -6.0f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON, 2.6f, 0.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 4.5f, 0.5f, 6.0f }, ( b3Vec3 ){ 0.5f, 0.5f, 0.75f }, HAZARD_PISTON, 2.6f, 140.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ -6.0f, 0.5f, 4.5f }, ( b3Vec3 ){ 0.75f, 0.5f, 0.5f }, HAZARD_PISTON_X, 2.6f, 70.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 6.0f, 0.5f, -4.5f }, ( b3Vec3 ){ 0.75f, 0.5f, 0.5f }, HAZARD_PISTON_X, 2.6f, 210.0f, 0.0f );
+			g_crumbleStart = 540;
+			g_crumbleInterval = 18;
+			break;
+		case LEVEL_MARTILLO:
+			SortCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ 6.5f, 0.95f, 0.0f }, ( b3Vec3 ){ 0.9f, 0.6f, 0.9f }, HAZARD_ORBITER, 0.55f, 0.0f, 6.5f );
+			g_crumbleStart = 540;
+			g_crumbleInterval = 20;
+			break;
+		case LEVEL_CALLES:
+			ShuffleCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 12;
 			break;
 		default:
 			SortCrumbleOrder();
@@ -734,7 +1019,8 @@ static void BuildCustomLevel( const b3BoxHull* hull )
 
 	if ( d[6] > 0 )
 	{
-		AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ (float)d[6] * 0.1f, 0.3f, 0.32f }, HAZARD_BEAM );
+		AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ (float)d[6] * 0.1f, 0.3f, 0.32f }, HAZARD_BEAM, 0.9f,
+					  0.0f, 0.0f );
 	}
 
 	SortCrumbleOrder();
@@ -843,9 +1129,114 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 		return;
 	}
 
-	// Ruleta spawns on diagonals so the beam (along +X) misses at tick 0.
-	int slot = level == LEVEL_RULETA ? ( index + 4 ) % MAX_PLAYERS : index;
-	float radius = level == LEVEL_ANILLO ? 7.07f : ( level == LEVEL_RULETA ? 5.6f : 4.9f );
+	if ( level == LEVEL_CRUZ || level == LEVEL_CALLES )
+	{
+		// Axis-aligned spawns: the diagonals are void on these layouts.
+		static const float axis[MAX_PLAYERS][2] = {
+			{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
+			{ 0.5f, 0.0f }, { -0.5f, 0.0f }, { 0.0f, 0.5f }, { 0.0f, -0.5f },
+		};
+		float r = level == LEVEL_CRUZ ? 7.5f : 9.0f;
+		*outX = r * axis[index][0];
+		*outZ = r * axis[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_ASPAS )
+	{
+		// Everyone starts inside the safe hub.
+		*outX = 1.6f * dirs[index][0];
+		*outZ = 1.6f * dirs[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_GEMELAS )
+	{
+		static const float twin[MAX_PLAYERS][2] = {
+			{ -6.75f, 0.0f }, { 6.75f, 0.0f }, { -6.75f, 2.5f }, { 6.75f, -2.5f },
+			{ -6.75f, -2.5f }, { 6.75f, 2.5f }, { -4.5f, 0.0f },  { 4.5f, 0.0f },
+		};
+		*outX = twin[index][0];
+		*outZ = twin[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_PANAL )
+	{
+		static const float pads[MAX_PLAYERS][2] = {
+			{ 6.0f, 6.0f }, { -6.0f, -6.0f }, { 6.0f, -6.0f }, { -6.0f, 6.0f },
+			{ 6.0f, 0.0f }, { -6.0f, 0.0f },  { 0.0f, 6.0f },  { 0.0f, -6.0f },
+		};
+		*outX = pads[index][0];
+		*outZ = pads[index][1];
+		return;
+	}
+
+	if ( level == LEVEL_ZIGURAT )
+	{
+		// Axis spawns on the ground tier; extras one terrace up.
+		static const float zig[MAX_PLAYERS][3] = {
+			{ 9.0f, 0.0f, 0.0f }, { -9.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 9.0f }, { 0.0f, 0.0f, -9.0f },
+			{ 6.0f, 0.8f, 0.0f }, { -6.0f, 0.8f, 0.0f }, { 0.0f, 0.8f, 6.0f }, { 0.0f, 0.8f, -6.0f },
+		};
+		*outX = zig[index][0];
+		*outY = zig[index][1];
+		*outZ = zig[index][2];
+		return;
+	}
+
+	if ( level == LEVEL_TORRES )
+	{
+		static const float torres[MAX_PLAYERS][3] = {
+			{ 9.75f, 1.6f, 0.0f }, { -9.75f, 1.6f, 0.0f }, { 0.0f, 0.0f, 3.0f }, { 0.0f, 0.0f, -3.0f },
+			{ 4.5f, 0.0f, 4.5f },  { -4.5f, 0.0f, -4.5f }, { 4.5f, 0.0f, -4.5f }, { -4.5f, 0.0f, 4.5f },
+		};
+		*outX = torres[index][0];
+		*outY = torres[index][1];
+		*outZ = torres[index][2];
+		return;
+	}
+
+	if ( level == LEVEL_FABRICA )
+	{
+		static const float fab[MAX_PLAYERS][2] = {
+			{ 7.5f, 7.5f }, { -7.5f, -7.5f }, { 7.5f, -7.5f }, { -7.5f, 7.5f },
+			{ 7.5f, 0.0f }, { -7.5f, 0.0f },  { 0.0f, 7.5f },  { 0.0f, -7.5f },
+		};
+		*outX = fab[index][0];
+		*outZ = fab[index][1];
+		return;
+	}
+
+	// Circular spawns; beam levels start on the diagonals so the arms
+	// (along ±X at tick 0) miss everyone.
+	bool diag = level == LEVEL_RULETA || level == LEVEL_RULETA2 || level == LEVEL_MARTILLO;
+	int slot = diag ? ( index + 4 ) % MAX_PLAYERS : index;
+	float radius = 4.9f;
+	if ( level == LEVEL_ANILLO )
+	{
+		radius = 7.07f;
+	}
+	else if ( level == LEVEL_RULETA )
+	{
+		radius = 5.6f;
+	}
+	else if ( level == LEVEL_DIANA )
+	{
+		radius = 8.5f;
+	}
+	else if ( level == LEVEL_VOLCAN )
+	{
+		radius = 7.0f;
+	}
+	else if ( level == LEVEL_RULETA2 )
+	{
+		radius = 6.2f;
+	}
+	else if ( level == LEVEL_MARTILLO )
+	{
+		radius = 5.0f;
+	}
 	*outX = radius * dirs[slot][0];
 	*outZ = radius * dirs[slot][1];
 }
@@ -873,6 +1264,14 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	g_powerup.active = false;
 	g_powerup.pos = ( b3Vec3 ){ 0.0f, -100.0f, 0.0f };
 	g_powerup.nextEventTick = 240;
+	g_mode = MODE_SUMO;
+	g_modeParam = 0;
+	g_zoneActive = false;
+	g_zoneMoveAt = 0;
+	g_cursed = -1;
+	g_curseTicks = 0;
+	g_curseImmunity = 0;
+	memset( g_scores, 0, sizeof( g_scores ) );
 	memset( g_inputs, 0, sizeof( g_inputs ) );
 	memset( g_bots, 0, sizeof( g_bots ) );
 
@@ -935,9 +1334,30 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	WriteState();
 }
 
+TUMBO_EXPORT void tumbo_set_mode( int mode, int param )
+{
+	g_mode = mode < 0 ? 0 : ( mode > MODE_MALDITO ? 0 : mode );
+	g_modeParam = param < 1 ? 1 : param;
+	if ( g_mode == MODE_MALDITO )
+	{
+		g_cursed = (int)( RngNext() % (uint32_t)g_playerCount );
+		g_curseTicks = g_modeParam * 60;
+		PushEvent( EVT_CURSE, 0.0f, 0.0f, 0.0f, (float)g_cursed, -1.0f );
+	}
+	if ( g_mode == MODE_COSECHA )
+	{
+		// Orbs matter from the first second.
+		g_powerup.nextEventTick = COUNTDOWN_TICKS;
+	}
+	WriteState();
+}
+
 // ---------------------------------------------------------------------------
 // Per-tick systems
 // ---------------------------------------------------------------------------
+
+static void PassCurse( int to, int from );
+static int NearestAliveTo( float x, float z, int exclude );
 
 static bool IsGrounded( const Player* p )
 {
@@ -1053,6 +1473,65 @@ static void BotReplan( int slot )
 			bot->pulseJump = true;
 		}
 		return;
+	}
+
+	// Mode-driven priorities override the default hunt.
+	if ( g_mode == MODE_KOTH && g_zoneActive )
+	{
+		bot->tx = g_zoneX;
+		bot->tz = g_zoneZ;
+		int foe = NearestAliveTo( pos.x, pos.z, slot );
+		if ( foe >= 0 && p->dashCooldown == 0 )
+		{
+			b3Pos fp = b3Body_GetPosition( g_players[foe].body );
+			float fx = fp.x - pos.x;
+			float fz = fp.z - pos.z;
+			if ( fx * fx + fz * fz < 2.4f * 2.4f )
+			{
+				bot->pulseDash = true;
+			}
+		}
+		return;
+	}
+	if ( g_mode == MODE_COSECHA && g_powerup.active )
+	{
+		bot->tx = g_powerup.pos.x;
+		bot->tz = g_powerup.pos.z;
+		return;
+	}
+	if ( g_mode == MODE_MALDITO && g_cursed >= 0 && g_players[g_cursed].alive )
+	{
+		if ( slot == g_cursed )
+		{
+			int prey = NearestAliveTo( pos.x, pos.z, slot );
+			if ( prey >= 0 )
+			{
+				b3Pos pp = b3Body_GetPosition( g_players[prey].body );
+				bot->tx = pp.x;
+				bot->tz = pp.z;
+				float dx = pp.x - pos.x;
+				float dz = pp.z - pos.z;
+				if ( dx * dx + dz * dz < 3.0f * 3.0f && p->dashCooldown == 0 )
+				{
+					bot->pulseDash = true;
+				}
+				return;
+			}
+		}
+		else
+		{
+			b3Pos cp = b3Body_GetPosition( g_players[g_cursed].body );
+			float dx = pos.x - cp.x;
+			float dz = pos.z - cp.z;
+			float d2c = dx * dx + dz * dz;
+			if ( d2c < 5.0f * 5.0f && d2c > 0.01f )
+			{
+				// Run away, but toward safe ground.
+				float d = sqrtf( d2c );
+				NearestSafeTile( pos.x + dx / d * 4.0f, pos.z + dz / d * 4.0f, &bot->tx, &bot->tz );
+				return;
+			}
+		}
 	}
 
 	// Priority 2: grab the orb when it's close and uncontested-ish.
@@ -1396,6 +1875,16 @@ static void ProcessHits( void )
 
 		if ( ia >= 0 && ib >= 0 )
 		{
+			// Any solid contact passes the curse.
+			if ( g_mode == MODE_MALDITO && g_curseImmunity == 0 && ( ia == g_cursed || ib == g_cursed ) )
+			{
+				int other = ia == g_cursed ? ib : ia;
+				if ( g_players[other].alive && g_players[g_cursed].alive )
+				{
+					PassCurse( other, g_cursed );
+				}
+			}
+
 			bool dashA = g_players[ia].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW;
 			bool dashB = g_players[ib].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW;
 			// Normal points from A to B.
@@ -1464,18 +1953,196 @@ static void StepHazards( void )
 		{
 			if ( t == 0 || t % 900 == 0 )
 			{
-				float speed = 0.9f + 0.35f * (float)( t / 900 );
-				if ( speed > 2.3f )
+				// Ramp the base speed up over time, keeping its sign.
+				float mag = fabsf( h->a ) + 0.35f * (float)( t / 900 );
+				if ( mag > 2.4f )
 				{
-					speed = 2.3f;
+					mag = 2.4f;
 				}
-				b3Body_SetAngularVelocity( h->body, ( b3Vec3 ){ 0.0f, speed, 0.0f } );
+				b3Body_SetAngularVelocity( h->body, ( b3Vec3 ){ 0.0f, h->a < 0.0f ? -mag : mag, 0.0f } );
 			}
 		}
-		else if ( h->type == HAZARD_PISTON )
+		else if ( h->type == HAZARD_PISTON || h->type == HAZARD_PISTON_X )
 		{
-			uint32_t phase = ( t + (uint32_t)i * 140u ) % 280u;
-			b3Body_SetLinearVelocity( h->body, ( b3Vec3 ){ 0.0f, 0.0f, phase < 140u ? 2.2f : -2.2f } );
+			uint32_t phase = ( t + (uint32_t)h->b ) % 280u;
+			float v = phase < 140u ? h->a : -h->a;
+			if ( h->type == HAZARD_PISTON )
+			{
+				b3Body_SetLinearVelocity( h->body, ( b3Vec3 ){ 0.0f, 0.0f, v } );
+			}
+			else
+			{
+				b3Body_SetLinearVelocity( h->body, ( b3Vec3 ){ v, 0.0f, 0.0f } );
+			}
+		}
+		else if ( h->type == HAZARD_ORBITER )
+		{
+			// Chase the analytic orbit: velocity toward next tick's position
+			// self-corrects any solver drift and stays deterministic.
+			float angNext = h->b + h->a * ( (float)( t + 1u ) * TICK_DT );
+			b3Pos pos = b3Body_GetPosition( h->body );
+			float tx = cosf( angNext ) * h->c;
+			float tz = sinf( angNext ) * h->c;
+			b3Body_SetLinearVelocity( h->body, ( b3Vec3 ){ ( tx - pos.x ) / TICK_DT, 0.0f, ( tz - pos.z ) / TICK_DT } );
+		}
+	}
+}
+
+static void MoveZone( void )
+{
+	int candidates[MAX_PIECES];
+	int count = 0;
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state == PIECE_STATIC )
+		{
+			candidates[count++] = i;
+		}
+	}
+	if ( count > 0 )
+	{
+		int pick = candidates[RngNext() % (uint32_t)count];
+		b3Pos tile = b3Body_GetPosition( g_pieces[pick].body );
+		g_zoneX = tile.x;
+		g_zoneZ = tile.z;
+		g_zoneActive = true;
+		PushEvent( EVT_ZONE, g_zoneX, tile.y + PIECE_HY, g_zoneZ, 0.0f, -1.0f );
+	}
+	g_zoneMoveAt = g_frame + ZONE_MOVE_TICKS;
+}
+
+static void PassCurse( int to, int from )
+{
+	g_cursed = to;
+	g_curseImmunity = CURSE_IMMUNITY_TICKS;
+	if ( to >= 0 )
+	{
+		b3Pos pos = b3Body_GetPosition( g_players[to].body );
+		PushEvent( EVT_CURSE, pos.x, pos.y, pos.z, (float)to, (float)from );
+	}
+}
+
+static int NearestAliveTo( float x, float z, int exclude )
+{
+	int best = -1;
+	float bestD2 = 1e30f;
+	for ( int i = 0; i < g_playerCount; ++i )
+	{
+		if ( i == exclude || !g_players[i].alive )
+		{
+			continue;
+		}
+		b3Pos op = b3Body_GetPosition( g_players[i].body );
+		float dx = op.x - x;
+		float dz = op.z - z;
+		float d2 = dx * dx + dz * dz;
+		if ( d2 < bestD2 )
+		{
+			bestD2 = d2;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void StepMode( void )
+{
+	if ( g_winner != -1 || g_frame < COUNTDOWN_TICKS )
+	{
+		return;
+	}
+
+	if ( g_mode == MODE_KOTH )
+	{
+		if ( !g_zoneActive || g_frame >= g_zoneMoveAt || SupportStateAt( g_zoneX, g_zoneZ ) != 2 )
+		{
+			MoveZone();
+		}
+		if ( !g_zoneActive )
+		{
+			return;
+		}
+		// Only an UNCONTESTED player scores.
+		int inside = -1;
+		int count = 0;
+		for ( int i = 0; i < g_playerCount && count < 2; ++i )
+		{
+			if ( !g_players[i].alive )
+			{
+				continue;
+			}
+			b3Pos pos = b3Body_GetPosition( g_players[i].body );
+			float dx = pos.x - g_zoneX;
+			float dz = pos.z - g_zoneZ;
+			if ( dx * dx + dz * dz < ZONE_RADIUS * ZONE_RADIUS && pos.y < 3.5f )
+			{
+				count += 1;
+				inside = i;
+			}
+		}
+		if ( count == 1 )
+		{
+			g_scores[inside] += 1;
+			if ( g_scores[inside] % 60 == 0 )
+			{
+				b3Pos pos = b3Body_GetPosition( g_players[inside].body );
+				PushEvent( EVT_MODE_POINT, pos.x, pos.y, pos.z, (float)inside, (float)( g_scores[inside] / 60 ) );
+			}
+			if ( g_scores[inside] >= g_modeParam * 60 )
+			{
+				g_winner = inside;
+				PushEvent( EVT_ROUND_END, 0.0f, 0.0f, 0.0f, (float)g_winner, -1.0f );
+			}
+		}
+	}
+	else if ( g_mode == MODE_MALDITO )
+	{
+		if ( g_curseImmunity > 0 )
+		{
+			g_curseImmunity -= 1;
+		}
+		if ( g_cursed < 0 )
+		{
+			return;
+		}
+		if ( !g_players[g_cursed].alive )
+		{
+			// The cursed one fell on their own: the curse finds a new home.
+			b3Pos last = b3Body_GetPosition( g_players[g_cursed].body );
+			g_curseTicks = g_modeParam * 60;
+			PassCurse( NearestAliveTo( last.x, last.z, g_cursed ), g_cursed );
+			return;
+		}
+		g_curseTicks -= 1;
+		if ( g_curseTicks <= 0 )
+		{
+			// Boom: the cursed player explodes, shoving everyone nearby.
+			Player* victim = &g_players[g_cursed];
+			b3Pos pos = b3Body_GetPosition( victim->body );
+			for ( int i = 0; i < g_playerCount; ++i )
+			{
+				if ( i == g_cursed || !g_players[i].alive )
+				{
+					continue;
+				}
+				b3Pos op = b3Body_GetPosition( g_players[i].body );
+				float dx = op.x - pos.x;
+				float dz = op.z - pos.z;
+				float d = sqrtf( dx * dx + dz * dz );
+				if ( d < 4.0f && d > 0.01f )
+				{
+					float mass = b3Body_GetMass( g_players[i].body );
+					float k = 7.0f * mass * ( 1.0f - d / 4.0f );
+					b3Body_ApplyLinearImpulseToCenter( g_players[i].body,
+													   ( b3Vec3 ){ dx / d * k, 0.4f * k, dz / d * k }, true );
+				}
+			}
+			victim->alive = false;
+			PushEvent( EVT_HIT, pos.x, pos.y, pos.z, 12.0f, (float)g_cursed );
+			PushEvent( EVT_FALL, pos.x, pos.y, pos.z, 0.0f, (float)g_cursed );
+			b3Body_Disable( victim->body );
+			g_curseTicks = g_modeParam * 60;
+			PassCurse( NearestAliveTo( pos.x, pos.z, g_cursed ), g_cursed );
 		}
 	}
 }
@@ -1525,8 +2192,19 @@ static void StepPowerup( void )
 		{
 			p->hasPower = true;
 			g_powerup.active = false;
-			g_powerup.nextEventTick = g_frame + 300;
+			g_powerup.nextEventTick = g_frame + ( g_mode == MODE_COSECHA ? 120 : 300 );
 			PushEvent( EVT_ORB_PICKUP, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, 0.0f, (float)i );
+			if ( g_mode == MODE_COSECHA && g_winner == -1 )
+			{
+				g_scores[i] += 1;
+				PushEvent( EVT_MODE_POINT, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)i,
+						   (float)g_scores[i] );
+				if ( g_scores[i] >= g_modeParam )
+				{
+					g_winner = i;
+					PushEvent( EVT_ROUND_END, 0.0f, 0.0f, 0.0f, (float)g_winner, -1.0f );
+				}
+			}
 			break;
 		}
 	}
@@ -1541,6 +2219,7 @@ TUMBO_EXPORT void tumbo_step( void )
 	StepCrumble();
 	StepHazards();
 	StepPowerup();
+	StepMode();
 
 	b3World_Step( g_world, TICK_DT, SUBSTEPS );
 	g_frame += 1;

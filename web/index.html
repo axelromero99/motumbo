@@ -52,6 +52,12 @@
     .pip-on { color: var(--text); }
     .pip-off { color: rgba(139, 147, 184, 0.4); }
     .chip .you-tag { font-size: 10px; font-weight: 800; letter-spacing: 0.1em; color: var(--accent); }
+    .chip .chip-score { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: var(--text); }
+    .chip.cursed { border-color: var(--bad); animation: cursed-pulse 0.9s ease-in-out infinite; }
+    @keyframes cursed-pulse {
+      0%, 100% { box-shadow: 0 0 0 1px var(--bad), 0 0 10px rgba(255, 89, 100, 0.35); }
+      50% { box-shadow: 0 0 0 3px var(--bad), 0 0 20px rgba(255, 89, 100, 0.7); }
+    }
 
     #status { top: 58px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; color: var(--muted); }
     #banner { top: 40%; font-size: 44px; font-weight: 800; display: none; }
@@ -164,8 +170,14 @@
 
     /* ================= Setup ================= */
     #setup-mode { text-align: center; margin: -8px 0 14px; font-size: 12px; font-weight: 800; letter-spacing: 0.3em; color: var(--accent); }
+    .sect-head {
+      margin: 2px 0 8px; font-size: 12px; font-weight: 800;
+      letter-spacing: 0.22em; color: var(--muted);
+    }
     #level-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+      gap: 8px; margin-bottom: 18px;
+      max-height: 38vh; overflow-y: auto; padding: 2px; scrollbar-width: thin;
     }
     .level-card {
       position: relative; padding: 0; border: 2px solid var(--line); border-radius: 12px;
@@ -176,14 +188,30 @@
     .level-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35), 0 6px 20px rgba(53, 167, 255, 0.25); }
     .level-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
     .level-card .lname {
-      display: block; padding: 6px 4px 7px; font-size: 11px; font-weight: 800;
-      letter-spacing: 0.14em; color: var(--text); text-align: center; background: rgba(10, 13, 28, 0.9);
+      display: block; padding: 5px 3px 6px; font-size: 9.5px; font-weight: 800;
+      letter-spacing: 0.08em; color: var(--text); text-align: center; background: rgba(10, 13, 28, 0.9);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .level-card .random-thumb {
       display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 1;
-      font-size: 44px; font-weight: 900; color: var(--muted);
+      font-size: 32px; font-weight: 900; color: var(--muted);
       background: repeating-linear-gradient(45deg, #10142a, #10142a 12px, #141931 12px, #141931 24px);
     }
+
+    /* ================= Setup: MODO ================= */
+    #mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 14px; }
+    .mode-card {
+      padding: 10px 12px; text-align: left; border: 2px solid var(--line); border-radius: 12px;
+      background: #0e1226; cursor: pointer; color: var(--text);
+      transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+    }
+    .mode-card:hover { transform: translateY(-1px); border-color: var(--line-hi); }
+    .mode-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(53, 167, 255, 0.35), 0 6px 20px rgba(53, 167, 255, 0.25);
+    }
+    .mode-card .mname { display: block; font-size: 12px; font-weight: 800; letter-spacing: 0.12em; }
+    .mode-card .mdesc { display: block; margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); }
     .setup-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 14px 0; flex-wrap: wrap; }
     .setup-row .lbl { font-size: 13px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted); }
     .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -199,7 +227,7 @@
       margin: 2px 0 8px; font-size: 12px; font-weight: 800;
       letter-spacing: 0.22em; color: var(--muted);
     }
-    #custom-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+    #custom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; margin-bottom: 18px; }
     .custom-empty {
       grid-column: 1 / -1; margin: 0; padding: 14px;
       border: 1px dashed var(--line); border-radius: 12px; text-align: center;
@@ -362,8 +390,10 @@
     /* ================= Reduced motion ================= */
     body.reduced-motion .logo-ball,
     body.reduced-motion .toast { animation: none; }
+    body.reduced-motion .chip.cursed { animation: none; box-shadow: 0 0 0 2px var(--bad); }
     body.reduced-motion .screen { transition-duration: 0.01s; }
-    body.reduced-motion .btn, body.reduced-motion .menu-btn, body.reduced-motion .level-card { transition: none; }
+    body.reduced-motion .btn, body.reduced-motion .menu-btn, body.reduced-motion .level-card,
+    body.reduced-motion .mode-card { transition: none; }
   </style>
 </head>
 <body>
@@ -402,6 +432,30 @@
       <div id="level-grid"></div>
       <div class="mymaps-head">MIS MAPAS</div>
       <div id="custom-grid"></div>
+      <div class="sect-head">MODO</div>
+      <!-- data-mode = valores MODE_* de sim.ts (0 SUMO, 1 KOTH, 2 COSECHA, 3 MALDITO) -->
+      <div id="mode-grid">
+        <button type="button" class="mode-card selected" data-mode="0">
+          <span class="mname">SUMO</span>
+          <span class="mdesc">El último en pie gana la ronda.</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="1">
+          <span class="mname">REY DE LA COLINA</span>
+          <span class="mdesc">Sumá segundos estando solo en la zona.</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="2">
+          <span class="mname">COSECHA</span>
+          <span class="mdesc">Sé el primero en juntar los orbes.</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="3">
+          <span class="mname">MALDITO</span>
+          <span class="mdesc">Pasale la maldición a otro antes de que explote.</span>
+        </button>
+      </div>
+      <div class="setup-row" id="mode-param-row" style="display:none">
+        <span class="lbl" id="mode-param-label"></span>
+        <div class="seg" id="seg-mode-param"></div>
+      </div>
       <div class="setup-row">
         <span class="lbl">PRIMERO A</span>
         <div class="seg" id="seg-rounds">

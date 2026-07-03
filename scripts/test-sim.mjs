@@ -9,7 +9,7 @@ const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
 const PLAYERS = 4;
 const TICKS = 1500;
-const LEVELS = 8;
+const LEVELS = 20;
 
 // Deterministic scripted inputs: phase-shifted direction changes, periodic
 // dashes, jumps and braces.
@@ -95,6 +95,48 @@ if (!botsOk) {
   console.log(`  bots deterministas y agresivos OK (winner=${ba.winner})`);
 }
 
+console.log('--- modos ---');
+async function runMode(mode, param, label) {
+  const M = await createTumbo();
+  M._tumbo_init(7, PLAYERS, 0);
+  M._tumbo_set_mode(mode, param);
+  for (let p = 0; p < PLAYERS; p++) M._tumbo_set_bot(p, 2);
+  const stateBase = M._tumbo_state_ptr() >> 2;
+  const hashes = [];
+  let winnerTick = -1;
+  for (let t = 0; t < 3600; t++) {
+    M._tumbo_step();
+    if (t % 100 === 0) hashes.push(M._tumbo_hash() >>> 0);
+    if (winnerTick < 0 && M.HEAPF32[stateBase + 4] !== -1) winnerTick = t;
+  }
+  const S = M.HEAPF32;
+  const floats = M._tumbo_state_floats();
+  const modeBase = stateBase + floats - 12;
+  const scores = [];
+  for (let i = 0; i < PLAYERS; i++) scores.push(S[modeBase + 4 + i]);
+  console.log(
+    `[modo ${mode} ${label}] winner=${S[stateBase + 4]} winnerTick=${winnerTick} scores=${scores.join(',')}`,
+  );
+  return { hashes, winner: S[stateBase + 4], winnerTick };
+}
+
+for (const [mode, param, name] of [
+  [1, 12, 'REY'],
+  [2, 4, 'COSECHA'],
+  [3, 8, 'MALDITO'],
+]) {
+  const ma = await runMode(mode, param, `${name} A`);
+  const mb = await runMode(mode, param, `${name} B`);
+  const ok = ma.hashes.every((h, i) => h === mb.hashes[i]) && ma.winner === mb.winner;
+  const resolved = ma.winner !== -1;
+  if (!ok || !resolved) {
+    allOk = false;
+    console.log(`  FALLO modo ${name}: ok=${ok} resolved=${resolved}`);
+  } else {
+    console.log(`  modo ${name} determinista y con ganador OK`);
+  }
+}
+
 console.log('--- mapa custom ---');
 // Cross-shaped custom map with raised ends and a spinning beam, built with
 // the same byte layout as mapcodec.ts / BuildCustomLevel.
@@ -139,7 +181,7 @@ async function runCustom(label) {
   const bytes = buildTestMap();
   M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
   M._tumbo_set_custom(bytes.length);
-  M._tumbo_init(99, PLAYERS, 8);
+  M._tumbo_init(99, PLAYERS, 20);
   const inputsBase = M._tumbo_inputs_ptr() >> 2;
   const stateBase = M._tumbo_state_ptr() >> 2;
   const hashes = [];

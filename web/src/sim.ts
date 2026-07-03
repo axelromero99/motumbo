@@ -26,7 +26,42 @@ export function dashCooldownFrom(flags: number): number {
   return (flags >> FLAG_CD_SHIFT) & FLAG_CD_MASK;
 }
 
-export const LEVEL_NAMES = ['CLÁSICA', 'ANILLO', 'PUENTES', 'RULETA', 'PIRÁMIDE', 'HERRADURA', 'PASARELA', 'TARIMAS'];
+export const LEVEL_NAMES = [
+  'CLÁSICA',
+  'ANILLO',
+  'PUENTES',
+  'RULETA',
+  'PIRÁMIDE',
+  'HERRADURA',
+  'PASARELA',
+  'TARIMAS',
+  'CRUZ',
+  'ASPAS',
+  'GEMELAS',
+  'PANAL',
+  'DIANA',
+  'VOLCÁN',
+  'ZIGURAT',
+  'TORRES',
+  'RULETA DOBLE',
+  'FÁBRICA',
+  'MARTILLO',
+  'CALLES',
+];
+
+// Game modes (deterministic, resolved inside the sim).
+export const MODE_SUMO = 0;
+export const MODE_KOTH = 1; // rey de la colina: puntuás estando SOLO en la zona
+export const MODE_COSECHA = 2; // primero a N orbes
+export const MODE_MALDITO = 3; // papa caliente: el maldito explota al vencer el timer
+export const MODE_NAMES = ['SUMO', 'REY DE LA COLINA', 'COSECHA', 'MALDITO'];
+
+export const FLAG_CURSED = 1024;
+
+// Mode section appended after the powerup floats: [mode, m0, m1, m2] then 8
+// per-player scores. KOTH: m0/m1 = zone x/z. MALDITO: m0 = cursed index,
+// m1 = ticks left. m2 = target param.
+export const MODE_FLOATS = 12;
 
 // Gameplay events emitted by the sim each tick: [type, x, y, z, a, b] × count.
 export const EVT_HIT = 0;
@@ -40,6 +75,9 @@ export const EVT_ORB_PICKUP = 7;
 export const EVT_ROUND_END = 8;
 export const EVT_DASH_HIT = 9;
 export const EVT_PARRY = 10;
+export const EVT_CURSE = 11;
+export const EVT_ZONE = 12;
+export const EVT_MODE_POINT = 13;
 export const EVENT_FLOATS = 6;
 
 interface TumboModule {
@@ -53,6 +91,7 @@ interface TumboModule {
   _tumbo_event_count(): number;
   _tumbo_countdown_ticks(): number;
   _tumbo_set_bot(slot: number, difficulty: number): void;
+  _tumbo_set_mode(mode: number, param: number): void;
   _tumbo_custom_ptr(): number;
   _tumbo_set_custom(len: number): void;
   _tumbo_hash(): number;
@@ -169,6 +208,30 @@ export class Sim {
 
   powerupBase(): number {
     return STATE_HEADER + STATE_STRIDE * (this.playerCount + this.pieceCount) + HAZARD_STRIDE * this.hazardCount;
+  }
+
+  /** [mode, m0, m1, m2] followed by 8 per-player scores. */
+  modeBase(): number {
+    return this.powerupBase() + 4;
+  }
+
+  get mode(): number {
+    return this.curr[this.modeBase()];
+  }
+
+  score(i: number): number {
+    return this.curr[this.modeBase() + 4 + i];
+  }
+
+  /**
+   * Set the game mode (call after init, before the first step; identical on
+   * every lockstep peer). KOTH: param = seconds to hold. COSECHA: param =
+   * orbs to collect. MALDITO: param = curse timer seconds.
+   */
+  setMode(mode: number, param: number): void {
+    this.module._tumbo_set_mode(mode, param);
+    this.curr = this.readState(this.module._tumbo_state_floats());
+    this.prev = this.curr.slice();
   }
 
   private readState(floats: number): Float32Array {

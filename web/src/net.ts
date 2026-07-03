@@ -45,8 +45,16 @@ export function msgHash(round: number, tick: number, hash: number): ArrayBuffer 
   return buf;
 }
 
-export function msgStart(round: number, seed: number, level: number, resetWins: boolean, winTarget: number): ArrayBuffer {
-  const buf = new ArrayBuffer(9);
+export function msgStart(
+  round: number,
+  seed: number,
+  level: number,
+  resetWins: boolean,
+  winTarget: number,
+  mode: number,
+  modeParam: number,
+): ArrayBuffer {
+  const buf = new ArrayBuffer(11);
   const v = new DataView(buf);
   v.setUint8(0, MSG_START);
   v.setUint8(1, round);
@@ -54,6 +62,8 @@ export function msgStart(round: number, seed: number, level: number, resetWins: 
   v.setUint8(6, level);
   v.setUint8(7, resetWins ? 1 : 0);
   v.setUint8(8, winTarget);
+  v.setUint8(9, mode);
+  v.setUint8(10, modeParam);
   return buf;
 }
 

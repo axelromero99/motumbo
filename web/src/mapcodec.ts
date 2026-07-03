@@ -13,7 +13,7 @@ export const MAP_VERSION = 1;
 export const GRID_EXTENT = 7; // tiles live in gx,gz ∈ [-7, 7]
 export const MAX_TILES = 225; // 15×15 grid
 export const MAX_SPAWNS = 8;
-export const LEVEL_CUSTOM = 8;
+export const LEVEL_CUSTOM = 20;
 
 export interface MapTile {
   gx: number;

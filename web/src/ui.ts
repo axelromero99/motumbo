@@ -26,18 +26,23 @@
  *   - ONLINE -> navega a 'online' y dispara onOnline(true) (pestaña CREAR).
  *     Cambiar de pestaña vuelve a disparar onOnline(host); main.ts debe
  *     descartar la sesión anterior y crear una nueva en cada onOnline.
- *   - JUGAR (setup) -> onStartMatch(level, winTarget) y navega a 'none'.
- *     level es índice de nivel o 'random' (main.ts resuelve el random — es
- *     elección de host, no gameplay). winTarget es 3, 5 o 7.
+ *   - JUGAR (setup) -> onStartMatch(level, winTarget, mode, modeParam) y
+ *     navega a 'none'. level es índice de nivel o 'random' (main.ts resuelve
+ *     el random — es elección de host, no gameplay). winTarget es 3, 5 o 7.
+ *     mode es una constante MODE_* de sim.ts; modeParam es el parámetro
+ *     contextual del modo (KOTH: segundos en zona 10/15/20, COSECHA: orbes
+ *     3/5/8, MALDITO: segundos de mecha 8/12/20; SUMO: 0, sin parámetro) —
+ *     pasable directo a sim.setMode(mode, modeParam).
  *   - Volver (setup) -> 'title'. Volver (online) -> 'title' + onQuitToTitle()
  *     (para que main.ts descarte la sesión WebRTC).
  *   - Pausa: main.ts llama ui.show('pause') cuando detecta Esc.
  *     Reanudar -> onResume() + 'none'. Opciones -> pantalla interna de
  *     opciones (vuelve sola a 'pause'). Salir al menú -> onQuitToTitle() + 'title'.
- *   - Results: Revancha -> onStartMatch(últimoNivelElegido, últimoWinTarget)
- *     + 'none' (misma semántica que JUGAR; en online solo el host debería
- *     actuar — el guest puede ignorar el callback o main.ts lo deshabilita
- *     mostrando un toast). Menú -> onQuitToTitle() + 'title'.
+ *   - Results: Revancha -> onStartMatch(últimoNivel, últimoWinTarget,
+ *     últimoModo, últimoModeParam) + 'none' (misma semántica que JUGAR; en
+ *     online solo el host debería actuar — el guest puede ignorar el callback
+ *     o main.ts lo deshabilita mostrando un toast). Menú -> onQuitToTitle()
+ *     + 'title'.
  *
  * Online — protocolo de setOnlineState(state, detail?):
  *   'idle'         reset del wizard (pasos según pestaña activa)
@@ -62,7 +67,9 @@
  * HUD:
  *   - updateScorebar(entries, winTarget): llamar cuando cambie score/vidas
  *     (no hace falta cada frame; es barato pero reconstruye DOM). Lista vacía
- *     oculta la barra.
+ *     oculta la barra. Campos opcionales por entrada: score (string que se
+ *     muestra junto a los pips, p.ej. '12s' o '3🔮') y cursed (borde rojo
+ *     pulsante para el maldito en modo MALDITO).
  *   - showResults(opts): puebla Y muestra la pantalla results. nextInMs
  *     arranca un contador visual "siguiente ronda en N…" (solo display; el
  *     timing real lo maneja main.ts). champion es índice dentro de rows o null.
@@ -103,9 +110,20 @@
 
 import { deleteMap, listMaps } from './editor';
 import type { SavedMap } from './editor';
+import { MODE_COSECHA, MODE_KOTH, MODE_MALDITO, MODE_SUMO } from './sim';
 
 /** Presets del toggle de partículas (valor = multiplicador de densidad). */
 export const PARTICLE_PRESETS: Record<string, number> = { alta: 1, media: 0.5, baja: 0.2 };
+
+/**
+ * Parámetro contextual de cada modo (clave = MODE_* de sim.ts). SUMO no está:
+ * no tiene parámetro y onStartMatch entrega 0.
+ */
+const MODE_PARAM_CFG: Record<number, { label: string; suffix: string; options: number[]; def: number }> = {
+  [MODE_KOTH]: { label: 'SEGUNDOS EN ZONA', suffix: 's', options: [10, 15, 20], def: 15 },
+  [MODE_COSECHA]: { label: 'ORBES PARA GANAR', suffix: '', options: [3, 5, 8], def: 5 },
+  [MODE_MALDITO]: { label: 'SEGUNDOS DE MECHA', suffix: 's', options: [8, 12, 20], def: 12 },
+};
 
 /** Nivel elegido en el setup: built-in, aleatorio o mapa custom (id de SavedMap). */
 export type LevelChoice = number | 'random' | { custom: string };
@@ -126,6 +144,10 @@ export interface ScoreEntry {
   wins: number;
   alive: boolean;
   you: boolean;
+  /** Texto de score del modo mostrado junto a los pips (p.ej. '12s', '3🔮'). */
+  score?: string;
+  /** MALDITO: marca el chip del maldito con borde rojo pulsante. */
+  cursed?: boolean;
 }
 
 export interface ResultRow {
@@ -152,7 +174,8 @@ export interface UiCallbacks {
   onConnectClicked(code: string): void;
   onCopyCode(): void;
   onInviteLink(): void;
-  onStartMatch(level: LevelChoice, winTarget: number): void;
+  /** mode = MODE_* de sim.ts; modeParam = parámetro contextual (SUMO: 0). */
+  onStartMatch(level: LevelChoice, winTarget: number, mode: number, modeParam: number): void;
   onResume(): void;
   onQuitToTitle(): void;
   onSettingsChanged(s: Settings): void;
@@ -207,7 +230,19 @@ export class UiShell {
   private customMaps: SavedMap[] = [];
   private selLevel: LevelChoice = 'random';
   private winTarget = 5;
-  private lastStart: { level: LevelChoice; winTarget: number } = { level: 'random', winTarget: 5 };
+  private selMode: number = MODE_SUMO;
+  /** Último parámetro elegido por modo (arranca en el default de cada uno). */
+  private modeParamSel: Record<number, number> = {
+    [MODE_KOTH]: MODE_PARAM_CFG[MODE_KOTH].def,
+    [MODE_COSECHA]: MODE_PARAM_CFG[MODE_COSECHA].def,
+    [MODE_MALDITO]: MODE_PARAM_CFG[MODE_MALDITO].def,
+  };
+  private lastStart: { level: LevelChoice; winTarget: number; mode: number; modeParam: number } = {
+    level: 'random',
+    winTarget: 5,
+    mode: MODE_SUMO,
+    modeParam: 0,
+  };
 
   private hostTab = true;
   private offerCode = '';
@@ -441,12 +476,19 @@ export class UiShell {
     bar.textContent = '';
     for (const e of entries) {
       const chip = document.createElement('div');
-      chip.className = 'chip' + (e.you ? ' you' : '') + (e.alive ? '' : ' dead');
+      chip.className =
+        'chip' + (e.you ? ' you' : '') + (e.alive ? '' : ' dead') + (e.cursed ? ' cursed' : '');
       const ball = document.createElement('span');
       ball.className = 'chip-ball';
       ball.style.background = hexColor(e.color);
       chip.appendChild(ball);
       chip.appendChild(buildPips(e.wins, winTarget, hexColor(e.color)));
+      if (e.score) {
+        const sc = document.createElement('span');
+        sc.className = 'chip-score';
+        sc.textContent = e.score;
+        chip.appendChild(sc);
+      }
       if (e.you) {
         const tag = document.createElement('span');
         tag.className = 'you-tag';
@@ -613,12 +655,54 @@ export class UiShell {
         for (const b of $('seg-rounds').querySelectorAll('button')) b.classList.toggle('active', b === btn);
       });
     }
+    const modeCards = $('mode-grid').querySelectorAll<HTMLButtonElement>('.mode-card');
+    for (const card of modeCards) {
+      card.addEventListener('click', () => {
+        this.selMode = Number(card.dataset.mode) || MODE_SUMO;
+        for (const c of modeCards) c.classList.toggle('selected', c === card);
+        this.renderModeParam();
+      });
+    }
+    this.renderModeParam();
     $('btn-play').addEventListener('click', () => {
-      this.lastStart = { level: this.selLevel, winTarget: this.winTarget };
+      const modeParam = this.currentModeParam();
+      this.lastStart = { level: this.selLevel, winTarget: this.winTarget, mode: this.selMode, modeParam };
       this.showAny('none');
-      this.cb.onStartMatch(this.selLevel, this.winTarget);
+      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam);
     });
     $('btn-setup-back').addEventListener('click', () => this.showAny('title'));
+  }
+
+  /** Parámetro contextual del modo seleccionado (0 si el modo no tiene). */
+  private currentModeParam(): number {
+    const cfg = MODE_PARAM_CFG[this.selMode];
+    return cfg ? (this.modeParamSel[this.selMode] ?? cfg.def) : 0;
+  }
+
+  /** Rehace el segmento del parámetro contextual según el modo elegido. */
+  private renderModeParam(): void {
+    const row = $('mode-param-row');
+    const cfg = MODE_PARAM_CFG[this.selMode];
+    if (!cfg) {
+      row.style.display = 'none';
+      return;
+    }
+    row.style.display = '';
+    $('mode-param-label').textContent = cfg.label;
+    const seg = $('seg-mode-param');
+    seg.textContent = '';
+    const selected = this.modeParamSel[this.selMode] ?? cfg.def;
+    for (const v of cfg.options) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = `${v}${cfg.suffix}`;
+      b.classList.toggle('active', v === selected);
+      b.addEventListener('click', () => {
+        this.modeParamSel[this.selMode] = v;
+        for (const other of seg.querySelectorAll('button')) other.classList.toggle('active', other === b);
+      });
+      seg.appendChild(b);
+    }
   }
 
   private selectLevel(sel: LevelChoice): void {
@@ -729,7 +813,8 @@ export class UiShell {
   private wireResults(): void {
     $('btn-rematch').addEventListener('click', () => {
       this.showAny('none');
-      this.cb.onStartMatch(this.lastStart.level, this.lastStart.winTarget);
+      const s = this.lastStart;
+      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam);
     });
     $('btn-results-menu').addEventListener('click', () => {
       this.showAny('title');

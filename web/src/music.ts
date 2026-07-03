@@ -28,9 +28,12 @@ interface Theme {
   scale: number[];
   bassWave: OscillatorType;
   arpWave: OscillatorType;
-  /** 16 sixteenth-steps of semitone offsets from root; null = rest. */
+  /**
+   * Sixteenth-steps of semitone offsets from root; null = rest. The pattern
+   * length defines the bar: 16 = 4/4, 12 = 3/4 (waltz).
+   */
   bassPat: Step[];
-  /** 16 sixteenth-steps of scale-degree indices (wrap = +octave); null = rest. */
+  /** Sixteenth-steps of scale-degree indices (wrap = +octave); null = rest. */
   arpPat: Step[];
   /** Probability of a hat per sixteenth, 0..1. */
   hatDensity: number;
@@ -38,6 +41,10 @@ interface Theme {
   perc?: boolean;
   /** Longer, softer notes + sustained pad. */
   dreamy?: boolean;
+  /** Shuffle: even sixteenths stretched, odd ones shortened (~2:1). */
+  swing?: boolean;
+  /** Bandpassed-noise snare on the backbeats (steps 4 and 12). */
+  snare?: boolean;
 }
 
 const PENT_MIN = [0, 3, 5, 7, 10];
@@ -47,9 +54,10 @@ const HARM_MIN = [0, 2, 3, 5, 7, 8, 11];
 const PHRYGIAN = [0, 1, 3, 5, 7, 8, 10];
 const NAT_MIN = [0, 2, 3, 5, 7, 8, 10];
 const LYDIAN = [0, 2, 4, 6, 7, 9, 11];
+const MAJOR = [0, 2, 4, 5, 7, 9, 11];
+const BLUES = [0, 3, 5, 6, 7, 10];
 
-// One theme per level, aligned with LEVEL_NAMES in sim.ts:
-// CLÁSICA, ANILLO, PUENTES, RULETA, PIRÁMIDE, HERRADURA, PASARELA, TARIMAS.
+// One theme per level, aligned with the 20 entries of LEVEL_NAMES in sim.ts.
 export const MUSIC_THEMES: Theme[] = [
   {
     // CLÁSICA — neón relajado, pentatónica menor floja.
@@ -108,6 +116,98 @@ export const MUSIC_THEMES: Theme[] = [
     arpPat: [0, null, 2, null, 4, null, 6, null, null, null, 4, null, 2, null, null, null],
     hatDensity: 0.2,
     dreamy: true,
+  },
+  {
+    // CRUZ — marcha frigia tensa: pulso marcial con caja y la b2 clavada.
+    bpm: 116, root: 38, scale: PHRYGIAN, bassWave: 'square', arpWave: 'square',
+    bassPat: [0, null, null, 0, 0, null, null, null, 0, null, null, 0, 1, null, 0, null],
+    arpPat: [0, null, null, null, 4, null, null, null, 0, null, 0, null, 5, null, 4, null],
+    hatDensity: 0.5,
+    snare: true,
+  },
+  {
+    // ASPAS — space-disco: bajo en octavas que gira y arpegio en barrido.
+    bpm: 122, root: 36, scale: DORIAN, bassWave: 'sawtooth', arpWave: 'sawtooth',
+    bassPat: [0, null, 12, null, 0, null, 12, null, 0, null, 12, null, 0, 10, 12, null],
+    arpPat: [0, 2, 4, 6, 7, null, 4, null, 0, 2, 4, 6, 9, null, 7, null],
+    hatDensity: 0.8,
+  },
+  {
+    // GEMELAS — vals a 3/4 (compás de 12 pasos): un-pá-pá con frase espejada.
+    bpm: 138, root: 45, scale: MAJOR, bassWave: 'triangle', arpWave: 'sine',
+    bassPat: [0, null, null, null, 7, null, null, null, 4, null, null, null],
+    arpPat: [0, null, 2, 4, null, 7, null, 4, 2, null, 0, null],
+    hatDensity: 0.15,
+  },
+  {
+    // PANAL — swing juguetón: bajo que camina y shuffle en las semicorcheas.
+    bpm: 102, root: 43, scale: PENT_MAJ, bassWave: 'triangle', arpWave: 'triangle',
+    bassPat: [0, null, null, null, 4, null, 7, null, 9, null, 7, null, 4, null, 0, null],
+    arpPat: [0, null, 1, null, 2, null, 4, null, 3, null, 2, null, 4, null, 1, null],
+    hatDensity: 0.55,
+    swing: true,
+  },
+  {
+    // DIANA — chiptune arcade: cuadradas a 150bpm y arpegio en ráfaga.
+    bpm: 150, root: 45, scale: MAJOR, bassWave: 'square', arpWave: 'square',
+    bassPat: [0, null, 0, null, 7, null, 0, null, 5, null, 0, null, 7, null, 12, null],
+    arpPat: [0, 2, 4, 7, 4, 2, 0, null, 1, 3, 5, 7, 5, 3, 1, null],
+    hatDensity: 0.6,
+  },
+  {
+    // VOLCÁN — retumbe grave: subgrave frigio, toms como magma, casi sin melodía.
+    bpm: 86, root: 31, scale: PHRYGIAN, bassWave: 'sine', arpWave: 'sawtooth',
+    bassPat: [0, null, null, null, null, null, 0, null, 1, null, null, null, null, 0, null, null],
+    arpPat: [null, null, null, null, 0, null, null, null, null, null, null, null, 1, null, null, null],
+    hatDensity: 0.3,
+    perc: true,
+  },
+  {
+    // ZIGURAT — pentatónica mística: dron que sube a la quinta + pad flotante.
+    bpm: 84, root: 38, scale: PENT_MIN, bassWave: 'sine', arpWave: 'triangle',
+    bassPat: [0, null, null, null, null, null, null, null, 7, null, null, null, null, null, null, null],
+    arpPat: [0, null, null, 3, null, null, 1, null, null, 4, null, null, 2, null, null, null],
+    hatDensity: 0.18,
+    dreamy: true,
+  },
+  {
+    // TORRES — coral gótico: menor armónica a 66bpm, voces largas tipo órgano.
+    bpm: 66, root: 36, scale: HARM_MIN, bassWave: 'sine', arpWave: 'sine',
+    bassPat: [0, null, null, null, null, null, null, null, 8, null, null, null, 7, null, null, null],
+    arpPat: [0, null, null, null, 2, null, null, null, 4, null, null, null, 6, null, null, null],
+    hatDensity: 0.06,
+    dreamy: true,
+  },
+  {
+    // RULETA DOBLE — synthwave: sierras a 132bpm, bajo galopante en corcheas.
+    bpm: 132, root: 33, scale: NAT_MIN, bassWave: 'sawtooth', arpWave: 'sawtooth',
+    bassPat: [0, 0, null, 0, 0, null, 0, 0, null, 0, 0, null, 8, null, 10, null],
+    arpPat: [0, null, 2, null, 4, null, 7, null, 6, null, 4, null, 2, null, 4, null],
+    hatDensity: 0.7,
+  },
+  {
+    // FÁBRICA — industrial: martilleo de corcheas frigias con caja metálica.
+    bpm: 124, root: 33, scale: PHRYGIAN, bassWave: 'square', arpWave: 'square',
+    bassPat: [0, null, 0, null, 0, null, 1, null, 0, null, 0, null, 0, null, 1, null],
+    arpPat: [0, 0, null, null, 0, 0, null, null, 0, 0, null, null, 7, null, 5, null],
+    hatDensity: 0.75,
+    snare: true,
+  },
+  {
+    // MARTILLO — blues pesado: riff en escala blues con shuffle arrastrado.
+    bpm: 76, root: 33, scale: BLUES, bassWave: 'sawtooth', arpWave: 'triangle',
+    bassPat: [0, null, 0, null, 3, null, 5, null, 6, null, 5, null, 3, null, 0, null],
+    arpPat: [null, null, null, null, 4, null, 3, null, null, null, null, null, 2, null, 1, null],
+    hatDensity: 0.4,
+    swing: true,
+  },
+  {
+    // CALLES — funk urbano: bajo sincopado con octavas y stabs a contratiempo.
+    bpm: 106, root: 38, scale: DORIAN, bassWave: 'sawtooth', arpWave: 'square',
+    bassPat: [0, null, null, 12, null, null, 0, null, 10, null, 0, null, null, 12, null, null],
+    arpPat: [null, null, 4, null, null, null, 4, 6, null, null, 4, null, null, 2, null, null],
+    hatDensity: 0.75,
+    snare: true,
   },
 ];
 
@@ -276,9 +376,13 @@ export class MusicEngine {
     const horizon = now + LOOKAHEAD;
     while (this.nextStep < horizon) {
       this.scheduleStep(this.step, this.nextStep);
-      const bpm = MUSIC_THEMES[this.levelIdx].bpm + (this.duel ? DUEL_BPM_BOOST : 0);
-      this.nextStep += 60 / bpm / 4; // sixteenth notes
-      this.step = (this.step + 1) % 16;
+      const th = MUSIC_THEMES[this.levelIdx];
+      const bpm = th.bpm + (this.duel ? DUEL_BPM_BOOST : 0);
+      const dur = 60 / bpm / 4; // sixteenth notes
+      // Shuffle: even sixteenths stretched, odd ones squeezed (~2:1 swing).
+      this.nextStep += th.swing ? dur * (this.step % 2 === 0 ? 1.34 : 0.66) : dur;
+      // Pattern length defines the bar (16 = 4/4, 12 = 3/4).
+      this.step = (this.step + 1) % th.bassPat.length;
     }
   }
 
@@ -286,23 +390,25 @@ export class MusicEngine {
     if (!this.layers) return;
     const th = MUSIC_THEMES[this.levelIdx];
     const stepDur = 60 / th.bpm / 4;
+    // Level switches mid-bar can leave `i` past a shorter pattern; wrap it.
+    const steps = th.bassPat.length;
 
     // Bass — the backbone, always audible.
-    const b = th.bassPat[i];
+    const b = th.bassPat[i % steps];
     if (b !== null) {
       const dur = stepDur * (th.dreamy ? 5 : 2.6);
       this.note(this.layers.bass, th.root + b, t, dur, th.bassWave, BASS_VOL[th.bassWave]);
     }
 
     // Dreamy pad: long soft fifth+octave once per bar, rides the bass layer.
-    if (th.dreamy && i === 0) {
-      const barDur = stepDur * 16;
+    if (th.dreamy && i % steps === 0) {
+      const barDur = stepDur * steps;
       this.note(this.layers.bass, th.root + 19, t, barDur, 'sine', 0.02);
       this.note(this.layers.bass, th.root + 24, t, barDur, 'sine', 0.016);
     }
 
     // Arpeggio — melodic tension layer, two octaves above the bass.
-    const a = th.arpPat[i];
+    const a = th.arpPat[i % th.arpPat.length];
     if (a !== null) {
       const jump = Math.random() < 0.1 ? 12 : 0; // audio-only randomness
       const semi = degSemi(th.scale, a) + jump;
@@ -321,6 +427,9 @@ export class MusicEngine {
     if (th.perc && (i === 3 || i === 6 || i === 10 || i === 13) && Math.random() < 0.7) {
       this.tom(t, i % 2 === 0 ? 170 : 220);
     }
+
+    // Snare on the backbeats (steps 4 and 12 in 4/4) — martial/industrial themes.
+    if (th.snare && i % 8 === 4) this.snare(t);
 
     // Ostinato — driving double-time pulse alternating octave/fifth-up.
     const ostSemi = i % 2 === 0 ? 12 : 19;
@@ -376,6 +485,26 @@ export class MusicEngine {
     gain.connect(this.layers.hats);
     osc.start(t);
     osc.stop(t + 0.2);
+  }
+
+  /** Bandpassed noise burst — backbeat snare. Rides the hats layer. */
+  private snare(t: number): void {
+    if (!this.ctx || !this.noiseBuffer || !this.layers) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    src.loop = true;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 1900;
+    bp.Q.value = 0.8;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.045, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    src.connect(bp);
+    bp.connect(gain);
+    gain.connect(this.layers.hats);
+    src.start(t);
+    src.stop(t + 0.13);
   }
 
   /** Soft resolving roll on the tonic triad when the round ends. */

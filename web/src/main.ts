@@ -19,7 +19,16 @@ import {
   EVT_ROUND_END,
   EVT_DASH_HIT,
   EVT_PARRY,
+  EVT_CURSE,
+  EVT_ZONE,
+  EVT_MODE_POINT,
   PIECE_STATIC,
+  FLAG_CURSED,
+  MODE_SUMO,
+  MODE_KOTH,
+  MODE_COSECHA,
+  MODE_MALDITO,
+  MODE_NAMES,
 } from './sim';
 import { LocalInput } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
@@ -74,6 +83,8 @@ async function main(): Promise<void> {
   let currentTheme = 0;
   let currentLevelName = LEVEL_NAMES[0];
   let winTarget = 5;
+  let gameMode = MODE_SUMO;
+  let gameModeParam = 0;
   let playerCount = 2;
   let botSlots: number[] = [];
   let wins: number[] = [];
@@ -165,10 +176,12 @@ async function main(): Promise<void> {
     // UiShell already wrote code/link to the clipboard; we just confirm.
     onCopyCode: () => ui.toast('código copiado'),
     onInviteLink: () => ui.toast('link de invitación copiado'),
-    onStartMatch: (level: number | 'random' | { custom: string }, target: number) => {
+    onStartMatch: (level: number | 'random' | { custom: string }, target: number, m = MODE_SUMO, mParam = 0) => {
       audio.uiClick();
       levelChoice = level;
       winTarget = target;
+      gameMode = m;
+      gameModeParam = mParam;
       if (mode === 'net' || intent === 'net-host') {
         if (isHost) hostStartMatch();
       } else {
@@ -247,6 +260,9 @@ async function main(): Promise<void> {
     currentLevelName = spec.name;
     if (spec.bytes) sim.loadCustomMap(spec.bytes);
     sim.init(roundSeed, playerCount, spec.level);
+    // Order matters for lockstep: setMode consumes the sim RNG stream, so it
+    // must happen at the same point on every peer.
+    if (gameMode !== MODE_SUMO) sim.setMode(gameMode, gameModeParam);
     for (const slot of botSlots) sim.setBot(slot, slot === playerCount - 1 ? 2 : 1);
     renderer.setup(sim, spec.theme);
     stats.onRoundStart(0);
@@ -339,6 +355,8 @@ async function main(): Promise<void> {
           stats.reset(2);
         }
         winTarget = v.getUint8(8);
+        gameMode = v.getUint8(9);
+        gameModeParam = v.getUint8(10);
         roundId = round;
         const spec: RoundSpec =
           lvl === LEVEL_CUSTOM && pendingGuestMap
@@ -436,7 +454,7 @@ async function main(): Promise<void> {
     const netSeed = randomSeed();
     const spec = resolveRound();
     if (spec.bytes) session!.send(msgMap(spec.bytes));
-    session!.send(msgStart(0, netSeed, spec.level, true, winTarget));
+    session!.send(msgStart(0, netSeed, spec.level, true, winTarget, gameMode, gameModeParam));
     startNetRound(netSeed, spec, 0);
   };
 
@@ -451,7 +469,7 @@ async function main(): Promise<void> {
     const netSeed = randomSeed();
     const spec = resolveRound();
     if (spec.bytes) session.send(msgMap(spec.bytes));
-    session.send(msgStart(roundId, netSeed, spec.level, resetWins, winTarget));
+    session.send(msgStart(roundId, netSeed, spec.level, resetWins, winTarget, gameMode, gameModeParam));
     startNetRound(netSeed, spec, roundId);
   };
 
@@ -598,6 +616,23 @@ async function main(): Promise<void> {
           if (!attract) audio.orbPickup();
           renderer.fx.burst(x, y, z, ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
           break;
+        case EVT_CURSE:
+          if (!attract) {
+            audio.orbLoose();
+            renderer.fx.addTrauma(0.15);
+            if (b < 0) ui.toast(`💀 ${PLAYER_NAMES[a]} arranca MALDITO`);
+            else ui.toast(`💀 la maldición pasó a ${PLAYER_NAMES[a]}`);
+          }
+          renderer.fx.burst(x, y, z, 0xd0342c, { count: 22, speed: 2.5, up: 2, life: 550 });
+          break;
+        case EVT_ZONE:
+          if (!attract) audio.orbSpawn();
+          renderer.fx.ring(x, y, z, 0xffd24d, 4);
+          break;
+        case EVT_MODE_POINT:
+          if (!attract) audio.dashReady();
+          renderer.fx.burst(x, y, z, 0xffd24d, { count: 8, speed: 1.5, up: 1.5, gravity: 2, life: 400 });
+          break;
         case EVT_ROUND_END: {
           const winner = a;
           if (attract) {
@@ -641,9 +676,21 @@ async function main(): Promise<void> {
     return true; // couch play: every human counts
   };
 
+  const modeScoreText = (i: number): string | undefined => {
+    if (gameMode === MODE_KOTH) return `${Math.floor(sim.score(i) / 60)}/${gameModeParam}s`;
+    if (gameMode === MODE_COSECHA) return `${sim.score(i)}/${gameModeParam}`;
+    return undefined;
+  };
+
   const updateScorebar = (force: boolean): void => {
     const alive = sim.aliveMask;
-    const key = `${wins.join(',')}|${alive}`;
+    let scoreKey = '';
+    if (gameMode === MODE_KOTH || gameMode === MODE_COSECHA) {
+      for (let i = 0; i < playerCount; i++) scoreKey += `${Math.floor(sim.score(i) / 60)},`;
+    } else if (gameMode === MODE_MALDITO) {
+      scoreKey = String(sim.curr[sim.modeBase() + 1]);
+    }
+    const key = `${wins.join(',')}|${alive}|${scoreKey}`;
     if (!force && key === lastScoreKey) return;
     lastScoreKey = key;
     ui.updateScorebar(
@@ -652,6 +699,8 @@ async function main(): Promise<void> {
         wins: w,
         alive: (alive & (1 << i)) !== 0,
         you: (mode === 'net' && i === mySlot) || (intent === 'solo' && mode !== 'net' && i === 0),
+        score: modeScoreText(i),
+        cursed: (sim.curr[sim.playerBase(i) + 7] & FLAG_CURSED) !== 0,
       })),
       winTarget,
     );
@@ -774,7 +823,8 @@ async function main(): Promise<void> {
 
       updateScorebar(false);
       const modeTag = mode === 'net' ? (isHost ? 'ONLINE · anfitrión' : 'ONLINE') : intent === 'solo' ? 'SOLO' : 'LOCAL';
-      status.textContent = `${modeTag} · ${currentLevelName}`;
+      const gm = gameMode !== MODE_SUMO ? ` · ${MODE_NAMES[gameMode]}` : '';
+      status.textContent = `${modeTag} · ${currentLevelName}${gm}`;
     } else {
       status.textContent = '';
       countdownEl.style.display = 'none';

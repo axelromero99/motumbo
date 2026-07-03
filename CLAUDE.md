@@ -76,15 +76,27 @@ sintetizado (`audio.ts`), partículas/screen-shake (`fx.ts`) y flujo de match
 (`main.ts`: countdown 180 ticks con inputs congelados, primero a 5 rondas,
 slow-mo al final de ronda). Los golpes de dash aplican knockback extra en el sim.
 
-## Niveles
+## Niveles (20) y modos (4)
 
-`tumbo_init(seed, players, level)` — 0 CLÁSICA (disco), 1 ANILLO (donut),
-2 PUENTES (5 islas + puentes que caen primero), 3 RULETA (disco + viga giratoria +
-desmoronamiento aleatorio por PCG), 4 PIRÁMIDE (3 terrazas a 0/0.8/1.6m, derrumbe de
-abajo hacia arriba), 5 HERRADURA (U con ola de derrumbe angular), 6 PASARELA (corredor
-3×11 + alcobas + 2 pistones kinemáticos), 7 TARIMAS (6 tarimas con huecos de 1 baldosa).
-Los hazards están inertes durante el countdown (fix: la viga ya no arrolla en el spawn).
-Eventos extra: 9 DASH_HIT (a=atacante, b=víctima), 10 PARRY. Teclas 1-8 en el juego.
+`tumbo_init(seed, players, level)` — 0 CLÁSICA, 1 ANILLO, 2 PUENTES, 3 RULETA,
+4 PIRÁMIDE, 5 HERRADURA, 6 PASARELA, 7 TARIMAS, 8 CRUZ, 9 ASPAS (molinete espiral),
+10 GEMELAS (2 discos + puente), 11 PANAL (pads 2×2 con huecos), 12 DIANA (anillos
+concéntricos), 13 VOLCÁN (cráter que crece: derrumbe centro→afuera), 14 ZIGURAT
+(4 terrazas hasta 2.4m), 15 TORRES (campo + 2 torres refugio), 16 RULETA DOBLE
+(2 vigas contrarrotantes), 17 FÁBRICA (4 pistones), 18 MARTILLO (bloque orbitante,
+hazard tipo 2 con órbita analítica), 19 CALLES (retícula, derrumbe aleatorio).
+Hazards: 0 viga (a=vel), 1 pistón Z (a=vel, b=fase), 2 orbitador (a=ω, b=fase,
+c=radio), 3 pistón X. Todos inertes durante el countdown. LEVEL_CUSTOM=20.
+
+**Modos** (`tumbo_set_mode(mode, param)` tras init, idéntico en cada peer; consume
+el RNG del mundo): 0 SUMO, 1 REY DE LA COLINA (zona se muda c/10s, puntuás SOLO
+adentro, param=segundos), 2 COSECHA (param=orbes), 3 MALDITO (papa caliente por
+contacto, param=segundos de mecha; al vencer explota con onda expansiva). Sección
+de modo al final del estado: [mode, m0, m1, m2] + 8 scores (KOTH: m0/m1=zona x/z;
+MALDITO: m0=maldito, m1=ticks). Flags: bit10=maldito. Eventos: 9 DASH_HIT, 10 PARRY,
+11 CURSE (a=nuevo, b=anterior), 12 ZONE (movida), 13 MODE_POINT (a=jugador, b=score).
+Teclas 1-8 atajo de nivel; el START de red lleva [level, resetWins, winTarget, mode,
+modeParam].
 
 ## Mapas custom (nivel 8)
 

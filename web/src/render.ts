@@ -4,11 +4,15 @@ import * as THREE from 'three';
 import {
   Sim,
   PIECE_GONE,
+  PIECE_STATIC,
   PIECE_WARNING,
   FLAG_ALIVE,
   FLAG_DASH_READY,
   FLAG_HAS_POWER,
   FLAG_BRACED,
+  FLAG_CURSED,
+  MODE_KOTH,
+  MODE_MALDITO,
   DASH_COOLDOWN_TICKS,
   dashCooldownFrom,
 } from './sim';
@@ -17,6 +21,13 @@ import { FxSystem } from './fx';
 export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
 const PLAYER_RADIUS = 0.6;
+// Rey de la colina: mirror of ZONE_RADIUS in tumbo.c (presentation only).
+const ZONE_RADIUS = 2.3;
+const ZONE_COLOR = 0xffbe3d;
+const CURSE_COLOR = 0xff2020;
+const CURSE_DRIP_COLOR = 0x6b0a14;
+// Below this many curse ticks left the red pulse starts accelerating.
+const CURSE_PANIC_TICKS = 300;
 const TRAIL_MIN_SPEED = 7.5;
 const STRETCH_MIN_SPEED = 6;
 const LANDING_VY = -3;
@@ -38,8 +49,7 @@ export interface Theme {
   skyBottom: number;
 }
 
-// One visual identity per level, same order as LEVEL_NAMES:
-// CLÁSICA, ANILLO, PUENTES, RULETA, PIRÁMIDE, HERRADURA, PASARELA, TARIMAS.
+// One visual identity per level, same order as LEVEL_NAMES (20 entries).
 export const THEMES: Theme[] = [
   // CLÁSICA — noche azul
   { bg: 0x0b0e1a, tileA: 0x2e3a6e, tileB: 0x3d4c8f, warn: 0xff4040, beam: 0xffffff, ground: 0x1a1f33, sky: 0x9fb4ff, skyTop: 0x04060e, skyBottom: 0x1c2750 },
@@ -57,6 +67,30 @@ export const THEMES: Theme[] = [
   { bg: 0x101216, tileA: 0x4a525e, tileB: 0x363d47, warn: 0xff5714, beam: 0xffa040, ground: 0x15181d, sky: 0x8a99ad, skyTop: 0x0a0c10, skyBottom: 0x3d4654 },
   // TARIMAS — océano profundo
   { bg: 0x03151c, tileA: 0x0f5e6b, tileB: 0x14808f, warn: 0xff6b6b, beam: 0x4dfbe0, ground: 0x06222c, sky: 0x9ff0ff, skyTop: 0x020b10, skyBottom: 0x0e5261 },
+  // CRUZ — carmesí sobre pizarra
+  { bg: 0x14161d, tileA: 0x3d4352, tileB: 0x2c313d, warn: 0xff3352, beam: 0xe0294f, ground: 0x1b1e28, sky: 0xd88a95, skyTop: 0x0b0c12, skyBottom: 0x5c1a2a },
+  // ASPAS — cian galaxia
+  { bg: 0x060a18, tileA: 0x1b2a55, tileB: 0x24407a, warn: 0xff4f9a, beam: 0x35f5ff, ground: 0x0a1130, sky: 0x9fefff, skyTop: 0x03040f, skyBottom: 0x123c66 },
+  // GEMELAS — violeta dual
+  { bg: 0x120a20, tileA: 0x5b2d91, tileB: 0x8447d1, warn: 0xff3d81, beam: 0xc77bff, ground: 0x241040, sky: 0xd9b3ff, skyTop: 0x0a0516, skyBottom: 0x4a2380 },
+  // PANAL — miel y ámbar
+  { bg: 0x1f1204, tileA: 0xd9971e, tileB: 0xb4770f, warn: 0xe63946, beam: 0xffd447, ground: 0x3d2405, sky: 0xffe0a3, skyTop: 0x170d02, skyBottom: 0x8a5a10 },
+  // DIANA — rojo/blanco arcade
+  { bg: 0x1a0d10, tileA: 0xe8e6e0, tileB: 0xd42b35, warn: 0xffd23f, beam: 0xff4d5e, ground: 0x33141a, sky: 0xffc9cf, skyTop: 0x120608, skyBottom: 0x66202c },
+  // VOLCÁN — basalto negro y lava incandescente
+  { bg: 0x0a0503, tileA: 0x1e1714, tileB: 0x2e211a, warn: 0xffb300, beam: 0xff4400, ground: 0x140a06, sky: 0xff9a5c, skyTop: 0x060202, skyBottom: 0x611607 },
+  // ZIGURAT — dorado azteca
+  { bg: 0x181004, tileA: 0xcfa93f, tileB: 0xa17d24, warn: 0xe8402a, beam: 0xffd873, ground: 0x2f2008, sky: 0xffe6a8, skyTop: 0x120b02, skyBottom: 0x7a5514 },
+  // TORRES — piedra gótica y azul luna
+  { bg: 0x0c1018, tileA: 0x555e6e, tileB: 0x3d4553, warn: 0xff5964, beam: 0x9fc4ff, ground: 0x131822, sky: 0xaec6f2, skyTop: 0x060a12, skyBottom: 0x2c3f61 },
+  // RULETA DOBLE — synthwave intenso
+  { bg: 0x0d0418, tileA: 0x3a1257, tileB: 0x5c1a80, warn: 0xff2e93, beam: 0x00f0ff, ground: 0x1e0a33, sky: 0xff8ae2, skyTop: 0x08020f, skyBottom: 0x77127f },
+  // FÁBRICA — amarillo industrial sobre negro
+  { bg: 0x111110, tileA: 0xe0b422, tileB: 0x23241f, warn: 0xff3b1f, beam: 0xffcf33, ground: 0x191913, sky: 0xd9cf9a, skyTop: 0x0a0a08, skyBottom: 0x4d4416 },
+  // MARTILLO — cobre y óxido
+  { bg: 0x150c08, tileA: 0xa9663a, tileB: 0x7d4526, warn: 0xff3030, beam: 0xffb36b, ground: 0x2a1710, sky: 0xffc9a1, skyTop: 0x0e0704, skyBottom: 0x5c3018 },
+  // CALLES — asfalto y neón verde
+  { bg: 0x0a0d0b, tileA: 0x2e3236, tileB: 0x24272b, warn: 0xffb300, beam: 0x39ff6e, ground: 0x101312, sky: 0xa8ffc2, skyTop: 0x05080a, skyBottom: 0x14522e },
 ];
 
 /**
@@ -287,6 +321,45 @@ function makeCooldownRing(colorHex: number): { mesh: THREE.Mesh; mat: THREE.Shad
   return { mesh, mat };
 }
 
+// Rey de la colina zone: additive pulsing ring + soft fill + breathing wave.
+function makeZoneMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uColor: { value: new THREE.Color(ZONE_COLOR) },
+      uTime: { value: 0 },
+      uAlpha: { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uTime;
+      uniform float uAlpha;
+      varying vec2 vUv;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0;
+        float r = length(p);
+        float pulse = 0.5 + 0.5 * sin(uTime * 3.2);
+        float edge = smoothstep(0.82, 0.92, r) * (1.0 - smoothstep(0.96, 1.0, r));
+        float fill = (1.0 - smoothstep(0.15, 0.95, r)) * 0.14;
+        float br = 0.45 + 0.35 * pulse;
+        float wave = smoothstep(br - 0.06, br, r) * (1.0 - smoothstep(br + 0.02, br + 0.1, r)) * 0.5;
+        float a = (edge * (0.7 + 0.3 * pulse) + fill + wave) * uAlpha;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(uColor, a);
+      }
+    `,
+  });
+}
+
 export class GameRenderer {
   readonly fx = new FxSystem();
 
@@ -324,6 +397,19 @@ export class GameRenderer {
   private hazardMeshes: THREE.Mesh[] = [];
   private orb: THREE.Mesh;
   private orbLight: THREE.PointLight;
+
+  // Rey de la colina zone marker (cosmetic; position mirrors the sim's mode section).
+  private zoneMesh: THREE.Mesh;
+  private zoneMat: THREE.ShaderMaterial;
+  private zonePos = new THREE.Vector3();
+  private zoneTX = 0;
+  private zoneTZ = 0;
+  private zoneTY = 0;
+  private zoneAlpha = 0;
+  private zoneShown = false;
+  // Curse pulse phase (rad); its frequency ramps up as the timer runs out.
+  private cursePhase = 0;
+
   private theme: Theme = THEMES[0];
   private tileColors: THREE.Color[] = [];
   private pixelRatioCap = 2;
@@ -387,6 +473,14 @@ export class GameRenderer {
     this.orbLight = new THREE.PointLight(0xffb300, 8, 6);
     this.orb.add(this.orbLight);
     this.scene.add(this.orb);
+
+    // Rey de la colina zone ring, reused across rounds (hidden outside KOTH).
+    this.zoneMat = makeZoneMaterial();
+    this.zoneMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.zoneMat);
+    this.zoneMesh.rotation.x = -Math.PI / 2;
+    this.zoneMesh.scale.setScalar(ZONE_RADIUS * 2);
+    this.zoneMesh.visible = false;
+    this.scene.add(this.zoneMesh);
 
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -519,6 +613,10 @@ export class GameRenderer {
     this.prevCdFrac = new Float32Array(sim.playerCount).fill(1);
     this.ringPulse = new Float32Array(sim.playerCount);
     this.lastSimFrame = state[0];
+    this.zoneShown = false;
+    this.zoneAlpha = 0;
+    this.zoneMesh.visible = false;
+    this.cursePhase = 0;
 
     for (let i = 0; i < sim.hazardCount; i++) {
       const base = sim.hazardBase(i);
@@ -548,6 +646,15 @@ export class GameRenderer {
     let cz = 0;
     let aliveCount = 0;
 
+    // Curse pulse (MALDITO): flicker speeds up as m1 (ticks left) drops below
+    // the panic threshold. Phase accumulation keeps the ramp continuous.
+    const mb = sim.modeBase();
+    const simMode = curr[mb] | 0;
+    const curseTicks = simMode === MODE_MALDITO ? curr[mb + 2] : Number.POSITIVE_INFINITY;
+    const curseUrgency = Math.min(1, Math.max(0, 1 - curseTicks / CURSE_PANIC_TICKS));
+    this.cursePhase += dts * (7 + 26 * curseUrgency);
+    const cursePulse = 0.5 + 0.5 * Math.sin(this.cursePhase);
+
     for (let i = 0; i < sim.playerCount; i++) {
       const base = sim.playerBase(i);
       const root = this.playerRoots[i];
@@ -555,6 +662,7 @@ export class GameRenderer {
       const mesh = this.playerMeshes[i];
       const flags = curr[base + 7] | 0;
       const alive = (flags & FLAG_ALIVE) !== 0;
+      const cursed = (flags & FLAG_CURSED) !== 0;
       root.visible = alive || curr[base + 1] > -8;
       this.lerpInto(root.position, mesh.quaternion, prev, curr, base, alpha);
 
@@ -596,6 +704,17 @@ export class GameRenderer {
             life: 320,
           });
         }
+
+        // Curse drip: dark embers oozing off the ball, denser near detonation.
+        if (cursed) {
+          this.fx.burst(
+            root.position.x + (Math.random() - 0.5) * 0.8,
+            root.position.y + (Math.random() - 0.2) * 0.6,
+            root.position.z + (Math.random() - 0.5) * 0.8,
+            CURSE_DRIP_COLOR,
+            { count: curseUrgency > 0.01 ? 2 : 1, speed: 0.5, up: -1.3, gravity: 3.5, life: 520 },
+          );
+        }
       }
 
       // Squash spring: critically damped toward 1 (0.82 while braced).
@@ -633,9 +752,12 @@ export class GameRenderer {
         this.cdRingMats[i].uniforms.uAlpha.value = 0.55 + 0.45 * pulse;
       }
 
-      // Golden glow while carrying the power orb, faint self-glow while dash is ready.
+      // Cursed aura beats every other glow; then power orb, then dash ready.
       const mat = this.playerMats[i];
-      if (flags & FLAG_HAS_POWER) {
+      if (cursed) {
+        mat.emissive.setHex(CURSE_COLOR);
+        mat.emissiveIntensity = 0.65 + 1.05 * cursePulse;
+      } else if (flags & FLAG_HAS_POWER) {
         mat.emissive.setHex(0xffaa00);
         mat.emissiveIntensity = 0.9 + 0.4 * Math.sin(timeMs * 0.012);
       } else if (flags & FLAG_DASH_READY) {
@@ -695,6 +817,49 @@ export class GameRenderer {
       this.orb.position.set(curr[orbBase], curr[orbBase + 1] + 0.15 * Math.sin(timeMs * 0.004), curr[orbBase + 2]);
       this.orb.rotation.y = timeMs * 0.002;
     }
+
+    // Rey de la colina zone: follow m0/m1 smoothly; the sim parks z at -1000
+    // while the zone is inactive.
+    const zoneOn = simMode === MODE_KOTH && curr[mb + 2] > -900;
+    if (zoneOn) {
+      const zx = curr[mb + 1];
+      const zz = curr[mb + 2];
+      if (zx !== this.zoneTX || zz !== this.zoneTZ || !this.zoneShown) {
+        this.zoneTX = zx;
+        this.zoneTZ = zz;
+        this.zoneTY = this.zoneFloorY(sim, curr, zx, zz);
+      }
+      if (!this.zoneShown) {
+        this.zonePos.set(zx, this.zoneTY, zz);
+        this.zoneShown = true;
+      } else {
+        const k = Math.min(1, dts * 7);
+        this.zonePos.x += (this.zoneTX - this.zonePos.x) * k;
+        this.zonePos.y += (this.zoneTY - this.zonePos.y) * k;
+        this.zonePos.z += (this.zoneTZ - this.zonePos.z) * k;
+      }
+    }
+    this.zoneAlpha += ((zoneOn ? 1 : 0) - this.zoneAlpha) * Math.min(1, dts * 6);
+    if (!zoneOn && this.zoneAlpha < 0.02) this.zoneShown = false;
+    this.zoneMesh.visible = this.zoneShown && this.zoneAlpha > 0.02;
+    if (this.zoneMesh.visible) {
+      this.zoneMesh.position.set(this.zonePos.x, this.zonePos.y + 0.07, this.zonePos.z);
+      this.zoneMat.uniforms.uAlpha.value = this.zoneAlpha;
+      this.zoneMat.uniforms.uTime.value = timeMs * 0.001;
+    }
+  }
+
+  /** Top of the arena surface under the zone (max tile top near zx/zz). */
+  private zoneFloorY(sim: Sim, curr: Float32Array, zx: number, zz: number): number {
+    let y = -Infinity;
+    for (let i = 0; i < sim.pieceCount; i++) {
+      const base = sim.pieceBase(i);
+      const state = curr[base + 7];
+      if (state !== PIECE_STATIC && state !== PIECE_WARNING) continue;
+      if (Math.abs(curr[base] - zx) > 1.2 || Math.abs(curr[base + 2] - zz) > 1.2) continue;
+      y = Math.max(y, curr[base + 1] + PIECE_SIZE.y / 2);
+    }
+    return Number.isFinite(y) ? y : 0.05;
   }
 
   render(dtMs: number, timeMs: number): void {
