@@ -85,6 +85,7 @@ async function main(): Promise<void> {
   let winTarget = 5;
   let gameMode = MODE_SUMO;
   let gameModeParam = 0;
+  let botDifficulty = 1;
   let playerCount = 2;
   let botSlots: number[] = [];
   let wins: number[] = [];
@@ -176,12 +177,13 @@ async function main(): Promise<void> {
     // UiShell already wrote code/link to the clipboard; we just confirm.
     onCopyCode: () => ui.toast('código copiado'),
     onInviteLink: () => ui.toast('link de invitación copiado'),
-    onStartMatch: (level: number | 'random' | { custom: string }, target: number, m = MODE_SUMO, mParam = 0) => {
+    onStartMatch: (level: number | 'random' | { custom: string }, target: number, m = MODE_SUMO, mParam = 0, botDiff = 1) => {
       audio.uiClick();
       levelChoice = level;
       winTarget = target;
       gameMode = m;
       gameModeParam = mParam;
+      botDifficulty = botDiff;
       if (mode === 'net' || intent === 'net-host') {
         if (isHost) hostStartMatch();
       } else {
@@ -263,7 +265,7 @@ async function main(): Promise<void> {
     // Order matters for lockstep: setMode consumes the sim RNG stream, so it
     // must happen at the same point on every peer.
     if (gameMode !== MODE_SUMO) sim.setMode(gameMode, gameModeParam);
-    for (const slot of botSlots) sim.setBot(slot, slot === playerCount - 1 ? 2 : 1);
+    for (const slot of botSlots) sim.setBot(slot, botDifficulty);
     renderer.setup(sim, spec.theme);
     stats.onRoundStart(0);
     resetRoundLocals();

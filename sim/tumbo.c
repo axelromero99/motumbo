@@ -1454,6 +1454,14 @@ static float WrapAngle( float a )
 	return a;
 }
 
+// Would a dash from `pos` toward (dirx, dirz) leave the bot over solid
+// ground? A dash carries roughly 3.4m before friction wins.
+static bool BotDashSafe( b3Pos pos, float dirx, float dirz )
+{
+	return SupportStateAt( pos.x + dirx * 3.4f, pos.z + dirz * 3.4f ) >= 1 ||
+		   SupportStateAt( pos.x + dirx * 2.0f, pos.z + dirz * 2.0f ) >= 1;
+}
+
 static void BotReplan( int slot )
 {
 	Bot* bot = &g_bots[slot];
@@ -1486,7 +1494,8 @@ static void BotReplan( int slot )
 			b3Pos fp = b3Body_GetPosition( g_players[foe].body );
 			float fx = fp.x - pos.x;
 			float fz = fp.z - pos.z;
-			if ( fx * fx + fz * fz < 2.4f * 2.4f )
+			float fd = sqrtf( fx * fx + fz * fz );
+			if ( fd < 2.4f && fd > 0.3f && BotDashSafe( pos, fx / fd, fz / fd ) )
 			{
 				bot->pulseDash = true;
 			}
@@ -1511,7 +1520,8 @@ static void BotReplan( int slot )
 				bot->tz = pp.z;
 				float dx = pp.x - pos.x;
 				float dz = pp.z - pos.z;
-				if ( dx * dx + dz * dz < 3.0f * 3.0f && p->dashCooldown == 0 )
+				float dd = sqrtf( dx * dx + dz * dz );
+				if ( dd < 3.0f && dd > 0.3f && p->dashCooldown == 0 && BotDashSafe( pos, dx / dd, dz / dd ) )
 				{
 					bot->pulseDash = true;
 				}
@@ -1577,17 +1587,31 @@ static void BotReplan( int slot )
 	bot->tx = op.x;
 	bot->tz = op.z;
 
+	// Hard bots fight a half-step toward safety instead of squarely on the rim.
+	if ( bot->difficulty == 2 )
+	{
+		float sx, sz;
+		NearestSafeTile( pos.x, pos.z, &sx, &sz );
+		bot->tx += ( sx - bot->tx ) * 0.15f;
+		bot->tz += ( sz - bot->tz ) * 0.15f;
+	}
+
 	float dist = sqrtf( bestD2 );
 
-	// Dash when close, roughly at the rival, and the shove would carry them
-	// past solid ground (or just aggressively, on hard).
-	if ( p->dashCooldown == 0 && dist < 2.4f && dist > 0.01f )
+	// Dash only when the shove is worth it AND we won't fly off ourselves.
+	// Easy bots skip the self-preservation check now and then — that's their charm.
+	if ( p->dashCooldown == 0 && dist < 2.6f && dist > 0.3f )
 	{
 		float dirx = ( op.x - pos.x ) / dist;
 		float dirz = ( op.z - pos.z ) / dist;
-		int landing = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f );
-		bool aggressive = bot->difficulty == 2 || ( BotRng() & 1u ) == 0u;
-		if ( landing == 0 || aggressive )
+		bool lethal = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f ) == 0;
+		bool safe = BotDashSafe( pos, dirx, dirz ) || dist < 1.2f;
+		if ( bot->difficulty == 0 )
+		{
+			safe = safe || ( BotRng() & 3u ) == 0u;
+		}
+		bool eager = bot->difficulty == 2 ? ( BotRng() & 1u ) == 0u : ( BotRng() & 3u ) == 0u;
+		if ( safe && ( lethal || eager ) )
 		{
 			bot->pulseDash = true;
 		}
@@ -1624,10 +1648,12 @@ static void StepBots( void )
 		return;
 	}
 
-	// Noise/interval tuning per difficulty: easy is sloppy, hard is sharp.
-	static const int thinkBase[3] = { 16, 11, 8 };
+	// Per-difficulty tuning: think cadence, aim noise (applied at replan) and
+	// how far ahead the bot projects its own momentum.
+	static const int thinkBase[3] = { 18, 12, 8 };
 	static const int thinkJitter[3] = { 7, 5, 3 };
-	static const float aimNoise[3] = { 0.6f, 0.25f, 0.08f };
+	static const float aimNoise[3] = { 0.5f, 0.2f, 0.06f };
+	static const float lookahead[3] = { 0.22f, 0.34f, 0.46f };
 
 	for ( int i = 0; i < g_playerCount; ++i )
 	{
@@ -1637,48 +1663,103 @@ static void StepBots( void )
 			continue;
 		}
 
+		int d = bot->difficulty;
 		bot->think -= 1;
 		if ( bot->think <= 0 )
 		{
 			BotReplan( i );
-			int d = bot->difficulty;
+			// Aim noise once per plan: displace the target sideways a touch.
+			float a = ( (float)( BotRng() % 1000u ) / 1000.0f - 0.5f ) * 2.0f * aimNoise[d];
+			b3Pos ppos = b3Body_GetPosition( g_players[i].body );
+			float ddx = bot->tx - ppos.x;
+			float ddz = bot->tz - ppos.z;
+			float ca = cosf( a );
+			float sa = sinf( a );
+			bot->tx = ppos.x + ddx * ca - ddz * sa;
+			bot->tz = ppos.z + ddx * sa + ddz * ca;
 			bot->think = thinkBase[d] + (int)( BotRng() % (uint32_t)( thinkJitter[d] + 1 ) );
 		}
 
 		b3Pos pos = b3Body_GetPosition( g_players[i].body );
-		float dx = bot->tx - pos.x;
-		float dz = bot->tz - pos.z;
-		float len = sqrtf( dx * dx + dz * dz );
-
+		b3Vec3 vel = b3Body_GetLinearVelocity( g_players[i].body );
+		float speed2 = vel.x * vel.x + vel.z * vel.z;
 		uint32_t word = 0;
-		if ( len > 0.35f )
+
+		// EMERGENCY: our own momentum is carrying us over the void. Brake
+		// before anything else — this is what keeps bots alive.
+		float fx = pos.x + vel.x * lookahead[d];
+		float fz = pos.z + vel.z * lookahead[d];
+		bool slidingToVoid = speed2 > 3.0f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
+
+		// ...unless there is ground beyond the gap and we can jump it.
+		if ( slidingToVoid && speed2 > 16.0f && g_players[i].jumpCooldown == 0 )
 		{
-			dx /= len;
-			dz /= len;
-			// Aim noise: rotate the steering vector a touch.
-			float noise = aimNoise[bot->difficulty];
-			float a = ( (float)( BotRng() % 1000u ) / 1000.0f - 0.5f ) * 2.0f * noise;
-			float ca = cosf( a );
-			float sa = sinf( a );
-			float rx = dx * ca - dz * sa;
-			float rz = dx * sa + dz * ca;
-			if ( rz < -0.38f )
+			float sp = sqrtf( speed2 );
+			float jx = pos.x + vel.x / sp * 3.4f;
+			float jz = pos.z + vel.z / sp * 3.4f;
+			if ( SupportStateAt( jx, jz ) >= 1 )
 			{
-				word |= IN_UP;
-			}
-			if ( rz > 0.38f )
-			{
-				word |= IN_DOWN;
-			}
-			if ( rx < -0.38f )
-			{
-				word |= IN_LEFT;
-			}
-			if ( rx > 0.38f )
-			{
-				word |= IN_RIGHT;
+				word |= IN_JUMP;
+				slidingToVoid = false;
 			}
 		}
+
+		if ( slidingToVoid )
+		{
+			if ( d >= 1 )
+			{
+				// Brace is a handbrake: kills momentum in a few ticks.
+				word = IN_BRACE;
+			}
+			else
+			{
+				// Easy bots just paddle against their velocity.
+				if ( vel.z > 0.5f ) word |= IN_UP;
+				if ( vel.z < -0.5f ) word |= IN_DOWN;
+				if ( vel.x > 0.5f ) word |= IN_LEFT;
+				if ( vel.x < -0.5f ) word |= IN_RIGHT;
+			}
+			g_inputs[i] = word;
+			continue;
+		}
+
+		float dx = bot->tx - pos.x;
+		float dz = bot->tz - pos.z;
+		float dist = sqrtf( dx * dx + dz * dz );
+
+		if ( dist > 0.25f )
+		{
+			dx /= dist;
+			dz /= dist;
+
+			// Arrive steering: chase a desired VELOCITY, not a position, so
+			// the bot brakes into targets instead of flying past them.
+			float desired = 1.8f * dist + 0.8f;
+			if ( desired > MAX_MOVE_SPEED )
+			{
+				desired = MAX_MOVE_SPEED;
+			}
+			float sx = dx * desired - vel.x;
+			float sz = dz * desired - vel.z;
+			float sl = sqrtf( sx * sx + sz * sz );
+			if ( sl > 0.6f )
+			{
+				sx /= sl;
+				sz /= sl;
+				if ( sz < -0.38f ) word |= IN_UP;
+				if ( sz > 0.38f ) word |= IN_DOWN;
+				if ( sx < -0.38f ) word |= IN_LEFT;
+				if ( sx > 0.38f ) word |= IN_RIGHT;
+			}
+
+			// Gap ahead on the way to the target, solid ground past it: jump.
+			if ( g_players[i].jumpCooldown == 0 && dist > 2.0f && SupportStateAt( pos.x + dx * 1.6f, pos.z + dz * 1.6f ) == 0 &&
+				 SupportStateAt( pos.x + dx * 3.2f, pos.z + dz * 3.2f ) >= 1 )
+			{
+				word |= IN_JUMP;
+			}
+		}
+
 		if ( bot->holdBrace )
 		{
 			word = IN_BRACE;

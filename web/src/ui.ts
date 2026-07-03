@@ -175,7 +175,7 @@ export interface UiCallbacks {
   onCopyCode(): void;
   onInviteLink(): void;
   /** mode = MODE_* de sim.ts; modeParam = parámetro contextual (SUMO: 0). */
-  onStartMatch(level: LevelChoice, winTarget: number, mode: number, modeParam: number): void;
+  onStartMatch(level: LevelChoice, winTarget: number, mode: number, modeParam: number, botDifficulty: number): void;
   onResume(): void;
   onQuitToTitle(): void;
   onSettingsChanged(s: Settings): void;
@@ -237,11 +237,13 @@ export class UiShell {
     [MODE_COSECHA]: MODE_PARAM_CFG[MODE_COSECHA].def,
     [MODE_MALDITO]: MODE_PARAM_CFG[MODE_MALDITO].def,
   };
-  private lastStart: { level: LevelChoice; winTarget: number; mode: number; modeParam: number } = {
+  private botDiff = 1;
+  private lastStart: { level: LevelChoice; winTarget: number; mode: number; modeParam: number; botDifficulty: number } = {
     level: 'random',
     winTarget: 5,
     mode: MODE_SUMO,
     modeParam: 0,
+    botDifficulty: 1,
   };
 
   private hostTab = true;
@@ -626,10 +628,12 @@ export class UiShell {
   private wireTitle(): void {
     $('btn-solo').addEventListener('click', () => {
       $('setup-mode').textContent = 'SOLO — VOS CONTRA BOTS';
+      $('bot-diff-row').style.display = '';
       this.cb.onSolo();
       this.showAny('setup');
     });
     $('btn-local').addEventListener('click', () => {
+      $('bot-diff-row').style.display = 'none';
       $('setup-mode').textContent = 'LOCAL — 2 EN UN TECLADO';
       this.cb.onLocal();
       this.showAny('setup');
@@ -655,6 +659,12 @@ export class UiShell {
         for (const b of $('seg-rounds').querySelectorAll('button')) b.classList.toggle('active', b === btn);
       });
     }
+    for (const btn of $('seg-botdiff').querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        this.botDiff = Number(btn.dataset.diff) || 0;
+        for (const b of $('seg-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+      });
+    }
     const modeCards = $('mode-grid').querySelectorAll<HTMLButtonElement>('.mode-card');
     for (const card of modeCards) {
       card.addEventListener('click', () => {
@@ -666,9 +676,15 @@ export class UiShell {
     this.renderModeParam();
     $('btn-play').addEventListener('click', () => {
       const modeParam = this.currentModeParam();
-      this.lastStart = { level: this.selLevel, winTarget: this.winTarget, mode: this.selMode, modeParam };
+      this.lastStart = {
+        level: this.selLevel,
+        winTarget: this.winTarget,
+        mode: this.selMode,
+        modeParam,
+        botDifficulty: this.botDiff,
+      };
       this.showAny('none');
-      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam);
+      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, this.botDiff);
     });
     $('btn-setup-back').addEventListener('click', () => this.showAny('title'));
   }
@@ -814,7 +830,7 @@ export class UiShell {
     $('btn-rematch').addEventListener('click', () => {
       this.showAny('none');
       const s = this.lastStart;
-      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam);
+      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty);
     });
     $('btn-results-menu').addEventListener('click', () => {
       this.showAny('title');
