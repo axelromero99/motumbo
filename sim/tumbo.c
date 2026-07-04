@@ -535,7 +535,9 @@ static void AddPieceEx( float cx, float cz, float topY, int priority, const b3Bo
 
 	if ( rampDir >= 0 )
 	{
-		// Ramp slab: center sits halfway up the climb, pitched ~28°.
+		// Ramp slab: center sits halfway up the climb, pitched ~28°. The +0.05
+		// splits the crest/base seams evenly (~5cm each) so balls roll over
+		// them instead of slamming an invisible 10cm step at the top.
 		float half = 0.4899f * 0.5f; // atan2(0.8, 1.5) / 2
 		float s = sinf( half );
 		float c = cosf( half );
@@ -554,7 +556,7 @@ static void AddPieceEx( float cx, float cz, float topY, int priority, const b3Bo
 				bodyDef.rotation = ( b3Quat ){ { s, 0.0f, 0.0f }, c };
 				break;
 		}
-		bodyDef.position = ( b3Pos ){ cx, topY + 0.4f - PIECE_HY, cz };
+		bodyDef.position = ( b3Pos ){ cx, topY + 0.45f - PIECE_HY, cz };
 	}
 	else
 	{
@@ -564,7 +566,9 @@ static void AddPieceEx( float cx, float cz, float topY, int priority, const b3Bo
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.7f;
-	shapeDef.baseMaterial.restitution = special == SPECIAL_BOUNCY ? 1.05f : 0.0f;
+	// Bouncy stays UNDER 1.0: restitution above 1 pumps energy into the ball
+	// on every bounce until it launches into orbit.
+	shapeDef.baseMaterial.restitution = special == SPECIAL_BOUNCY ? 0.9f : 0.0f;
 	shapeDef.density = 800.0f;
 	shapeDef.filter.categoryBits = CAT_WORLD;
 	b3CreateHullShape( body, &shapeDef, &hull->base );
@@ -649,7 +653,8 @@ static void AddBoxHazard( b3Vec3 pos, b3Vec3 half, int type, float a, float b, f
 	b3BoxHull hull = b3MakeBoxHull( half.x, half.y, half.z );
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.2f;
-	shapeDef.baseMaterial.restitution = 0.4f;
+	// Low restitution: hazards shove, they don't catapult small balls upward.
+	shapeDef.baseMaterial.restitution = 0.1f;
 	shapeDef.density = 2000.0f;
 	shapeDef.filter.categoryBits = CAT_WORLD;
 	b3CreateHullShape( body, &shapeDef, &hull.base );
@@ -2010,9 +2015,30 @@ static void BotReplan( int slot )
 			nearby += 1;
 		}
 	}
-	bot->stuck = ( barelyMoved && nearby > 0 ) ? bot->stuck + 1 : 0;
+	// Stuck counts even when ALONE: grinding against a terrace wall or
+	// dithering at a gap's edge froze bots in place for tens of seconds.
+	bot->stuck = barelyMoved ? bot->stuck + 1 : 0;
 	bot->lastX = pos.x;
 	bot->lastZ = pos.z;
+
+	// Solo unstick: hop and swerve — walls and ledges yield to jumps.
+	if ( bot->stuck >= 3 && nearby == 0 )
+	{
+		if ( p->jumpCooldown == 0 )
+		{
+			bot->pulseJump = true;
+		}
+		float side = ( ( slot + (int)( g_frame / 120 ) ) & 1 ) ? 1.0f : -1.0f;
+		float tdx = bot->tx - pos.x;
+		float tdz = bot->tz - pos.z;
+		float tl = sqrtf( tdx * tdx + tdz * tdz );
+		if ( tl > 0.3f )
+		{
+			// Approach the same target from a different angle.
+			bot->tx = pos.x + ( tdx / tl * 0.5f - tdz / tl * side ) * 3.0f;
+			bot->tz = pos.z + ( tdz / tl * 0.5f + tdx / tl * side ) * 3.0f;
+		}
+	}
 
 	// Priority 1: don't be standing on doomed ground.
 	if ( SupportStateAt( pos.x, pos.z ) < 2 )
@@ -2286,22 +2312,37 @@ static void StepBots( void )
 			speed2 = pvx * pvx + pvz * pvz;
 		}
 
-		// EMERGENCY: our own momentum is carrying us over the void. Brake
-		// before anything else — this is what keeps bots alive.
+		// EMERGENCY: our own momentum is carrying us over the void. The jump
+		// check runs FIRST — braking before even considering the jump left
+		// bots dithering forever at the edge of jumpable gaps.
 		float fx = pos.x + pvx * lookahead[d];
 		float fz = pos.z + pvz * lookahead[d];
-		bool slidingToVoid = speed2 > 3.0f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
+		bool slidingToVoid = speed2 > 1.2f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
 
-		// ...unless there is ground beyond the gap and we can jump it.
-		if ( slidingToVoid && speed2 > 16.0f && g_players[i].jumpCooldown == 0 )
+		if ( slidingToVoid )
 		{
 			float sp = sqrtf( speed2 );
-			float jx = pos.x + pvx / sp * 3.4f;
-			float jz = pos.z + pvz / sp * 3.4f;
+			float reach = sp * 0.8f > 2.6f ? sp * 0.8f : 2.6f;
+			float jx = pos.x + pvx / sp * reach;
+			float jz = pos.z + pvz / sp * reach;
 			if ( SupportStateAt( jx, jz ) >= 1 )
 			{
-				word |= IN_JUMP;
-				slidingToVoid = false;
+				if ( sp >= 2.6f )
+				{
+					// Enough momentum to clear the gap: send it.
+					if ( g_players[i].jumpCooldown == 0 )
+					{
+						word |= IN_JUMP;
+					}
+					slidingToVoid = false;
+				}
+				else
+				{
+					// Landing exists but we're too slow to make it. DON'T
+					// brake — keep accelerating and jump on a later tick.
+					// (Braking here is what used to drop bots into gaps.)
+					slidingToVoid = false;
+				}
 			}
 		}
 
@@ -2353,11 +2394,28 @@ static void StepBots( void )
 				if ( sx > 0.38f ) word |= IN_RIGHT;
 			}
 
-			// Gap ahead on the way to the target, solid ground past it: jump.
-			if ( g_players[i].jumpCooldown == 0 && dist > 2.0f && SupportStateAt( pos.x + dx * 1.6f, pos.z + dz * 1.6f ) == 0 &&
-				 SupportStateAt( pos.x + dx * 3.2f, pos.z + dz * 3.2f ) >= 1 )
+			if ( g_players[i].jumpCooldown == 0 && dist > 1.2f )
 			{
-				word |= IN_JUMP;
+				// Gap on the way to the target with solid ground past it: jump.
+				if ( SupportStateAt( pos.x + dx * 1.6f, pos.z + dz * 1.6f ) == 0 &&
+					 SupportStateAt( pos.x + dx * 3.2f, pos.z + dz * 3.2f ) >= 1 )
+				{
+					word |= IN_JUMP;
+				}
+				else
+				{
+					// Ledge ahead (terrace wall, raised pad): hop onto it
+					// instead of grinding against it forever.
+					int ahead = TileIndexAt( pos.x + dx * 1.3f, pos.z + dz * 1.3f );
+					if ( ahead >= 0 )
+					{
+						float top = b3Body_GetPosition( g_pieces[ahead].body ).y + PIECE_HY;
+						if ( top > pos.y - g_players[i].ballR + 0.25f )
+						{
+							word |= IN_JUMP;
+						}
+					}
+				}
 			}
 		}
 
