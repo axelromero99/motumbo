@@ -93,6 +93,8 @@ async function main(): Promise<void> {
   let botDifficulty = 1;
   let netBotCount = 0; // extra bots in an online room (host-chosen, 0-2)
   let remoteName = ''; // the online opponent's chosen name
+  let quickMatching = false; // in the slither-style auto-matchmaking flow
+  let quickMatchFellBack = false; // guards the single bot-fallback transition
   let playerCount = 2;
   let botSlots: number[] = [];
   let wins: number[] = [];
@@ -172,6 +174,7 @@ async function main(): Promise<void> {
   const ui = new UiShell({
     onPlay: () => audio.uiClick(),
     onOnline: () => audio.uiClick(),
+    onQuickMatch: () => void startQuickMatch(),
     onCreateRoom: () => void createRoom(),
     onJoinRoom: (code: string) => void joinRoom(code),
     onCancelOnline: () => teardownOnline(),
@@ -402,8 +405,68 @@ async function main(): Promise<void> {
     session?.close();
     session = null;
     lockstep = null;
+    quickMatching = false;
     window.clearTimeout(connectTimeout);
   }
+
+  // Slither-style quick match: find any waiting player in ~5s, else drop into
+  // a bot game instantly. Either way you're playing fast.
+  async function startQuickMatch(): Promise<void> {
+    teardownOnline();
+    audio.uiClick();
+    quickMatching = true;
+    quickMatchFellBack = false;
+    intent = 'net-host';
+    levelChoice = 'random';
+    gameMode = MODE_SUMO;
+    gameModeParam = 0;
+    winTarget = 5;
+    session = wireSession();
+    const rs = new RoomSignal();
+    roomSignal = rs;
+    const armTimeout = (): void => {
+      window.clearTimeout(connectTimeout);
+      connectTimeout = window.setTimeout(() => quickMatchToBots('la conexión falló — jugás contra bots'), 15000);
+    };
+    try {
+      await rs.quickMatch({
+        onRole: (host) => {
+          isHost = host;
+          mySlot = host ? 0 : 1;
+          ui.setRoomState('connecting', '¡rival encontrado! conectando…');
+        },
+        makeOffer: async () => {
+          armTimeout();
+          return await session!.createOfferCode();
+        },
+        onAnswer: (answer) => void session!.acceptAnswerCode(answer),
+        makeAnswer: async (offer) => {
+          armTimeout();
+          return await session!.acceptOfferCode(offer);
+        },
+        onError: () => quickMatchToBots('sin rivales por ahora — jugás contra bots'),
+        onNoPeer: () => quickMatchToBots('sin rivales por ahora — jugás contra bots'),
+      });
+    } catch {
+      quickMatchToBots('sin rivales por ahora — jugás contra bots');
+    }
+  }
+
+  // Idempotent: whichever fallback path fires first wins; the rest no-op.
+  const quickMatchToBots = (msg: string): void => {
+    if (quickMatchFellBack) return;
+    quickMatchFellBack = true;
+    quickMatching = false;
+    teardownOnline();
+    intent = 'solo';
+    levelChoice = 'random';
+    gameMode = MODE_SUMO;
+    gameModeParam = 0;
+    winTarget = 5;
+    botDifficulty = 1;
+    startMatch();
+    ui.toast(msg);
+  };
 
   async function createRoom(): Promise<void> {
     teardownOnline();
@@ -462,6 +525,7 @@ async function main(): Promise<void> {
   const onChannelOpen = (): void => {
     roomSignal?.close();
     roomSignal = null;
+    quickMatchFellBack = true; // a human connected; cancel the bot fallback
     window.clearTimeout(connectTimeout);
     // Exchange chosen names so both sides show real nicknames.
     remoteName = '';
@@ -471,7 +535,20 @@ async function main(): Promise<void> {
     wins = [0, 0];
     matchOver = false;
     stats.reset(2);
-    if (isHost) {
+    if (quickMatching) {
+      // Quick match: no lobby screen — the host fills to 4 with bots and both
+      // drop straight into a round.
+      quickMatching = false;
+      if (isHost) {
+        netBotCount = 2;
+        botDifficulty = 1;
+        ui.setRoomState('connected', '¡emparejado!');
+        hostStartMatch();
+      } else {
+        ui.setRoomState('connected', '¡emparejado! arranca en breve…');
+      }
+    } else if (isHost) {
+      netBotCount = 0;
       ui.setRoomState('connected', '¡conectados! elegí la arena');
       ui.show('setup');
     } else {

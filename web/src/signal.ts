@@ -281,6 +281,83 @@ export class RoomSignal {
     this.mqtt.publish(`${base}/hello`, me);
   }
 
+  /**
+   * Quick match (slither.io style): announce on a shared lobby, pair with the
+   * first other player who is also searching, and run the same offer/answer
+   * handshake. If no human turns up before `timeoutMs`, calls onNoPeer so the
+   * caller can start a bot game instead. The lower peer id becomes host.
+   */
+  async quickMatch(
+    cb: {
+      makeOffer(): Promise<string>;
+      onAnswer(answer: string): void;
+      makeAnswer(offer: string): Promise<string>;
+      onRole(isHost: boolean): void;
+      onError(message: string): void;
+      onNoPeer(): void;
+    },
+    timeoutMs = 5500,
+  ): Promise<void> {
+    await this.mqtt.connect();
+    const me = Math.random().toString(36).slice(2, 10);
+    const lobby = 'tumbo1/lobby';
+    let announceTimer = 0;
+    let noPeerTimer = 0;
+    const stopSearch = (): void => {
+      window.clearInterval(announceTimer);
+      window.clearTimeout(noPeerTimer);
+    };
+
+    this.mqtt.onDown = () => {
+      if (!this.done) cb.onError('Se cortó el servicio de partidas. Probá de nuevo.');
+    };
+    this.mqtt.onMessage = (topic, payload) => {
+      void (async () => {
+        try {
+          if (this.done) return;
+          if (topic === lobby) {
+            const peer = payload;
+            if (peer === me || peer.length !== me.length) return;
+            // Only the lower id initiates; the other waits for the offer.
+            if (me < peer) {
+              this.done = true;
+              stopSearch();
+              cb.onRole(true);
+              this.mqtt.publish(`tumbo1/q/${peer}/offer`, `${me}|${await cb.makeOffer()}`);
+            }
+          } else if (topic === `tumbo1/q/${me}/offer`) {
+            const sep = payload.indexOf('|');
+            const from = payload.slice(0, sep);
+            this.done = true;
+            stopSearch();
+            cb.onRole(false);
+            this.mqtt.publish(`tumbo1/q/${from}/answer`, `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
+          } else if (topic === `tumbo1/q/${me}/answer`) {
+            cb.onAnswer(payload.slice(payload.indexOf('|') + 1));
+          }
+        } catch (err) {
+          cb.onError(err instanceof Error ? err.message : String(err));
+        }
+      })();
+    };
+
+    this.mqtt.subscribe(lobby);
+    this.mqtt.subscribe(`tumbo1/q/${me}/offer`);
+    this.mqtt.subscribe(`tumbo1/q/${me}/answer`);
+    const announce = (): void => {
+      if (!this.done) this.mqtt.publish(lobby, me);
+    };
+    announce();
+    announceTimer = window.setInterval(announce, 1200);
+    noPeerTimer = window.setTimeout(() => {
+      if (!this.done) {
+        stopSearch();
+        this.close();
+        cb.onNoPeer();
+      }
+    }, timeoutMs);
+  }
+
   close(): void {
     this.mqtt.close();
   }

@@ -194,6 +194,8 @@ export interface UiCallbacks {
   onPlay(): void;
   /** Botón ONLINE del título (la UiShell ya navegó a 'online', estado idle). */
   onOnline(): void;
+  /** PARTIDA RÁPIDA (la UiShell ya pasó a estado 'searching'). */
+  onQuickMatch(): void;
   /** CREAR SALA (la UiShell ya pasó a estado 'creating'). */
   onCreateRoom(): void;
   /** UNIRSE con código ya normalizado a 4 chars mayúsculas ('joining' ya visible). */
@@ -307,7 +309,7 @@ export class UiShell {
   private roomCode = '';
   private roomConnected = false;
   private usernameValue = '';
-  private lastRoomAction: { type: 'create' } | { type: 'join'; code: string } | null = null;
+  private lastRoomAction: { type: 'create' } | { type: 'join'; code: string } | { type: 'quick' } | null = null;
 
   private nextTimer = 0;
 
@@ -858,6 +860,12 @@ export class UiShell {
       if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
     });
 
+    $('btn-quick').addEventListener('click', () => {
+      this.lastRoomAction = { type: 'quick' };
+      this.setRoomState('searching', 'buscando rival…');
+      this.cb.onQuickMatch();
+    });
+
     $('btn-create-room').addEventListener('click', () => {
       this.lastRoomAction = { type: 'create' };
       this.setRoomState('creating');
@@ -898,6 +906,9 @@ export class UiShell {
       } else if (act?.type === 'join') {
         this.setRoomState('joining');
         this.cb.onJoinRoom(act.code);
+      } else if (act?.type === 'quick') {
+        this.setRoomState('searching', 'buscando rival…');
+        this.cb.onQuickMatch();
       } else {
         this.setRoomState('idle');
       }

@@ -155,6 +155,7 @@
     }
     .btn.primary:hover { box-shadow: 0 8px 28px rgba(53, 167, 255, 0.4); }
     .btn.big { width: 100%; padding: 15px; font-size: 18px; letter-spacing: 0.1em; }
+    .btn-sub { display: block; margin-top: 3px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; opacity: 0.7; text-transform: none; }
     .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
     .btn.ghost:hover { color: var(--text); border-color: var(--line); }
     .back-row { margin-top: 18px; text-align: center; }
@@ -610,11 +611,13 @@
   <!-- ============ ONLINE (salas con código) ============ -->
   <section class="screen" data-screen="online">
     <div class="panel online-panel">
-      <h2>ONLINE · 1V1</h2>
+      <h2>ONLINE</h2>
 
       <div id="room-idle">
-        <button class="btn primary big" id="btn-create-room">CREAR SALA</button>
-        <div class="or-sep">O UNITE A UNA</div>
+        <button class="btn primary big" id="btn-quick">⚡ PARTIDA RÁPIDA<span class="btn-sub">te emparejamos al toque · si no hay nadie, bots</span></button>
+        <div class="or-sep">O JUGÁ CON UN AMIGO</div>
+        <button class="btn big" id="btn-create-room">CREAR SALA PRIVADA</button>
+        <div class="or-sep">O UNITE CON UN CÓDIGO</div>
         <div class="join-row">
           <span class="code-field">
             <span class="code-prefix">TUMBO-</span>
