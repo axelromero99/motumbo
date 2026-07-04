@@ -40,7 +40,7 @@ export function encodeMap(map: CustomMap): Uint8Array {
   const spawns = map.spawns.slice(0, MAX_SPAWNS);
   const bytes = new Uint8Array(8 + tiles.length * 3 + spawns.length * 2);
   bytes[0] = MAP_VERSION;
-  bytes[1] = map.theme & 7;
+  bytes[1] = map.theme & 31; // 20 temas; 5 bits de sobra
   bytes[2] = Math.max(0, Math.min(255, Math.round((map.crumbleStartSec * 60) / 10)));
   bytes[3] = Math.max(6, Math.min(255, Math.round(map.crumbleInterval)));
   bytes[4] = tiles.length;

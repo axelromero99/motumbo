@@ -140,7 +140,7 @@ async function main(): Promise<void> {
       const bytes = getMapBytes(id);
       if (bytes) {
         const meta = listMaps().find((m) => m.id === id);
-        return { level: LEVEL_CUSTOM, theme: bytes[1] & 7, bytes, name: (meta?.name ?? 'CUSTOM').toUpperCase() };
+        return { level: LEVEL_CUSTOM, theme: bytes[1] % 20, bytes, name: (meta?.name ?? 'CUSTOM').toUpperCase() };
       }
       levelChoice = 0;
     }
@@ -361,7 +361,7 @@ async function main(): Promise<void> {
         roundId = round;
         const spec: RoundSpec =
           lvl === LEVEL_CUSTOM && pendingGuestMap
-            ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] & 7, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
+            ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] % 20, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
             : { level: lvl, theme: lvl % 20, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
         startNetRound(netSeed, spec, round);
       }
