@@ -204,6 +204,117 @@ export function makeBallTexture(colorHex: number, patternId: number, playerNumbe
   return tex;
 }
 
+// Grayscale height map for the bump channel: fur strokes, rocky blobs, brushed
+// metal lines or slime globs. Linear color space (it's data, not color).
+function makeBumpTexture(kind: 'fur' | 'stone' | 'metal' | 'slime'): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 128;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, 256, 128);
+  if (kind === 'fur') {
+    for (let i = 0; i < 2800; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 128;
+      const a = Math.random() * Math.PI * 2;
+      const len = 3 + Math.random() * 4;
+      g.strokeStyle = Math.random() < 0.5 ? '#c8c8c8' : '#4a4a4a';
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+      g.stroke();
+    }
+  } else if (kind === 'stone') {
+    for (let i = 0; i < 1000; i++) {
+      const v = (95 + Math.random() * 120) | 0;
+      g.fillStyle = `rgb(${v},${v},${v})`;
+      g.beginPath();
+      g.arc(Math.random() * 256, Math.random() * 128, 2 + Math.random() * 8, 0, 7);
+      g.fill();
+    }
+  } else if (kind === 'metal') {
+    for (let y = 0; y < 128; y++) {
+      const v = 118 + ((Math.random() * 22) | 0);
+      g.fillStyle = `rgb(${v},${v},${v})`;
+      g.fillRect(0, y, 256, 1);
+    }
+  } else {
+    for (let i = 0; i < 44; i++) {
+      const x = Math.random() * 256;
+      const y = Math.random() * 128;
+      const r = 8 + Math.random() * 22;
+      const grd = g.createRadialGradient(x, y, 0, x, y, r);
+      grd.addColorStop(0, '#d2d2d2');
+      grd.addColorStop(1, '#808080');
+      g.fillStyle = grd;
+      g.beginPath();
+      g.arc(x, y, r, 0, 7);
+      g.fill();
+    }
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+// Per-player ball surface: a distinct material style (metal, furry, slime,
+// stone, chrome, neon…) so the arena reads with real texture variety.
+const BALL_STYLE_COUNT = 8;
+export function makeBallMaterial(colorHex: number, index: number, playerNumber: number): THREE.MeshStandardMaterial {
+  const s = ((index % BALL_STYLE_COUNT) + BALL_STYLE_COUNT) % BALL_STYLE_COUNT;
+  const col = new THREE.Color(colorHex);
+  const p: THREE.MeshStandardMaterialParameters = { map: makeBallTexture(colorHex, index, playerNumber) };
+  switch (s) {
+    case 0: // playa (glossy classic)
+      p.roughness = 0.34;
+      p.metalness = 0.12;
+      break;
+    case 1: // metal cepillado
+      p.roughness = 0.28;
+      p.metalness = 0.95;
+      p.bumpMap = makeBumpTexture('metal');
+      p.bumpScale = 0.015;
+      break;
+    case 2: // peluda
+      p.roughness = 1.0;
+      p.metalness = 0.0;
+      p.bumpMap = makeBumpTexture('fur');
+      p.bumpScale = 0.09;
+      break;
+    case 3: // slime
+      p.roughness = 0.05;
+      p.metalness = 0.1;
+      p.emissive = col.clone().multiplyScalar(0.4);
+      p.emissiveIntensity = 0.45;
+      p.bumpMap = makeBumpTexture('slime');
+      p.bumpScale = 0.05;
+      break;
+    case 4: // neón
+      p.roughness = 0.5;
+      p.metalness = 0.2;
+      p.emissive = col;
+      p.emissiveIntensity = 0.6;
+      break;
+    case 5: // piedra
+      p.roughness = 1.0;
+      p.metalness = 0.05;
+      p.bumpMap = makeBumpTexture('stone');
+      p.bumpScale = 0.08;
+      break;
+    case 6: // cromo
+      p.roughness = 0.1;
+      p.metalness = 1.0;
+      break;
+    default: // galaxia (dark shimmer)
+      p.roughness = 0.4;
+      p.metalness = 0.35;
+      p.emissive = col.clone().multiplyScalar(0.18);
+      p.emissiveIntensity = 0.35;
+      break;
+  }
+  return new THREE.MeshStandardMaterial(p);
+}
+
 // Gradient dome (skyBottom → skyTop) with cheap hashed twinkling stars.
 // Sky dome: aurora curtains drifting over a vertical gradient, a soft moon
 // halo and a handful of big slow stars. Everything tinted by the theme.
@@ -613,6 +724,7 @@ export class GameRenderer {
       this.scene.remove(this.playerRoots[i]);
       this.playerMeshes[i].geometry.dispose();
       this.playerMats[i].map?.dispose();
+      this.playerMats[i].bumpMap?.dispose();
       this.playerMats[i].dispose();
     }
     for (let i = 0; i < this.cdRings.length; i++) {
@@ -678,11 +790,7 @@ export class GameRenderer {
     const sphereGeo = new THREE.SphereGeometry(PLAYER_RADIUS, 32, 24);
     for (let i = 0; i < sim.playerCount; i++) {
       const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
-      const mat = new THREE.MeshStandardMaterial({
-        map: makeBallTexture(color, i, i + 1),
-        roughness: 0.35,
-        metalness: 0.15,
-      });
+      const mat = makeBallMaterial(color, i, i + 1);
       const mesh = new THREE.Mesh(sphereGeo, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;

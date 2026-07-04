@@ -272,6 +272,14 @@ typedef struct Bot
 	bool pulseJump;
 	float lastX, lastZ; // position at the previous replan
 	int stuck;			// consecutive replans without real displacement
+	// Personality (per bot, from its own RNG): makes each one play differently
+	// and keeps them from all funnelling onto the same victim/spot.
+	float aggr;		// 0 cauteloso .. 1 matón: cuánto persigue y dashea
+	float courage;	// 0 miedoso .. 1 temerario: cuánto se arrima al borde
+	float greed;	// 0 .. 1: cuánto le importan los orbes
+	float wander;	// desfase de deambular, para no ir todos al centro exacto
+	int favTarget;	// víctima preferida (reparte a los bots entre rivales)
+	int moodAt;		// tick en que re-rollea un poco la personalidad (varía)
 } Bot;
 
 static b3WorldId g_world;
@@ -435,6 +443,20 @@ MOTUMBO_EXPORT void motumbo_set_bot( int slot, int difficulty )
 	g_bots[slot].lastX = 0.0f;
 	g_bots[slot].lastZ = 0.0f;
 	g_bots[slot].stuck = 0;
+	// Roll a personality from this slot's own RNG stream (same on every peer).
+	// Difficulty sets skill (reaction/precision); personality sets STYLE, and
+	// varies at all difficulties so no two bots feel identical.
+	uint64_t* rs = &g_botRngState[slot];
+	float r0 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
+	float r1 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
+	float r2 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
+	float r3 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
+	g_bots[slot].aggr = 0.2f + r0 * 0.8f;
+	g_bots[slot].courage = 0.15f + r1 * 0.85f;
+	g_bots[slot].greed = r2;
+	g_bots[slot].wander = r3 * 6.2831853f;
+	g_bots[slot].favTarget = -1;
+	g_bots[slot].moodAt = 0;
 }
 
 static void WriteState( void )
@@ -2205,6 +2227,23 @@ static bool BotDashSafe( b3Pos pos, float dirx, float dirz )
 		   SupportStateAt( pos.x + dirx * 2.0f, pos.z + dirz * 2.0f ) >= 1;
 }
 
+// How cornered a spot is: fraction of 8 surrounding samples (at ~2.6m) that
+// are void. High = near an edge/corner = an easy KO, so bots swarm it. This is
+// what makes them hunt a human camping in a corner instead of ignoring them.
+static float EdgeExposure( float x, float z )
+{
+	int voidCount = 0;
+	for ( int k = 0; k < 8; ++k )
+	{
+		float a = 6.2831853f * (float)k / 8.0f;
+		if ( SupportStateAt( x + cosf( a ) * 2.6f, z + sinf( a ) * 2.6f ) == 0 )
+		{
+			voidCount += 1;
+		}
+	}
+	return (float)voidCount / 8.0f;
+}
+
 // Nearest active orb to (x, z). Returns its index or -1, filling out coords.
 static int NearestOrb( float x, float z, float* outX, float* outZ )
 {
@@ -2264,6 +2303,26 @@ static void BotReplan( int slot )
 	bot->stuck = barelyMoved ? bot->stuck + 1 : 0;
 	bot->lastX = pos.x;
 	bot->lastZ = pos.z;
+
+	// Mood swings: every ~7-10s pick a fresh favourite victim among the living
+	// and nudge aggression. This is the "variación" — hunts shift over a round
+	// so it never settles into the same three-bot shoving match.
+	if ( g_frame >= (uint32_t)bot->moodAt )
+	{
+		bot->moodAt = (int)g_frame + 420 + (int)( BotRng() % 300u );
+		int alive[MAX_PLAYERS];
+		int n = 0;
+		for ( int j = 0; j < g_playerCount; ++j )
+		{
+			if ( j != slot && g_players[j].alive )
+			{
+				alive[n++] = j;
+			}
+		}
+		bot->favTarget = n > 0 ? alive[BotRng() % (uint32_t)n] : -1;
+		float drift = ( (float)( BotRng() % 100u ) / 100.0f - 0.5f ) * 0.3f;
+		bot->aggr = bot->aggr + drift < 0.15f ? 0.15f : ( bot->aggr + drift > 1.0f ? 1.0f : bot->aggr + drift );
+	}
 
 	// Solo unstick: hop and swerve — walls and ledges yield to jumps.
 	if ( bot->stuck >= 3 && nearby == 0 )
@@ -2377,8 +2436,10 @@ static void BotReplan( int slot )
 		}
 	}
 
-	// Priority 3: hunt a rival. A per-pair bias spreads the bots across
-	// different victims instead of everyone dog-piling the same one.
+	// Priority 3: hunt a rival. The score blends closeness, a personal
+	// favourite (spreads bots across victims), how CORNERED the rival is
+	// (swarm the edge-camper) and an anti-dogpile penalty (don't all pile on
+	// the same one). Result: they split up and gang the exposed player.
 	int target = -1;
 	float bestScore = 1e30f;
 	float bestD2 = 1e30f;
@@ -2392,7 +2453,40 @@ static void BotReplan( int slot )
 		float dx = op.x - pos.x;
 		float dz = op.z - pos.z;
 		float d2 = dx * dx + dz * dz;
-		float score = d2 * ( 1.0f + 0.15f * (float)( ( slot * 5 + j * 3 ) & 3 ) );
+		float score = d2;
+		if ( j == bot->favTarget )
+		{
+			score *= 0.5f; // my preferred victim
+		}
+		// Cornered rivals are easy KOs — aggressive bots weight this more.
+		float expo = EdgeExposure( op.x, op.z );
+		score *= 1.0f - ( 0.4f + 0.4f * bot->aggr ) * expo;
+		// Sitting duck: a barely-moving rival (a camper) is an easy target to
+		// line up and shove. This is what stops "stand in a corner and win".
+		b3Vec3 ov = b3Body_GetLinearVelocity( g_players[j].body );
+		float ospeed = sqrtf( ov.x * ov.x + ov.z * ov.z );
+		float still = ospeed < 3.0f ? 1.0f - ospeed / 3.0f : 0.0f;
+		score *= 1.0f - 0.4f * still;
+		// Anti-dogpile: other bots already crowding j make it less appealing.
+		int swarm = 0;
+		for ( int a = 0; a < g_playerCount; ++a )
+		{
+			if ( a == slot || a == j || !g_bots[a].active || !g_players[a].alive )
+			{
+				continue;
+			}
+			b3Pos ap = b3Body_GetPosition( g_players[a].body );
+			float sx = ap.x - op.x;
+			float sz = ap.z - op.z;
+			if ( sx * sx + sz * sz < 4.0f * 4.0f )
+			{
+				swarm += 1;
+			}
+		}
+		if ( j != bot->favTarget )
+		{
+			score *= 1.0f + 0.6f * (float)swarm;
+		}
 		if ( score < bestScore )
 		{
 			bestScore = score;
@@ -2411,13 +2505,15 @@ static void BotReplan( int slot )
 	bot->tx = op.x;
 	bot->tz = op.z;
 
-	// Hard bots fight a half-step toward safety instead of squarely on the rim.
-	if ( bot->difficulty == 2 )
+	// Timid bots (low courage) fight a step toward safety; brave ones commit
+	// squarely to the rim. Replaces the old flat hard-bot pullback.
+	float pull = 0.28f * ( 1.0f - bot->courage );
+	if ( pull > 0.02f )
 	{
 		float sx, sz;
 		NearestSafeTile( pos.x, pos.z, slot, &sx, &sz );
-		bot->tx += ( sx - bot->tx ) * 0.15f;
-		bot->tz += ( sz - bot->tz ) * 0.15f;
+		bot->tx += ( sx - bot->tx ) * pull;
+		bot->tz += ( sz - bot->tz ) * pull;
 	}
 
 	float dist = sqrtf( bestD2 );
@@ -2430,18 +2526,16 @@ static void BotReplan( int slot )
 		float dirz = ( op.z - pos.z ) / dist;
 		bool lethal = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f ) == 0;
 		bool safe = BotDashSafe( pos, dirx, dirz );
-		// Easy bots occasionally dash off recklessly; that's their weakness.
+		// Low-difficulty bots occasionally dash off recklessly; their weakness.
 		if ( bot->difficulty == 0 && !safe )
 		{
 			safe = ( BotRng() & 3u ) == 0u;
 		}
-		// A lethal dash (shoves the rival into the void) always fires when
-		// safe — that's the smart, low-risk way to score. NON-lethal
-		// "positioning" dashes just expose you to a counter, so the harder
-		// (smarter) the bot, the LESS it throws them away: easy brawls
-		// recklessly, hard waits for the kill.
-		bool eager = bot->difficulty == 0 ? ( BotRng() & 1u ) == 0u
-										  : ( bot->difficulty == 1 ? ( BotRng() & 3u ) == 0u : ( BotRng() % 6u ) == 0u );
+		// A lethal dash (shoves the rival into the void) always fires when safe.
+		// Otherwise the chance of a positioning dash scales with the bot's
+		// AGGRESSION: matones se tiran seguido, cautelosos casi nunca.
+		float roll = (float)( BotRng() % 1000u ) / 1000.0f;
+		bool eager = roll < bot->aggr * 0.55f;
 		if ( safe && ( lethal || eager ) )
 		{
 			bot->pulseDash = true;
@@ -2519,15 +2613,15 @@ static void BotReplan( int slot )
 // off a cliff with no landing. This — not the emergency brake — is what keeps
 // bots alive on scattered-platform maps. Sets *jump when a committed gap
 // crossing or a climbable ledge wants a hop.
-static void BotSafeSteer( int slot, int difficulty, b3Pos pos, float ballR, float dx, float dz, float speedAlong,
+static void BotSafeSteer( int slot, float careCap, b3Pos pos, float ballR, float dx, float dz, float speedAlong,
 						  bool jumpReady, float* ox, float* oz, bool* jump, float* speedCap )
 {
 	*ox = dx;
 	*oz = dz;
 	*jump = false;
 	*speedCap = MAX_MOVE_SPEED;
-	// Easy bots are clumsier near ledges: looser cap = they roll off more.
-	float careCap = difficulty == 0 ? 6.2f : ( difficulty == 1 ? 4.2f : 3.4f );
+	// careCap = how fast the bot dares move near a ledge (from its courage):
+	// low = eases off and stays safe, high = barrels along and risks rolling off.
 	float probe = ballR + 0.7f + ( speedAlong > 0.0f ? speedAlong : 0.0f ) * 0.14f;
 
 	if ( SupportStateAt( pos.x + dx * probe, pos.z + dz * probe ) >= 1 )
@@ -2689,10 +2783,13 @@ static void StepBots( void )
 			dz /= dist;
 			float speedAlong = vel.x * dx + vel.z * dz;
 
-			// Edge-aware: never steer off a cliff without a landing.
+			// Edge-aware: never steer off a cliff without a landing. The care
+			// cap comes from the bot's courage — timid ones brake hard near
+			// ledges, brave ones barrel along (and sometimes pay for it).
+			float careCap = 3.1f + bot->courage * 3.9f;
 			float mx, mz, speedCap;
 			bool jumpGap;
-			BotSafeSteer( i, d, pos, ballR, dx, dz, speedAlong, jumpReady, &mx, &mz, &jumpGap, &speedCap );
+			BotSafeSteer( i, careCap, pos, ballR, dx, dz, speedAlong, jumpReady, &mx, &mz, &jumpGap, &speedCap );
 			if ( jumpGap )
 			{
 				word |= IN_JUMP;
