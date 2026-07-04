@@ -296,7 +296,7 @@ export class RoomSignal {
       onError(message: string): void;
       onNoPeer(): void;
     },
-    timeoutMs = 5500,
+    timeoutMs = 8000,
   ): Promise<void> {
     await this.mqtt.connect();
     const me = Math.random().toString(36).slice(2, 10);

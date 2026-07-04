@@ -23,13 +23,13 @@
 // Generated levels derive ONLY from their id (own PCG stream), so every peer
 // builds the exact same arena for level N regardless of round seed.
 #define LEVEL_HANDMADE 20
-#define LEVEL_MEGA 70	 // levels 70..74 are the oversized mega arenas
-#define LEVEL_COUNT 75
+#define LEVEL_MEGA 70	 // levels 70..75 are the oversized mega arenas
+#define LEVEL_COUNT 76
 
 // Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
 // format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
 // deterministic setup, so lockstep peers must load identical bytes.
-#define LEVEL_CUSTOM 75
+#define LEVEL_CUSTOM 76
 #define CUSTOM_DATA_MAX 1024
 
 // Bomberman-style pickups: the orb now has one of 5 types.
@@ -213,6 +213,7 @@ typedef struct Player
 	int jumpBuffer;
 	int dashBuffer;
 	int coyote;
+	int airJumps; // mid-air jumps left (double jump); refilled on landing
 	int braceTicks;
 	float ballR;	 // current radius (MEGA grows it)
 	float baseR;	 // the level's base radius
@@ -1347,7 +1348,9 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 {
 	g_genRng = (uint32_t)level * 2654435761u + 977u;
 	int fam = ( level - LEVEL_HANDMADE ) % 6;
-	float R = GenF( 9.0f, 13.4f );
+	// Bigger arenas (~60% more area than before) — the balls stay the same
+	// absolute size, so there is more room to move and it plays livelier.
+	float R = GenF( 12.5f, 17.0f );
 	static const float sizes[7] = { 0.45f, 0.5f, 0.55f, 0.6f, 0.6f, 0.75f, 0.9f };
 	g_genBallR = sizes[GenNext() % 7u];
 
@@ -1381,9 +1384,9 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 	int tierEvery = 2 + (int)( GenNext() % 2u );
 	int padSize = 2 + (int)( GenNext() % 2u );
 
-	for ( int gx = -9; gx <= 9; ++gx )
+	for ( int gx = -12; gx <= 12; ++gx )
 	{
-		for ( int gz = -9; gz <= 9; ++gz )
+		for ( int gz = -12; gz <= 12; ++gz )
 		{
 			float cx = gx * PIECE_STEP;
 			float cz = gz * PIECE_STEP;
@@ -1645,7 +1648,7 @@ static void BuildMega( int level, const b3BoxHull* hull )
 					AddPiece( cx, cz, 0.0f, (int)( r * 1.5f ), hull );
 				}
 			}
-			else
+			else if ( m == 4 )
 			{
 				// ESTADIO: a long rectangular pitch with one-way boost lanes
 				// down both touchlines and pistons sweeping the midfield.
@@ -1661,6 +1664,20 @@ static void BuildMega( int level, const b3BoxHull* hull )
 					{
 						AddPiece( cx, cz, 0.0f, 8 - az, hull );
 					}
+				}
+			}
+			else
+			{
+				// TORRE: an 11-tier stepped pyramid rising ~6m. You fight your
+				// way UP and shove rivals down the steps and off — the double
+				// jump is what makes climbing it feel good. The rim crumbles
+				// first, squeezing everyone toward the peak.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				int d = ax > az ? ax : az; // Chebyshev ring: 0 center .. edge
+				if ( d <= 10 )
+				{
+					AddPiece( cx, cz, (float)( 10 - d ) * 0.55f, 10 - d, hull );
 				}
 			}
 		}
@@ -1689,12 +1706,18 @@ static void BuildMega( int level, const b3BoxHull* hull )
 			g_crumbleStart = 600;
 			g_crumbleInterval = 8;
 			break;
-		default:
+		case 4:
 			SortCrumbleOrder();
 			AddBoxHazard( ( b3Vec3 ){ -6.0f, 0.5f, -9.0f }, ( b3Vec3 ){ 0.6f, 0.5f, 0.9f }, HAZARD_PISTON, 3.0f, 0.0f, 0.0f );
 			AddBoxHazard( ( b3Vec3 ){ 6.0f, 0.5f, 9.0f }, ( b3Vec3 ){ 0.6f, 0.5f, 0.9f }, HAZARD_PISTON, 3.0f, 140.0f, 0.0f );
 			g_crumbleStart = 660;
 			g_crumbleInterval = 8;
+			break;
+		default: // TORRE: rim-first collapse that steadily squeezes everyone
+			// up toward the shrinking peak, forcing the fight to a finish.
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 5;
 			break;
 	}
 }
@@ -2000,8 +2023,9 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 	// Each arena picks its ball size: tiny = nervous, huge = heavyweight sumo.
 	static const float levelBallR[LEVEL_HANDMADE] = { 0.6f, 0.6f, 0.55f, 0.6f, 0.7f, 0.6f, 0.5f,	0.55f, 0.65f, 0.6f,
 													  0.8f, 0.45f, 0.55f, 0.75f, 0.6f, 0.7f, 0.55f, 0.6f,  0.9f,  0.5f };
-	// Mega arenas use bigger, weightier balls so the vast floors feel epic.
-	static const float megaBallR[5] = { 0.85f, 0.7f, 0.8f, 0.75f, 0.85f };
+	// Mega arenas use bigger, weightier balls so the vast floors feel epic
+	// (TORRE gets a nimbler ball for climbing the tiers).
+	static const float megaBallR[6] = { 0.85f, 0.7f, 0.8f, 0.75f, 0.85f, 0.62f };
 	float ballR = PLAYER_RADIUS;
 	if ( g_level < LEVEL_HANDMADE )
 	{
@@ -2057,6 +2081,7 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 		g_players[i].jumpBuffer = 0;
 		g_players[i].dashBuffer = 0;
 		g_players[i].coyote = 0;
+		g_players[i].airJumps = 1;
 		g_players[i].braceTicks = 0;
 		g_players[i].hasPower = false;
 		g_players[i].hasShield = false;
@@ -2926,6 +2951,10 @@ static void StepPlayers( void )
 			p->dashBuffer = INPUT_BUFFER_TICKS;
 		}
 		p->coyote = grounded ? COYOTE_TICKS : ( p->coyote > 0 ? p->coyote - 1 : 0 );
+		if ( grounded )
+		{
+			p->airJumps = 1; // refill the double jump on landing
+		}
 
 		// Brace: anchor in place. No moving, dashing or jumping while held.
 		bool bracing = ( in & IN_BRACE ) != 0 && grounded;
@@ -2997,6 +3026,25 @@ static void StepPlayers( void )
 				b3Pos pos = b3Body_GetPosition( p->body );
 				PushEvent( EVT_JUMP, pos.x, pos.y, pos.z, 0.0f, (float)i );
 			}
+		}
+		// Double jump: airborne, past the coyote window, with an air jump left.
+		// Sets vertical velocity to a clean second hop regardless of the fall,
+		// so it always feels responsive. Not gated by jumpCooldown.
+		else if ( p->jumpBuffer > 0 && p->coyote == 0 && p->airJumps > 0 && !grounded && !frozen )
+		{
+			b3Vec3 v = b3Body_GetLinearVelocity( p->body );
+			float dv = JUMP_SPEED * 0.95f - v.y;
+			if ( dv < 3.0f )
+			{
+				dv = 3.0f;
+			}
+			b3Vec3 impulse = { 0.0f, dv * mass, 0.0f };
+			b3Body_ApplyLinearImpulseToCenter( p->body, impulse, true );
+			p->airJumps -= 1;
+			p->jumpBuffer = 0;
+			p->jumpCooldown = JUMP_COOLDOWN_TICKS;
+			b3Pos pos = b3Body_GetPosition( p->body );
+			PushEvent( EVT_JUMP, pos.x, pos.y, pos.z, 1.0f, (float)i ); // a=1: double jump
 		}
 
 		// Dash: buffered press fires the moment cooldown ends.

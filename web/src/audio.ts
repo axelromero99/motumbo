@@ -104,8 +104,10 @@ export class AudioEngine {
     if (powered) this.tone(500, 900, 0.18, 'square', 0.12);
   }
 
-  jump(): void {
-    this.tone(240, 480, 0.14, 'sine', 0.22);
+  jump(double = false): void {
+    // Double jump gets a brighter, rising second chirp.
+    if (double) this.tone(360, 720, 0.13, 'triangle', 0.2);
+    else this.tone(240, 480, 0.14, 'sine', 0.22);
   }
 
   /** Metallic clank: a perfectly timed brace bounced a dash back. */

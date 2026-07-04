@@ -683,6 +683,13 @@ export class UiShell {
   }
 
   private wireTitle(): void {
+    // JUGAR = pool matchmaking (empareja online, o rellena con bots).
+    $('btn-quickplay').addEventListener('click', () => {
+      this.lastRoomAction = { type: 'quick' };
+      this.showAny('online');
+      this.setRoomState('searching', 'buscando jugadores…');
+      this.cb.onQuickMatch();
+    });
     $('btn-play').addEventListener('click', () => {
       this.cb.onPlay();
       this.showAny('setup');
@@ -858,12 +865,6 @@ export class UiShell {
     input.addEventListener('input', () => this.syncJoinInput());
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !joinBtn.disabled) joinBtn.click();
-    });
-
-    $('btn-quick').addEventListener('click', () => {
-      this.lastRoomAction = { type: 'quick' };
-      this.setRoomState('searching', 'buscando rival…');
-      this.cb.onQuickMatch();
     });
 
     $('btn-create-room').addEventListener('click', () => {

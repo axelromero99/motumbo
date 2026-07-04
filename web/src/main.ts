@@ -736,11 +736,19 @@ async function main(): Promise<void> {
           if (!attract) trauma(a > 0.5 ? 0.18 : 0.06);
           if (b >= 0) renderer.squash(b, 0.35);
           break;
-        case EVT_JUMP:
-          if (!attract) audio.jump();
-          renderer.fx.burst(x, y - 0.5, z, TILE_DUST, { count: 6, speed: 1.2, up: 0.5, life: 300 });
-          if (b >= 0) renderer.squash(b, 0.3);
+        case EVT_JUMP: {
+          const dbl = a > 0.5; // a=1 → mid-air double jump
+          if (!attract) audio.jump(dbl);
+          if (dbl) {
+            // A little burst ring under the ball where the second hop kicks off.
+            renderer.fx.ring(x, y - 0.4, z, 0xbfe3ff, 1.6);
+            renderer.fx.burst(x, y - 0.3, z, 0xbfe3ff, { count: 12, speed: 2.2, up: 0.6, life: 380 });
+          } else {
+            renderer.fx.burst(x, y - 0.5, z, TILE_DUST, { count: 6, speed: 1.2, up: 0.5, life: 300 });
+          }
+          if (b >= 0) renderer.squash(b, dbl ? 0.45 : 0.3);
           break;
+        }
         case EVT_TILE_WARN:
           if (!attract) {
             audio.tileWarn();
