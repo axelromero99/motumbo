@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TUMBO — sumo físico multijugador en el navegador</title>
+  <title>MOTUMBO — sumo físico multijugador en el navegador</title>
   <meta name="description" content="Party game de sumo físico 3D: empujá a tus rivales fuera de una arena que se desmorona. Decenas de arenas, editor de mapas, bots y 1v1 online con código de sala. Física determinista en C compilada a WASM." />
-  <meta property="og:title" content="TUMBO — sumo físico multijugador" />
+  <meta property="og:title" content="MOTUMBO — sumo físico multijugador" />
   <meta property="og:description" content="Empujá a tus rivales al vacío antes de que el piso desaparezca. Decenas de arenas, 4 modos, editor de mapas y multiplayer online — física determinista C→WASM con lockstep por WebRTC." />
   <meta property="og:type" content="website" />
   <meta name="theme-color" content="#0b0e1a" />
@@ -475,7 +475,7 @@
   </style>
 </head>
 <body>
-  <div id="boot"><div class="boot-ball"></div>TUMBO</div>
+  <div id="boot"><div class="boot-ball"></div>MOTUMBO</div>
   <div id="app"></div>
 
   <div id="flash"></div>
@@ -494,7 +494,7 @@
   <!-- ============ TITLE ============ -->
   <section class="screen" data-screen="title">
     <div class="title-wrap">
-      <h1 class="logo">TUMB<span class="logo-ball" aria-label="O"></span></h1>
+      <h1 class="logo">MOTUMB<span class="logo-ball" aria-label="O"></span></h1>
       <p class="tagline">SUMO · FÍSICA · PLATAFORMA QUE SE CAE</p>
       <input id="username-input" class="username-input" type="text" maxlength="18" placeholder="tu nombre" autocomplete="off" spellcheck="false" />
       <button class="menu-btn primary" id="btn-play">JUGAR<span class="sub">BOTS O AMIGO EN EL TECLADO</span></button>
@@ -620,7 +620,7 @@
         <div class="or-sep">O UNITE CON UN CÓDIGO</div>
         <div class="join-row">
           <span class="code-field">
-            <span class="code-prefix">TUMBO-</span>
+            <span class="code-prefix">MOTUMBO-</span>
             <input id="room-code-in" placeholder="····" autocomplete="off" autocapitalize="characters" spellcheck="false" />
           </span>
           <button class="btn" id="btn-join-room" disabled>UNIRSE</button>
@@ -628,7 +628,7 @@
       </div>
 
       <div id="room-live" style="display:none">
-        <div class="room-code-big" id="room-code-big" title="Copiar código" style="display:none"><small>TUMBO-</small><b id="room-code-chars"></b></div>
+        <div class="room-code-big" id="room-code-big" title="Copiar código" style="display:none"><small>MOTUMBO-</small><b id="room-code-chars"></b></div>
         <button class="btn" id="btn-copy-invite" style="display:none">Copiar link de invitación</button>
         <div class="room-status-row">
           <span class="spinner" id="room-spinner"></span>

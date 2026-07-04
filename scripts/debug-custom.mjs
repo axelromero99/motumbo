@@ -1,7 +1,7 @@
 // Debug: does an asymmetric custom map come out of the sim with the exact
 // tile positions we encoded? Catches codec/BuildCustomLevel mismatches,
 // including axis swaps and sign flips.
-import createTumbo from '../web/src/gen/tumbo.js';
+import createMotumbo from '../web/src/gen/motumbo.js';
 
 // L-shape: horizontal arm along +X at gz=0, vertical arm along +Z at gx=0.
 // Plus one lone marker tile at (5, -3) to detect mirroring.
@@ -33,12 +33,12 @@ for (const [gx, gz] of spawns) {
   bytes[o++] = gz + 16;
 }
 
-const M = await createTumbo();
-M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
-M._tumbo_set_custom(bytes.length);
-M._tumbo_init(1, 2, 70);
+const M = await createMotumbo();
+M.HEAPU8.set(bytes, M._motumbo_custom_ptr());
+M._motumbo_set_custom(bytes.length);
+M._motumbo_init(1, 2, 70);
 const S = M.HEAPF32;
-const base = M._tumbo_state_ptr() >> 2;
+const base = M._motumbo_state_ptr() >> 2;
 const pieceCount = S[base + 3];
 console.log(`level=${S[base + 5]} pieces=${pieceCount} (esperado ${tiles.length})`);
 for (let i = 0; i < pieceCount; i++) {

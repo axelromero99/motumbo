@@ -28,7 +28,7 @@ import { FxSystem } from './fx';
 export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
 const PLAYER_RADIUS = 0.6;
-// Rey de la colina: mirror of ZONE_RADIUS in tumbo.c (presentation only).
+// Rey de la colina: mirror of ZONE_RADIUS in motumbo.c (presentation only).
 const ZONE_RADIUS = 2.3;
 const ZONE_COLOR = 0xffbe3d;
 const CURSE_COLOR = 0xff2020;

@@ -1,4 +1,4 @@
-// Custom map codec. The byte layout mirrors BuildCustomLevel in sim/tumbo.c
+// Custom map codec. The byte layout mirrors BuildCustomLevel in sim/motumbo.c
 // exactly — these bytes ARE the map: they get loaded into the sim, sent to
 // lockstep peers, and shared as base64 codes. Keep both sides in sync.
 //
@@ -13,7 +13,7 @@ export const MAP_VERSION = 1;
 export const GRID_EXTENT = 7; // tiles live in gx,gz ∈ [-7, 7]
 export const MAX_TILES = 225; // 15×15 grid
 export const MAX_SPAWNS = 8;
-// Must match LEVEL_CUSTOM in sim/tumbo.c (20 handmade + 50 generated + 5 mega).
+// Must match LEVEL_CUSTOM in sim/motumbo.c (20 handmade + 50 generated + 5 mega).
 export const LEVEL_CUSTOM = 75;
 
 export interface MapTile {

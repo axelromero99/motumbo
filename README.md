@@ -1,15 +1,15 @@
-# TUMBO
+# MOTUMBO
 
 **Physics sumo party game in the browser.** Shove your rivals off a crumbling arena — last ball standing wins. 20 arenas, 4 game modes, a map editor, deterministic bots, and serverless 1v1 online multiplayer.
 
-**[▶ Play it now](https://axelromero99.github.io/tumbo/)** · ![ci](https://github.com/axelromero99/tumbo/actions/workflows/ci.yml/badge.svg)
+**[▶ Play it now](https://axelromero99.github.io/motumbo/)** · ![ci](https://github.com/axelromero99/motumbo/actions/workflows/ci.yml/badge.svg)
 
-<!-- TODO: grabar y commitear docs/tumbo.gif, luego descomentar -->
-<!-- ![gameplay](docs/tumbo.gif) -->
+<!-- TODO: grabar y commitear docs/motumbo.gif, luego descomentar -->
+<!-- ![gameplay](docs/motumbo.gif) -->
 
 ## Why this is interesting (for engineers)
 
-The entire game simulation lives in **one deterministic C file** ([`sim/tumbo.c`](sim/tumbo.c)) compiled to WebAssembly, built on [Box3D](https://github.com/erincatto/box3d) (Erin Catto's 3D physics engine). JavaScript only renders, plays audio, and moves bytes.
+The entire game simulation lives in **one deterministic C file** ([`sim/motumbo.c`](sim/motumbo.c)) compiled to WebAssembly, built on [Box3D](https://github.com/erincatto/box3d) (Erin Catto's 3D physics engine). JavaScript only renders, plays audio, and moves bytes.
 
 That single design decision buys everything else:
 
@@ -35,7 +35,7 @@ There's also [`scripts/test-bots.mjs`](scripts/test-bots.mjs), a manual AI-tunin
 │  input.ts ──► uint32 word                             │      │                 │
 │                  │ (scheduled +4 ticks, sent to peer) │◄────►│  WebRTC         │
 │                  ▼                                    │ 10 B │  DataChannel    │
-│  ┌─────────── sim/tumbo.c (WASM) ────────────┐        │ /tick│                 │
+│  ┌─────────── sim/motumbo.c (WASM) ────────────┐        │ /tick│                 │
 │  │ Box3D physics · levels · modes · bots ·   │        │      │  same sim,      │
 │  │ crumble · events · PCG32 · state hash     │        │      │  same inputs,   │
 │  └──────┬─────────────────────┬──────────────┘        │      │  same bits      │
@@ -80,7 +80,7 @@ C17 · [Box3D](https://github.com/erincatto/box3d) (vendored) · Emscripten · T
 
 Juego de sumo físico: empujá a tus rivales fuera de una arena que se desmorona. **Toda la simulación vive en un archivo C determinista** compilado a WASM — JS solo presenta. Por eso el multiplayer no necesita servidores (solo viajan inputs de 10 bytes por WebRTC), los bots funcionan online gratis (son parte de la simulación) y los mapas del editor se comparten como un código de texto.
 
-- **Jugar**: [axelromero99.github.io/tumbo](https://axelromero99.github.io/tumbo/) — SOLO contra bots, LOCAL de a 2, u ONLINE con link de invitación.
+- **Jugar**: [axelromero99.github.io/motumbo](https://axelromero99.github.io/motumbo/) — SOLO contra bots, LOCAL de a 2, u ONLINE con link de invitación.
 - **Correr local**: `scripts\setup.ps1`, `scripts\build-sim.ps1`, `cd web`, `npm run dev`.
 - **Tests de determinismo**: `node scripts/test-sim.mjs` (20 arenas + modos + bots + mapas custom, bit-idénticos) y `node scripts/test-lockstep.mjs` (dos instancias WASM con red simulada con latencia).
 

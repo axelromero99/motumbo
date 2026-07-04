@@ -1,4 +1,4 @@
-// TUMBO — deterministic sumo-arena simulation core.
+// MOTUMBO — deterministic sumo-arena simulation core.
 // Everything gameplay-related lives here, in C, compiled to WASM.
 // JS only writes packed inputs and reads the state buffer, so lockstep
 // peers stay bit-identical as long as they feed the same inputs.
@@ -10,9 +10,9 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
-#define TUMBO_EXPORT EMSCRIPTEN_KEEPALIVE
+#define MOTUMBO_EXPORT EMSCRIPTEN_KEEPALIVE
 #else
-#define TUMBO_EXPORT
+#define MOTUMBO_EXPORT
 #endif
 
 #define MAX_PLAYERS 8
@@ -49,7 +49,7 @@ enum
 #define SHOCK_RADIUS 5.0f
 #define SHOCK_FORCE 8.0f
 
-// Game modes (tumbo_set_mode). All win conditions resolve inside the sim.
+// Game modes (motumbo_set_mode). All win conditions resolve inside the sim.
 enum
 {
 	MODE_SUMO = 0,	   // last one standing (default)
@@ -361,60 +361,60 @@ static uint32_t BotRng( void )
 	return PcgNext( &g_botRngState[g_curBot] );
 }
 
-TUMBO_EXPORT uint32_t* tumbo_inputs_ptr( void )
+MOTUMBO_EXPORT uint32_t* motumbo_inputs_ptr( void )
 {
 	return g_inputs;
 }
 
-TUMBO_EXPORT float* tumbo_state_ptr( void )
+MOTUMBO_EXPORT float* motumbo_state_ptr( void )
 {
 	return g_state;
 }
 
-TUMBO_EXPORT int tumbo_state_floats( void )
+MOTUMBO_EXPORT int motumbo_state_floats( void )
 {
 	return STATE_HEADER + STATE_STRIDE * ( g_playerCount + g_pieceCount ) + HAZARD_STRIDE * g_hazardCount + 4 +
 		   MODE_FLOATS;
 }
 
-TUMBO_EXPORT int tumbo_level_count( void )
+MOTUMBO_EXPORT int motumbo_level_count( void )
 {
 	return LEVEL_COUNT;
 }
 
-TUMBO_EXPORT float* tumbo_events_ptr( void )
+MOTUMBO_EXPORT float* motumbo_events_ptr( void )
 {
 	return g_events;
 }
 
-TUMBO_EXPORT int tumbo_event_count( void )
+MOTUMBO_EXPORT int motumbo_event_count( void )
 {
 	return g_eventCount;
 }
 
-TUMBO_EXPORT int tumbo_countdown_ticks( void )
+MOTUMBO_EXPORT int motumbo_countdown_ticks( void )
 {
 	return COUNTDOWN_TICKS;
 }
 
-// Set the game mode. Call after tumbo_init and before the first step,
+// Set the game mode. Call after motumbo_init and before the first step,
 // identically on every lockstep peer. KOTH: param = seconds to hold alone.
 // COSECHA: param = orbs. MALDITO: param = curse timer seconds.
-TUMBO_EXPORT void tumbo_set_mode( int mode, int param );
+MOTUMBO_EXPORT void motumbo_set_mode( int mode, int param );
 
-TUMBO_EXPORT uint8_t* tumbo_custom_ptr( void )
+MOTUMBO_EXPORT uint8_t* motumbo_custom_ptr( void )
 {
 	return g_customData;
 }
 
-TUMBO_EXPORT void tumbo_set_custom( int len )
+MOTUMBO_EXPORT void motumbo_set_custom( int len )
 {
 	g_customLen = len < 0 ? 0 : ( len > CUSTOM_DATA_MAX ? CUSTOM_DATA_MAX : len );
 }
 
-// Enable a deterministic bot on a player slot. Call between tumbo_init and
-// the first tumbo_step, identically on every lockstep peer.
-TUMBO_EXPORT void tumbo_set_bot( int slot, int difficulty )
+// Enable a deterministic bot on a player slot. Call between motumbo_init and
+// the first motumbo_step, identically on every lockstep peer.
+MOTUMBO_EXPORT void motumbo_set_bot( int slot, int difficulty )
 {
 	if ( slot < 0 || slot >= g_playerCount )
 	{
@@ -1884,7 +1884,7 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	*outZ = radius * dirs[slot][1];
 }
 
-TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
+MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 {
 	if ( b3World_IsValid( g_world ) )
 	{
@@ -2019,7 +2019,7 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	WriteState();
 }
 
-TUMBO_EXPORT void tumbo_set_mode( int mode, int param )
+MOTUMBO_EXPORT void motumbo_set_mode( int mode, int param )
 {
 	g_mode = mode < 0 ? 0 : ( mode > MODE_MALDITO ? 0 : mode );
 	g_modeParam = param < 1 ? 1 : param;
@@ -3340,7 +3340,7 @@ static void StepPowerup( void )
 	}
 }
 
-TUMBO_EXPORT void tumbo_step( void )
+MOTUMBO_EXPORT void motumbo_step( void )
 {
 	g_eventCount = 0;
 
@@ -3400,7 +3400,7 @@ TUMBO_EXPORT void tumbo_step( void )
 }
 
 // FNV-1a over player kinematics — cheap per-tick desync detector for lockstep.
-TUMBO_EXPORT uint32_t tumbo_hash( void )
+MOTUMBO_EXPORT uint32_t motumbo_hash( void )
 {
 	uint32_t h = 2166136261u;
 	for ( int i = 0; i < g_playerCount; ++i )

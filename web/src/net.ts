@@ -96,7 +96,7 @@ function decodeCode(code: string, expectedType: 'offer' | 'answer'): RTCSessionD
     throw new Error('El código está incompleto o cortado — copialo entero y probá de nuevo.');
   }
   if (!parsed.t || !parsed.s) {
-    throw new Error('Eso no parece un código de TUMBO.');
+    throw new Error('Eso no parece un código de MOTUMBO.');
   }
   if (parsed.t !== expectedType) {
     throw new Error(
@@ -155,7 +155,7 @@ export class NetSession {
 
   /** Host side: returns the offer code to hand to the guest. */
   async createOfferCode(): Promise<string> {
-    this.attachChannel(this.pc.createDataChannel('tumbo', { ordered: true }));
+    this.attachChannel(this.pc.createDataChannel('motumbo', { ordered: true }));
     await this.pc.setLocalDescription(await this.pc.createOffer());
     await waitIceComplete(this.pc);
     return encodeCode(this.pc.localDescription!);

@@ -3,7 +3,7 @@
 // then runs an all-bots match twice (bots are part of the sim and must be
 // bit-deterministic too).
 // Usage: node scripts/test-sim.mjs
-import createTumbo from '../web/src/gen/tumbo.js';
+import createMotumbo from '../web/src/gen/motumbo.js';
 
 const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
@@ -23,13 +23,13 @@ function inputFor(player, tick) {
 }
 
 async function run(level, label, useBots, verbose = true) {
-  const M = await createTumbo();
-  M._tumbo_init(42, PLAYERS, level);
+  const M = await createMotumbo();
+  M._motumbo_init(42, PLAYERS, level);
   if (useBots) {
-    for (let p = 0; p < PLAYERS; p++) M._tumbo_set_bot(p, p % 3);
+    for (let p = 0; p < PLAYERS; p++) M._motumbo_set_bot(p, p % 3);
   }
-  const inputsBase = M._tumbo_inputs_ptr() >> 2;
-  const stateBase = M._tumbo_state_ptr() >> 2;
+  const inputsBase = M._motumbo_inputs_ptr() >> 2;
+  const stateBase = M._motumbo_state_ptr() >> 2;
 
   const hashes = [];
   for (let t = 0; t < TICKS; t++) {
@@ -38,8 +38,8 @@ async function run(level, label, useBots, verbose = true) {
         M.HEAPU32[inputsBase + p] = inputFor(p, t);
       }
     }
-    M._tumbo_step();
-    if (t % 100 === 0) hashes.push(M._tumbo_hash() >>> 0);
+    M._motumbo_step();
+    if (t % 100 === 0) hashes.push(M._motumbo_hash() >>> 0);
   }
 
   const S = M.HEAPF32;
@@ -90,10 +90,10 @@ console.log(`generados+mega 20-74: ${quietOk}/55 deterministas y sanos`);
 
 // Mega arenas: report piece counts so we can eyeball sizes and the budget.
 for (let level = 70; level < 75; level++) {
-  const M = await createTumbo();
-  M._tumbo_init(1, 2, level);
+  const M = await createMotumbo();
+  M._motumbo_init(1, 2, level);
   const S = M.HEAPF32;
-  const b = M._tumbo_state_ptr() >> 2;
+  const b = M._motumbo_state_ptr() >> 2;
   console.log(`  mega ${level}: ${S[b + 3]} baldosas, ${S[b + 6]} hazards`);
 }
 
@@ -115,20 +115,20 @@ if (!botsOk) {
 
 console.log('--- modos ---');
 async function runMode(mode, param, label) {
-  const M = await createTumbo();
-  M._tumbo_init(7, PLAYERS, 0);
-  M._tumbo_set_mode(mode, param);
-  for (let p = 0; p < PLAYERS; p++) M._tumbo_set_bot(p, 2);
-  const stateBase = M._tumbo_state_ptr() >> 2;
+  const M = await createMotumbo();
+  M._motumbo_init(7, PLAYERS, 0);
+  M._motumbo_set_mode(mode, param);
+  for (let p = 0; p < PLAYERS; p++) M._motumbo_set_bot(p, 2);
+  const stateBase = M._motumbo_state_ptr() >> 2;
   const hashes = [];
   let winnerTick = -1;
   for (let t = 0; t < 3600; t++) {
-    M._tumbo_step();
-    if (t % 100 === 0) hashes.push(M._tumbo_hash() >>> 0);
+    M._motumbo_step();
+    if (t % 100 === 0) hashes.push(M._motumbo_hash() >>> 0);
     if (winnerTick < 0 && M.HEAPF32[stateBase + 4] !== -1) winnerTick = t;
   }
   const S = M.HEAPF32;
-  const floats = M._tumbo_state_floats();
+  const floats = M._motumbo_state_floats();
   const modeBase = stateBase + floats - 12;
   const scores = [];
   for (let i = 0; i < PLAYERS; i++) scores.push(S[modeBase + 4 + i]);
@@ -195,18 +195,18 @@ function buildTestMap() {
 }
 
 async function runCustom(label) {
-  const M = await createTumbo();
+  const M = await createMotumbo();
   const bytes = buildTestMap();
-  M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
-  M._tumbo_set_custom(bytes.length);
-  M._tumbo_init(99, PLAYERS, 75);
-  const inputsBase = M._tumbo_inputs_ptr() >> 2;
-  const stateBase = M._tumbo_state_ptr() >> 2;
+  M.HEAPU8.set(bytes, M._motumbo_custom_ptr());
+  M._motumbo_set_custom(bytes.length);
+  M._motumbo_init(99, PLAYERS, 75);
+  const inputsBase = M._motumbo_inputs_ptr() >> 2;
+  const stateBase = M._motumbo_state_ptr() >> 2;
   const hashes = [];
   for (let t = 0; t < TICKS; t++) {
     for (let p = 0; p < PLAYERS; p++) M.HEAPU32[inputsBase + p] = inputFor(p, t);
-    M._tumbo_step();
-    if (t % 100 === 0) hashes.push(M._tumbo_hash() >>> 0);
+    M._motumbo_step();
+    if (t % 100 === 0) hashes.push(M._motumbo_hash() >>> 0);
   }
   const S = M.HEAPF32;
   console.log(

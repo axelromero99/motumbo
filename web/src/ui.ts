@@ -1,5 +1,5 @@
 /**
- * UiShell — shell de pantallas + HUD DOM de TUMBO. Cero gameplay: solo DOM,
+ * UiShell — shell de pantallas + HUD DOM de MOTUMBO. Cero gameplay: solo DOM,
  * settings persistidos y callbacks hacia main.ts.
  *
  * =====================================================================
@@ -8,7 +8,7 @@
  *
  * Construcción:
  *   const ui = new UiShell({ ...callbacks });
- *   - El constructor carga settings de localStorage ('tumbo.settings.v1') y
+ *   - El constructor carga settings de localStorage ('motumbo.settings.v1') y
  *     muestra la pantalla 'title'.
  *   - onSettingsChanged(settings) se emite UNA vez en un microtask después de
  *     que el constructor retorna (así main.ts ya tiene la variable `ui`
@@ -44,7 +44,7 @@
  * Online — salas con código corto:
  *   - CREAR SALA: la shell pasa sola a 'creating' y dispara onCreateRoom().
  *     main.ts crea la sala y llama setRoomState('waiting', undefined, code).
- *   - UNIRSE: input de 4 caracteres (autoupper; acepta pegar "TUMBO-XK42" o el
+ *   - UNIRSE: input de 4 caracteres (autoupper; acepta pegar "MOTUMBO-XK42" o el
  *     link entero y extrae el código; validación visual: 4 alfanuméricos — la
  *     validación real es normalizeRoomCode de signal.ts, en main.ts). Al
  *     apretar UNIRSE la shell pasa sola a 'joining' y dispara onJoinRoom(code)
@@ -68,7 +68,7 @@
  *     pisa el texto por defecto de cualquier estado.
  *   - "Copiar link de invitación": la shell copia
  *     `${origin}${pathname}#room=<code>` al portapapeles y muestra toast; NO
- *     hay callback. Click en el código gigante copia solo "TUMBO-<code>".
+ *     hay callback. Click en el código gigante copia solo "MOTUMBO-<code>".
  *
  * HUD:
  *   - updateScorebar(entries, winTarget): llamar cuando cambie score/vidas
@@ -222,8 +222,8 @@ export interface UiCallbacks {
   onEditMap(id: string): void;
 }
 
-const SETTINGS_KEY = 'tumbo.settings.v1';
-const USERNAME_KEY = 'tumbo.username';
+const SETTINGS_KEY = 'motumbo.settings.v1';
+const USERNAME_KEY = 'motumbo.username';
 
 const DEFAULT_SETTINGS: Settings = {
   volMaster: 0.8,
@@ -238,14 +238,14 @@ const ROOM_CODE_RE = /^[A-Z0-9]{4}$/;
 
 /**
  * Extrae un código de sala de lo que sea que pegue el usuario: "XK42",
- * "TUMBO-XK42" o el link entero con '#room=XK42'. Devuelve hasta 4 chars
+ * "MOTUMBO-XK42" o el link entero con '#room=XK42'. Devuelve hasta 4 chars
  * alfanuméricos en mayúsculas (puede ser parcial mientras tipea).
  */
 function extractRoomCode(raw: string): string {
   let s = raw;
   const m = /#room=([^&\s]+)/i.exec(s);
   if (m) s = m[1];
-  s = s.toUpperCase().replace(/^\s*TUMBO-?/, '').replace(/[^A-Z0-9]/g, '');
+  s = s.toUpperCase().replace(/^\s*MOTUMBO-?/, '').replace(/[^A-Z0-9]/g, '');
   return s.slice(0, 4);
 }
 
@@ -889,7 +889,7 @@ export class UiShell {
 
     $('room-code-big').addEventListener('click', () => {
       if (!this.roomCode) return;
-      void navigator.clipboard.writeText(`TUMBO-${this.roomCode}`);
+      void navigator.clipboard.writeText(`MOTUMBO-${this.roomCode}`);
       this.toast('Código copiado');
     });
 

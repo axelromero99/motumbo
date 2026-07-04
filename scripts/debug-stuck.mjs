@@ -1,6 +1,6 @@
 // Probe: on low-surface maps, do bots freeze in place? Reports the longest
 // stationary streak (within 0.5m) of any living bot, plus round duration.
-import createTumbo from '../web/src/gen/tumbo.js';
+import createMotumbo from '../web/src/gen/motumbo.js';
 
 const LEVELS = [7, 11, 25, 31]; // TARIMAS, PANAL, dos generados de pads
 const SEEDS = [3, 14, 27, 58];
@@ -9,18 +9,18 @@ for (const level of LEVELS) {
   let worstStuck = 0;
   let durations = [];
   for (const seed of SEEDS) {
-    const M = await createTumbo();
-    M._tumbo_init(seed, 4, level);
-    for (let p = 0; p < 4; p++) M._tumbo_set_bot(p, 1);
-    const base = M._tumbo_state_ptr() >> 2;
-    const evBase = M._tumbo_events_ptr() >> 2;
+    const M = await createMotumbo();
+    M._motumbo_init(seed, 4, level);
+    for (let p = 0; p < 4; p++) M._motumbo_set_bot(p, 1);
+    const base = M._motumbo_state_ptr() >> 2;
+    const evBase = M._motumbo_events_ptr() >> 2;
     const anchor = [[0, 0], [0, 0], [0, 0], [0, 0]];
     const streak = [0, 0, 0, 0];
     const lastShove = [-9999, -9999, -9999, -9999];
     let end = 3600;
     for (let t = 0; t < 3600; t++) {
-      M._tumbo_step();
-      for (let e = 0; e < M._tumbo_event_count(); e++) {
+      M._motumbo_step();
+      for (let e = 0; e < M._motumbo_event_count(); e++) {
         const o = evBase + e * 6;
         const type = M.HEAPF32[o];
         if (type === 9) lastShove[M.HEAPF32[o + 5]] = t; // DASH_HIT b=victima

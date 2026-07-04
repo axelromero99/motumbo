@@ -2,7 +2,7 @@
 // over a fake network with latency, one peer deliberately slower than the
 // other. Verifies both peers stay hash-identical at every checkpoint.
 // Usage: node scripts/test-lockstep.mjs
-import createTumbo from '../web/src/gen/tumbo.js';
+import createMotumbo from '../web/src/gen/motumbo.js';
 
 const INPUT_DELAY = 4;
 const SEED = 777;
@@ -25,12 +25,12 @@ class Peer {
     this.local = new Map();
     this.remote = new Map();
     this.hashes = [];
-    this.inputsBase = module._tumbo_inputs_ptr() >> 2;
+    this.inputsBase = module._motumbo_inputs_ptr() >> 2;
     for (let t = 0; t < INPUT_DELAY; t++) {
       this.local.set(t, 0);
       this.remote.set(t, 0);
     }
-    module._tumbo_init(SEED, 2, LEVEL);
+    module._motumbo_init(SEED, 2, LEVEL);
   }
 
   schedule(send) {
@@ -51,16 +51,16 @@ class Peer {
     const theirs = this.remote.get(this.tick);
     this.M.HEAPU32[this.inputsBase + this.slot] = mine;
     this.M.HEAPU32[this.inputsBase + (1 - this.slot)] = theirs;
-    this.M._tumbo_step();
+    this.M._motumbo_step();
     this.local.delete(this.tick - 2);
     this.remote.delete(this.tick - 2);
     this.tick++;
-    if (this.tick % 60 === 0) this.hashes.push(this.M._tumbo_hash() >>> 0);
+    if (this.tick % 60 === 0) this.hashes.push(this.M._motumbo_hash() >>> 0);
   }
 }
 
-const A = new Peer(await createTumbo(), 0);
-const B = new Peer(await createTumbo(), 1);
+const A = new Peer(await createMotumbo(), 0);
+const B = new Peer(await createMotumbo(), 1);
 
 // In-flight messages: delivered when the global iteration reaches deliverAt.
 const toB = [];

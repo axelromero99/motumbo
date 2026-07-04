@@ -1,7 +1,7 @@
 // Bot AI diagnostic harness. Measures how bots die: when, and whether they
 // were shoved (DASH_HIT shortly before falling) or walked off on their own.
 // Also pits difficulties head-to-head. Usage: node scripts/test-bots.mjs
-import createTumbo from '../web/src/gen/tumbo.js';
+import createMotumbo from '../web/src/gen/motumbo.js';
 
 const EVENT_FLOATS = 6;
 const EVT_FALL = 5;
@@ -12,11 +12,11 @@ const LEVELS = [0, 3, 7, 11, 13]; // clásica, ruleta, tarimas, panal, volcán
 const SEEDS = [11, 22, 33, 44, 55, 66];
 
 async function runMatch(seed, level, difficulties) {
-  const M = await createTumbo();
-  M._tumbo_init(seed, difficulties.length, level);
-  for (let p = 0; p < difficulties.length; p++) M._tumbo_set_bot(p, difficulties[p]);
-  const evBase = M._tumbo_events_ptr() >> 2;
-  const stateBase = M._tumbo_state_ptr() >> 2;
+  const M = await createMotumbo();
+  M._motumbo_init(seed, difficulties.length, level);
+  for (let p = 0; p < difficulties.length; p++) M._motumbo_set_bot(p, difficulties[p]);
+  const evBase = M._motumbo_events_ptr() >> 2;
+  const stateBase = M._motumbo_state_ptr() >> 2;
   const N = difficulties.length;
 
   const lastShoved = new Array(N).fill(-9999);
@@ -27,8 +27,8 @@ async function runMatch(seed, level, difficulties) {
   let activeTicks = 0;
 
   for (let t = 0; t < 5400; t++) {
-    M._tumbo_step();
-    const n = M._tumbo_event_count();
+    M._motumbo_step();
+    const n = M._motumbo_event_count();
     for (let e = 0; e < n; e++) {
       const o = evBase + e * EVENT_FLOATS;
       const type = M.HEAPF32[o];
@@ -89,7 +89,7 @@ for (const diff of [0, 1, 2]) {
   const selfPct = ((selfFalls / Math.max(1, totalFalls)) * 100).toFixed(0);
   const scrumPct = ((scrum / Math.max(1, active)) * 100).toFixed(0);
   console.log(
-    `dif ${diff}: primera caída media ${avg(firstFalls)}s tras el ¡TUMBO! · ` +
+    `dif ${diff}: primera caída media ${avg(firstFalls)}s tras el ¡MOTUMBO! · ` +
       `duración media de ronda ${avg(durations)}s · caídas solas ${selfPct}% (${selfFalls}/${totalFalls}) · ` +
       `scrum ${scrumPct}% del tiempo con 3+ vivos`,
   );

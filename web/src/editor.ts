@@ -1,11 +1,11 @@
 /**
- * MapEditor — editor de mapas custom de TUMBO. Solo presentación y storage:
+ * MapEditor — editor de mapas custom de MOTUMBO. Solo presentación y storage:
  * el mapa son los bytes del códec (mapcodec.ts); acá nunca se ejecuta nada
  * que venga de un código importado, solo se decodifican bytes.
  *
  * Integración (contrato con main.ts):
  *   - listMaps() / getMapBytes(id) / deleteMap(id) leen y escriben
- *     localStorage 'tumbo.maps.v1' (JSON array de SavedMap).
+ *     localStorage 'motumbo.maps.v1' (JSON array de SavedMap).
  *   - new MapEditor(cb) toma la <section class="screen" data-screen="editor">
  *     de index.html. La visibilidad la maneja el propio MapEditor con la
  *     clase 'active' (open()/close()); NO pasa por UiShell.show(), aunque como
@@ -44,7 +44,7 @@ export interface SavedMap {
   code: string;
 }
 
-const MAPS_KEY = 'tumbo.maps.v1';
+const MAPS_KEY = 'motumbo.maps.v1';
 const CELLS = GRID_EXTENT * 2 + 1; // 15
 /** Separación entre baldosas en el mundo (PIECE_STEP del sim), solo para el preview de la barra. */
 const TILE_STEP = 1.5;

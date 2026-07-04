@@ -19,5 +19,5 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 New-Item -ItemType Directory -Force "$root\web\src\gen" | Out-Null
-Copy-Item "$root\build\wasm\tumbo.js", "$root\build\wasm\tumbo.wasm" "$root\web\src\gen\" -Force
-Write-Host "OK -> web/src/gen/tumbo.js + tumbo.wasm"
+Copy-Item "$root\build\wasm\motumbo.js", "$root\build\wasm\motumbo.wasm" "$root\web\src\gen\" -Force
+Write-Host "OK -> web/src/gen/motumbo.js + motumbo.wasm"

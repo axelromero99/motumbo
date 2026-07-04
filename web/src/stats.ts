@@ -10,7 +10,7 @@
 //   // al mostrar resultados:
 //   const rows = stats.roundRows();       // stats de la ronda que terminó
 //   const totals = stats.matchRows();     // acumulado del match (para el podio)
-//   // stats de por vida (localStorage 'tumbo.stats.v1'):
+//   // stats de por vida (localStorage 'motumbo.stats.v1'):
 //   stats.recordRound(yoGané);            // al final de cada ronda
 //   stats.recordMatch(yoGanéElMatch);     // al final del match
 //   ui.setLifetimeLine(stats.summaryLine());
@@ -20,7 +20,7 @@ import { EVT_FALL, EVT_ORB_PICKUP, EVT_ROUND_END, EVT_DASH_HIT, EVT_PARRY } from
 /** Un KO se acredita si la víctima cae ≤ este margen de ticks tras el último dash-hit. */
 const KO_WINDOW_TICKS = 180;
 
-const STATS_KEY = 'tumbo.stats.v1';
+const STATS_KEY = 'motumbo.stats.v1';
 
 export interface PlayerRoundStats {
   /** Ticks que estuvo vivo en la ronda (los que no cayeron cierran en ROUND_END). */
@@ -191,7 +191,7 @@ export class MatchStats {
   }
 
   // -------------------------------------------------------------------
-  // Stats de por vida (localStorage 'tumbo.stats.v1')
+  // Stats de por vida (localStorage 'motumbo.stats.v1')
   // -------------------------------------------------------------------
 
   private loadLifetime(): LifetimeStats {

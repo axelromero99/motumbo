@@ -1,11 +1,11 @@
-# TUMBO
+# MOTUMBO
 
 Juego multijugador de sumo físico 3D en el navegador. Jugadores-esfera se empujan
 fuera de una plataforma que se desmorona; el último en pie gana la ronda.
 
 ## Stack y arquitectura
 
-- **`sim/tumbo.c`** — TODO el gameplay vive acá, en C, compilado a WASM con Emscripten.
+- **`sim/motumbo.c`** — TODO el gameplay vive acá, en C, compilado a WASM con Emscripten.
   Usa Box3D (motor de física de Erin Catto, MIT, vendorizado en `vendor/box3d`).
   Es la fuente de verdad determinista para el multiplayer lockstep: JS solo escribe
   inputs empaquetados (uint32 por jugador) y lee un buffer de floats con el estado.
@@ -29,14 +29,14 @@ fuera de una plataforma que se desmorona; el último en pie gana la ronda.
 
 ## Reglas de determinismo (no romper)
 
-- Nada de gameplay en JS: ninguna posición, velocidad ni decisión de juego se calcula fuera de `tumbo.c`.
-- Tick fijo 1/60s, 4 substeps. El RNG es PCG32 dentro de la sim, sembrado en `tumbo_init`.
+- Nada de gameplay en JS: ninguna posición, velocidad ni decisión de juego se calcula fuera de `motumbo.c`.
+- Tick fijo 1/60s, 4 substeps. El RNG es PCG32 dentro de la sim, sembrado en `motumbo_init`.
 - Box3D compila con `-msimd128 -msse2` (WASM SIMD es determinista); un solo worker (`workerCount=1`).
 
 ## Build
 
 - Toolchain portable (sin admin) en `C:\Users\user1\dev\tools`: CMake, Ninja, emsdk.
-- `scripts\build-sim.ps1` — compila el sim a WASM y copia `tumbo.js`/`tumbo.wasm` a `web/src/gen/`.
+- `scripts\build-sim.ps1` — compila el sim a WASM y copia `motumbo.js`/`motumbo.wasm` a `web/src/gen/`.
 - `cd web; npm run dev` — dev server.
 - `scripts\setup.ps1` — clona `vendor/box3d` e instala npm deps en un clon fresco.
 - `.github/workflows/build-wasm.yml` compila el WASM en CI (plan B sin toolchain local).
@@ -64,14 +64,14 @@ Mover (fuerzas, control aéreo 45%), dash con cooldown 45 ticks + knockback extr
 golpear, salto (raycast de suelo con categorías), **anclarse** (IN_BRACE=64: frena y
 aguanta empujones ×0.35; si el brace tiene ≤8 ticks al recibir un dash = **parry**, el
 impulso rebota al atacante), input buffer + coyote time (6 ticks), robo de orbe al
-golpear al portador. **Bots deterministas** (`tumbo_set_bot(slot, dif 0-2)` tras init,
+golpear al portador. **Bots deterministas** (`motumbo_set_bot(slot, dif 0-2)` tras init,
 idéntico en cada peer): PCG32 propio (seed^0xB07B07), huyen de baldosas condenadas,
 van al orbe, dashean hacia el borde, esquivan la viga, bracean contra dashes.
 
 ## Eventos de gameplay (sim → presentación)
 
-`tumbo_events_ptr()`/`tumbo_event_count()`: buffer de eventos del tick (6 floats:
-`tipo x y z a b`), limpiado en cada `tumbo_step`. Tipos: 0 HIT (a=velocidad),
+`motumbo_events_ptr()`/`motumbo_event_count()`: buffer de eventos del tick (6 floats:
+`tipo x y z a b`), limpiado en cada `motumbo_step`. Tipos: 0 HIT (a=velocidad),
 1 DASH (a=con power, b=jugador), 2 JUMP, 3 TILE_DROP, 4 TILE_WARN, 5 FALL,
 6 ORB_SPAWN, 7 ORB_PICKUP, 8 ROUND_END (a=ganador). JS los consume para audio
 sintetizado (`audio.ts`), partículas/screen-shake (`fx.ts`) y flujo de match
@@ -80,7 +80,7 @@ slow-mo al final de ronda). Los golpes de dash aplican knockback extra en el sim
 
 ## Niveles (20) y modos (4)
 
-`tumbo_init(seed, players, level)` — 0 CLÁSICA, 1 ANILLO, 2 PUENTES, 3 RULETA,
+`motumbo_init(seed, players, level)` — 0 CLÁSICA, 1 ANILLO, 2 PUENTES, 3 RULETA,
 4 PIRÁMIDE, 5 HERRADURA, 6 PASARELA, 7 TARIMAS, 8 CRUZ, 9 ASPAS (molinete espiral),
 10 GEMELAS (2 discos + puente), 11 PANAL (pads 2×2 con huecos), 12 DIANA (anillos
 concéntricos), 13 VOLCÁN (cráter que crece: derrumbe centro→afuera), 14 ZIGURAT
@@ -90,7 +90,7 @@ hazard tipo 2 con órbita analítica), 19 CALLES (retícula, derrumbe aleatorio)
 Hazards: 0 viga (a=vel), 1 pistón Z (a=vel, b=fase), 2 orbitador (a=ω, b=fase,
 c=radio), 3 pistón X. Todos inertes durante el countdown. LEVEL_CUSTOM=20.
 
-**Modos** (`tumbo_set_mode(mode, param)` tras init, idéntico en cada peer; consume
+**Modos** (`motumbo_set_mode(mode, param)` tras init, idéntico en cada peer; consume
 el RNG del mundo): 0 SUMO, 1 REY DE LA COLINA (zona se muda c/10s, puntuás SOLO
 adentro, param=segundos), 2 COSECHA (param=orbes), 3 MALDITO (papa caliente por
 contacto, param=segundos de mecha; al vencer explota con onda expansiva). Sección
@@ -102,10 +102,10 @@ modeParam].
 
 ## v7: 70 niveles, salas online, poderes
 
-- Niveles 20-69 son PROCEDURALES (`BuildGenerated` en tumbo.c): 6 familias, todo
+- Niveles 20-69 son PROCEDURALES (`BuildGenerated` en motumbo.c): 6 familias, todo
   derivado del id con RNG propio (idéntico en cada peer). Spawns por greedy
   max-min sobre baldosas sin especiales. Radios hasta 13.4m; MAX_PIECES 512.
-- Cada nivel elige el TAMAÑO DE BOLA (0.45-0.9m; tabla en tumbo_init + pick del
+- Cada nivel elige el TAMAÑO DE BOLA (0.45-0.9m; tabla en motumbo_init + pick del
   generador). El radio actual viaja en bits 11-15 de los flags (0.05m/unidad,
   helper `ballRadiusFrom` en sim.ts); la cámara se auto-ajusta al extent en
   render.setup.
@@ -114,7 +114,7 @@ modeParam].
   4º float del powerup (1+type) y en `a` de EVT_ORB_SPAWN/PICKUP.
 - Salas online: `web/src/signal.ts` — cliente MQTT 3.1.1 mínimo hecho a mano
   sobre brokers públicos WSS (EMQX + mosquitto fallback), solo para el handshake
-  (hello→offer→answer); después es P2P puro. Código de 4 chars (`TUMBO-XK42`),
+  (hello→offer→answer); después es P2P puro. Código de 4 chars (`MOTUMBO-XK42`),
   link `#room=CODE`. Menú rediseñado: JUGAR/ONLINE/EDITOR/OPCIONES, setup con
   RIVALES (bots+dificultad | humano), contrato en el doc-header de ui.ts.
 - El tema visual/musical de niveles generados = `level % 20`.
@@ -122,9 +122,9 @@ modeParam].
 ## Mapas custom (nivel 8)
 
 El mapa es un blob de bytes (layout en `web/src/mapcodec.ts`, espejado en
-`BuildCustomLevel` de tumbo.c): baldosas en grilla 15×15 con 3 alturas, hasta 8
+`BuildCustomLevel` de motumbo.c): baldosas en grilla 15×15 con 3 alturas, hasta 8
 spawns, velocidad de derrumbe y barra giratoria opcional. JS lo escribe con
-`sim.loadCustomMap(bytes)` ANTES de `tumbo_init(seed, players, 8)`; en online el
+`sim.loadCustomMap(bytes)` ANTES de `motumbo_init(seed, players, 8)`; en online el
 host lo manda con MSG_MAP antes del START (canal ordenado). Editor visual en
-`web/src/editor.ts` (pantalla propia, storage 'tumbo.maps.v1', export/import
+`web/src/editor.ts` (pantalla propia, storage 'motumbo.maps.v1', export/import
 base64 para compartir). Bytes inválidos caen a CLÁSICA — nunca rompe.

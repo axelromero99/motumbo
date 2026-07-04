@@ -1,6 +1,6 @@
 // Thin typed wrapper over the WASM simulation. The sim is the single source
 // of truth for gameplay; this class only moves bytes across the boundary.
-import createTumbo from './gen/tumbo.js';
+import createMotumbo from './gen/motumbo.js';
 
 export const MAX_PLAYERS = 8;
 export const STATE_HEADER = 8;
@@ -132,28 +132,28 @@ export const EVT_SHIELD = 14;
 export const EVT_SHOCK = 15;
 export const EVENT_FLOATS = 6;
 
-interface TumboModule {
-  _tumbo_init(seed: number, playerCount: number, level: number): void;
-  _tumbo_step(): void;
-  _tumbo_inputs_ptr(): number;
-  _tumbo_state_ptr(): number;
-  _tumbo_state_floats(): number;
-  _tumbo_level_count(): number;
-  _tumbo_events_ptr(): number;
-  _tumbo_event_count(): number;
-  _tumbo_countdown_ticks(): number;
-  _tumbo_set_bot(slot: number, difficulty: number): void;
-  _tumbo_set_mode(mode: number, param: number): void;
-  _tumbo_custom_ptr(): number;
-  _tumbo_set_custom(len: number): void;
-  _tumbo_hash(): number;
+interface MotumboModule {
+  _motumbo_init(seed: number, playerCount: number, level: number): void;
+  _motumbo_step(): void;
+  _motumbo_inputs_ptr(): number;
+  _motumbo_state_ptr(): number;
+  _motumbo_state_floats(): number;
+  _motumbo_level_count(): number;
+  _motumbo_events_ptr(): number;
+  _motumbo_event_count(): number;
+  _motumbo_countdown_ticks(): number;
+  _motumbo_set_bot(slot: number, difficulty: number): void;
+  _motumbo_set_mode(mode: number, param: number): void;
+  _motumbo_custom_ptr(): number;
+  _motumbo_set_custom(len: number): void;
+  _motumbo_hash(): number;
   HEAPF32: Float32Array;
   HEAPU32: Uint32Array;
   HEAPU8: Uint8Array;
 }
 
 export class Sim {
-  private module: TumboModule;
+  private module: MotumboModule;
   private inputsPtr: number;
   private statePtr: number;
   private eventsPtr: number;
@@ -168,27 +168,27 @@ export class Sim {
   /** Snapshot of the state buffer from the latest tick. */
   curr: Float32Array = new Float32Array(0);
 
-  private constructor(module: TumboModule) {
+  private constructor(module: MotumboModule) {
     this.module = module;
-    this.inputsPtr = module._tumbo_inputs_ptr();
-    this.statePtr = module._tumbo_state_ptr();
-    this.eventsPtr = module._tumbo_events_ptr();
-    this.levelCount = module._tumbo_level_count();
-    this.countdownTicks = module._tumbo_countdown_ticks();
+    this.inputsPtr = module._motumbo_inputs_ptr();
+    this.statePtr = module._motumbo_state_ptr();
+    this.eventsPtr = module._motumbo_events_ptr();
+    this.levelCount = module._motumbo_level_count();
+    this.countdownTicks = module._motumbo_countdown_ticks();
   }
 
   static async create(): Promise<Sim> {
-    const module = (await createTumbo()) as TumboModule;
+    const module = (await createMotumbo()) as MotumboModule;
     return new Sim(module);
   }
 
   init(seed: number, playerCount: number, level: number): void {
-    this.module._tumbo_init(seed, playerCount, level);
+    this.module._motumbo_init(seed, playerCount, level);
     this.playerCount = playerCount;
-    this.curr = this.readState(this.module._tumbo_state_floats());
+    this.curr = this.readState(this.module._motumbo_state_floats());
     this.hazardCount = this.curr[6];
     this.pieceCount =
-      (this.module._tumbo_state_floats() - STATE_HEADER - HAZARD_STRIDE * this.hazardCount - 4) / STATE_STRIDE -
+      (this.module._motumbo_state_floats() - STATE_HEADER - HAZARD_STRIDE * this.hazardCount - 4) / STATE_STRIDE -
       playerCount;
     this.prev = this.curr.slice();
   }
@@ -198,10 +198,10 @@ export class Sim {
     // Memory can grow, so re-derive heap views every access.
     const base = this.inputsPtr >> 2;
     this.module.HEAPU32.set(inputs.subarray(0, this.playerCount), base);
-    this.module._tumbo_step();
+    this.module._motumbo_step();
     this.prev = this.curr;
-    this.curr = this.readState(this.module._tumbo_state_floats());
-    const count = this.module._tumbo_event_count();
+    this.curr = this.readState(this.module._motumbo_state_floats());
+    const count = this.module._motumbo_event_count();
     const ebase = this.eventsPtr >> 2;
     return this.module.HEAPF32.slice(ebase, ebase + count * EVENT_FLOATS);
   }
@@ -211,7 +211,7 @@ export class Sim {
    * and before the first step; in lockstep, call identically on every peer.
    */
   setBot(slot: number, difficulty: number): void {
-    this.module._tumbo_set_bot(slot, difficulty);
+    this.module._motumbo_set_bot(slot, difficulty);
   }
 
   /**
@@ -220,13 +220,13 @@ export class Sim {
    * rounds until replaced.
    */
   loadCustomMap(bytes: Uint8Array): void {
-    const ptr = this.module._tumbo_custom_ptr();
+    const ptr = this.module._motumbo_custom_ptr();
     this.module.HEAPU8.set(bytes, ptr);
-    this.module._tumbo_set_custom(bytes.length);
+    this.module._motumbo_set_custom(bytes.length);
   }
 
   hash(): number {
-    return this.module._tumbo_hash() >>> 0;
+    return this.module._motumbo_hash() >>> 0;
   }
 
   get frame(): number {
@@ -281,8 +281,8 @@ export class Sim {
    * orbs to collect. MALDITO: param = curse timer seconds.
    */
   setMode(mode: number, param: number): void {
-    this.module._tumbo_set_mode(mode, param);
-    this.curr = this.readState(this.module._tumbo_state_floats());
+    this.module._motumbo_set_mode(mode, param);
+    this.curr = this.readState(this.module._motumbo_state_floats());
     this.prev = this.curr.slice();
   }
 

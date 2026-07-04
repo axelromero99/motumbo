@@ -58,6 +58,20 @@ function randomSeed(): number {
 }
 
 async function main(): Promise<void> {
+  // One-time migration from the old "tumbo.*" name so saved maps, settings,
+  // username and stats survive the rename to MOTUMBO. Runs before anything
+  // reads localStorage.
+  try {
+    for (const k of ['settings.v1', 'username', 'maps.v1', 'stats.v1']) {
+      const oldK = `tumbo.${k}`;
+      const newK = `motumbo.${k}`;
+      const old = localStorage.getItem(oldK);
+      if (old !== null && localStorage.getItem(newK) === null) localStorage.setItem(newK, old);
+    }
+  } catch {
+    // localStorage unavailable — nothing to migrate.
+  }
+
   const $ = (id: string): HTMLElement => document.getElementById(id)!;
   const app = $('app');
   const status = $('status');
@@ -497,7 +511,7 @@ async function main(): Promise<void> {
   async function joinRoom(raw: string): Promise<void> {
     const code = normalizeRoomCode(raw);
     if (!code) {
-      ui.setRoomState('error', 'Ese código no parece de TUMBO (son 4 letras/números).');
+      ui.setRoomState('error', 'Ese código no parece de MOTUMBO (son 4 letras/números).');
       return;
     }
     teardownOnline();
@@ -999,7 +1013,7 @@ async function main(): Promise<void> {
           lastCountShown = 0;
           audio.countdown(true);
         }
-        countdownEl.textContent = '¡TUMBO!';
+        countdownEl.textContent = '¡MOTUMBO!';
         countdownEl.style.display = 'block';
       } else {
         countdownEl.style.display = 'none';

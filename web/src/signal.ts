@@ -16,7 +16,7 @@ export function randomRoomCode(): string {
 }
 
 export function normalizeRoomCode(raw: string): string | null {
-  const code = raw.trim().toUpperCase().replace(/^TUMBO-?/, '').replace(/[^A-Z0-9]/g, '');
+  const code = raw.trim().toUpperCase().replace(/^MOTUMBO-?/, '').replace(/[^A-Z0-9]/g, '');
   return code.length === 4 && [...code].every((c) => CODE_ALPHABET.includes(c)) ? code : null;
 }
 
@@ -98,7 +98,7 @@ class MqttClient {
       }, CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
-        const clientId = `tumbo_${Math.random().toString(36).slice(2, 12)}`;
+        const clientId = `motumbo_${Math.random().toString(36).slice(2, 12)}`;
         ws.send(
           packet(
             0x10,
@@ -225,7 +225,7 @@ export class RoomSignal {
     this.mqtt.onDown = () => {
       if (!this.done) cb.onError('Se cortó el servicio de salas. Creá la sala de nuevo.');
     };
-    const base = `tumbo1/${code}`;
+    const base = `motumbo1/${code}`;
     let busyWith: string | null = null;
     this.mqtt.onMessage = (topic, payload) => {
       void (async () => {
@@ -252,7 +252,7 @@ export class RoomSignal {
     this.mqtt.onDown = () => {
       if (!this.done) cb.onError('Se cortó el servicio de salas. Probá de nuevo.');
     };
-    const base = `tumbo1/${code}`;
+    const base = `motumbo1/${code}`;
     const me = Math.random().toString(36).slice(2, 10);
     const timer = window.setTimeout(() => {
       if (!this.done) {
@@ -300,7 +300,7 @@ export class RoomSignal {
   ): Promise<void> {
     await this.mqtt.connect();
     const me = Math.random().toString(36).slice(2, 10);
-    const lobby = 'tumbo1/lobby';
+    const lobby = 'motumbo1/lobby';
     let announceTimer = 0;
     let noPeerTimer = 0;
     const stopSearch = (): void => {
@@ -323,16 +323,16 @@ export class RoomSignal {
               this.done = true;
               stopSearch();
               cb.onRole(true);
-              this.mqtt.publish(`tumbo1/q/${peer}/offer`, `${me}|${await cb.makeOffer()}`);
+              this.mqtt.publish(`motumbo1/q/${peer}/offer`, `${me}|${await cb.makeOffer()}`);
             }
-          } else if (topic === `tumbo1/q/${me}/offer`) {
+          } else if (topic === `motumbo1/q/${me}/offer`) {
             const sep = payload.indexOf('|');
             const from = payload.slice(0, sep);
             this.done = true;
             stopSearch();
             cb.onRole(false);
-            this.mqtt.publish(`tumbo1/q/${from}/answer`, `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
-          } else if (topic === `tumbo1/q/${me}/answer`) {
+            this.mqtt.publish(`motumbo1/q/${from}/answer`, `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
+          } else if (topic === `motumbo1/q/${me}/answer`) {
             cb.onAnswer(payload.slice(payload.indexOf('|') + 1));
           }
         } catch (err) {
@@ -342,8 +342,8 @@ export class RoomSignal {
     };
 
     this.mqtt.subscribe(lobby);
-    this.mqtt.subscribe(`tumbo1/q/${me}/offer`);
-    this.mqtt.subscribe(`tumbo1/q/${me}/answer`);
+    this.mqtt.subscribe(`motumbo1/q/${me}/offer`);
+    this.mqtt.subscribe(`motumbo1/q/${me}/answer`);
     const announce = (): void => {
       if (!this.done) this.mqtt.publish(lobby, me);
     };

@@ -2,7 +2,7 @@ build/
 vendor/
 node_modules/
 dist/
-web/src/gen/tumbo.js
-web/src/gen/tumbo.wasm
+web/src/gen/motumbo.js
+web/src/gen/motumbo.wasm
 .vite/
 *.log
