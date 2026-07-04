@@ -34,6 +34,9 @@ export class LocalInput {
   onReset: (() => void) | null = null;
   onSelectLevel: ((level: number) => void) | null = null;
   onPause: (() => void) | null = null;
+  /** LOCAL 2-player: arrows drive P2. Single human (SOLO/online): arrows also
+   *  drive the one player (words[0]), so WASD and arrows both work. */
+  dualLocal = false;
 
   constructor() {
     window.addEventListener('keydown', (e) => {
@@ -58,16 +61,22 @@ export class LocalInput {
     window.addEventListener('blur', () => this.words.fill(0));
   }
 
+  private set(slot: number, bit: number, down: boolean): void {
+    this.words[slot] = down ? this.words[slot] | bit : this.words[slot] & ~bit;
+  }
+
   private apply(code: string, down: boolean): boolean {
     let handled = false;
     const p1 = P1_KEYS[code];
     if (p1 !== undefined) {
-      this.words[0] = down ? this.words[0] | p1 : this.words[0] & ~p1;
+      this.set(0, p1, down);
       handled = true;
     }
     const p2 = P2_KEYS[code];
     if (p2 !== undefined) {
-      this.words[1] = down ? this.words[1] | p2 : this.words[1] & ~p2;
+      // Second player only in couch 2P; otherwise the arrows are a second
+      // control scheme for the single human.
+      this.set(this.dualLocal ? 1 : 0, p2, down);
       handled = true;
     }
     return handled;

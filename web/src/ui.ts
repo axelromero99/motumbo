@@ -185,6 +185,8 @@ export interface ResultsOpts {
   winTarget: number;
   champion: number | null;
   nextInMs: number | null;
+  /** Did the local player win this round/match? Drives the title flourish. */
+  youWon?: boolean;
 }
 
 export interface UiCallbacks {
@@ -206,6 +208,8 @@ export interface UiCallbacks {
     modeParam: number,
     botDifficulty: number,
     rivals: Rivals,
+    /** Online only: extra bots to add to the room (0-2). 0 otherwise. */
+    onlineBots: number,
   ): void;
   onResume(): void;
   onQuitToTitle(): void;
@@ -217,6 +221,7 @@ export interface UiCallbacks {
 }
 
 const SETTINGS_KEY = 'tumbo.settings.v1';
+const USERNAME_KEY = 'tumbo.username';
 
 const DEFAULT_SETTINGS: Settings = {
   volMaster: 0.8,
@@ -286,6 +291,8 @@ export class UiShell {
     [MODE_MALDITO]: MODE_PARAM_CFG[MODE_MALDITO].def,
   };
   private botDiff = 1;
+  private onlineBots = 0;
+  private onlineBotDiff = 1;
   private lastStart: {
     level: LevelChoice;
     winTarget: number;
@@ -293,11 +300,13 @@ export class UiShell {
     modeParam: number;
     botDifficulty: number;
     rivals: Rivals;
-  } = { level: 'random', winTarget: 5, mode: MODE_SUMO, modeParam: 0, botDifficulty: 1, rivals: 'bots' };
+    onlineBots: number;
+  } = { level: 'random', winTarget: 5, mode: MODE_SUMO, modeParam: 0, botDifficulty: 1, rivals: 'bots', onlineBots: 0 };
 
   // Estado online.
   private roomCode = '';
   private roomConnected = false;
+  private usernameValue = '';
   private lastRoomAction: { type: 'create' } | { type: 'join'; code: string } | null = null;
 
   private nextTimer = 0;
@@ -310,6 +319,7 @@ export class UiShell {
       this.screens.set(el.dataset.screen ?? '', el);
     }
 
+    this.wireUsername();
     this.wireTitle();
     this.wireSetup();
     this.wireOnline();
@@ -513,7 +523,16 @@ export class UiShell {
     rowsEl.textContent = '';
 
     const isFinal = opts.champion !== null;
-    title.textContent = isFinal ? 'FIN DEL MATCH' : 'FIN DE RONDA';
+    title.classList.remove('win', 'lose');
+    if (opts.youWon === true) {
+      title.textContent = isFinal ? '🏆 ¡GANASTE! 🏆' : '¡GANASTE LA RONDA!';
+      title.classList.add('win');
+    } else if (opts.youWon === false) {
+      title.textContent = isFinal ? 'PERDISTE' : 'CAÍSTE';
+      title.classList.add('lose');
+    } else {
+      title.textContent = isFinal ? 'FIN DEL MATCH' : 'FIN DE RONDA';
+    }
 
     if (isFinal && opts.rows[opts.champion!]) {
       const champ = opts.rows[opts.champion!];
@@ -630,10 +649,35 @@ export class UiShell {
     }
   }
 
-  /** Con sala online conectada, el rival es la otra persona: RIVALES se oculta. */
+  /** Con sala online conectada, el rival es la otra persona: RIVALES se
+   * oculta y aparece la opción de sumar bots a la sala. */
   private applySetupContext(): void {
     $('rival-block').style.display = this.roomConnected ? 'none' : '';
-    $('setup-mode').textContent = this.roomConnected ? 'ONLINE · 1V1 — ELEGÍS VOS LA ARENA' : '';
+    $('online-bots-block').style.display = this.roomConnected ? '' : 'none';
+    $('setup-mode').textContent = this.roomConnected ? 'ONLINE · ELEGÍS VOS LA ARENA' : '';
+  }
+
+  /** Nombre del jugador local (slither.io style), persistido en localStorage. */
+  get username(): string {
+    return this.usernameValue;
+  }
+
+  private wireUsername(): void {
+    const input = document.getElementById('username-input') as HTMLInputElement;
+    try {
+      this.usernameValue = localStorage.getItem(USERNAME_KEY) ?? '';
+    } catch {
+      this.usernameValue = '';
+    }
+    input.value = this.usernameValue;
+    input.addEventListener('input', () => {
+      this.usernameValue = input.value.trim().slice(0, 18);
+      try {
+        localStorage.setItem(USERNAME_KEY, this.usernameValue);
+      } catch {
+        // ignore storage errors
+      }
+    });
   }
 
   private wireTitle(): void {
@@ -684,6 +728,19 @@ export class UiShell {
         for (const b of $('seg-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
       });
     }
+    // Bots para la sala online (2 humanos + N bots).
+    for (const btn of $('seg-online-bots').querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        this.onlineBots = Number(btn.dataset.bots) || 0;
+        for (const b of $('seg-online-bots').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+      });
+    }
+    for (const btn of $('seg-online-botdiff').querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        this.onlineBotDiff = Number(btn.dataset.diff) || 0;
+        for (const b of $('seg-online-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+      });
+    }
 
     $('card-random').addEventListener('click', () => this.selectLevel('random'));
 
@@ -707,16 +764,20 @@ export class UiShell {
     $('btn-start').addEventListener('click', () => {
       const modeParam = this.currentModeParam();
       const rivals: Rivals = this.roomConnected ? 'humano' : this.rivals;
+      // Online: the difficulty applies to the room's bots; count = onlineBots.
+      const botDifficulty = this.roomConnected ? this.onlineBotDiff : this.botDiff;
+      const onlineBots = this.roomConnected ? this.onlineBots : 0;
       this.lastStart = {
         level: this.selLevel,
         winTarget: this.winTarget,
         mode: this.selMode,
         modeParam,
-        botDifficulty: this.botDiff,
+        botDifficulty,
         rivals,
+        onlineBots,
       };
       this.showAny('none');
-      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, this.botDiff, rivals);
+      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, botDifficulty, rivals, onlineBots);
     });
     $('btn-setup-back').addEventListener('click', () => {
       this.showAny(this.roomConnected ? 'online' : 'title');
@@ -869,7 +930,7 @@ export class UiShell {
     $('btn-rematch').addEventListener('click', () => {
       this.showAny('none');
       const s = this.lastStart;
-      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty, s.rivals);
+      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty, s.rivals, s.onlineBots);
     });
     $('btn-results-menu').addEventListener('click', () => {
       this.setRoomState('idle');

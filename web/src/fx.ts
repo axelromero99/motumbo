@@ -158,6 +158,29 @@ export class FxSystem {
     this.ringMats[i].opacity = 0.9;
   }
 
+  /** Festive confetti rain over the arena (win celebration). */
+  confetti(cx: number, cz: number, extent: number): void {
+    const palette = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xffffff];
+    const n = Math.round(150 * this.density);
+    for (let k = 0; k < n; k++) {
+      const i = this.cursor;
+      this.cursor = (this.cursor + 1) % MAX_PARTICLES;
+      this.positions[i * 3] = cx + (Math.random() * 2 - 1) * extent;
+      this.positions[i * 3 + 1] = 11 + Math.random() * 7;
+      this.positions[i * 3 + 2] = cz + (Math.random() * 2 - 1) * extent;
+      this.velocities[i * 3] = (Math.random() * 2 - 1) * 1.6;
+      this.velocities[i * 3 + 1] = -1 - Math.random() * 2.5;
+      this.velocities[i * 3 + 2] = (Math.random() * 2 - 1) * 1.6;
+      this.tmpColor.setHex(palette[(Math.random() * palette.length) | 0]);
+      this.baseColors[i * 3] = this.tmpColor.r;
+      this.baseColors[i * 3 + 1] = this.tmpColor.g;
+      this.baseColors[i * 3 + 2] = this.tmpColor.b;
+      this.life[i] = 2200 + Math.random() * 1600;
+      this.maxLife[i] = this.life[i];
+      this.gravity[i] = 2.6;
+    }
+  }
+
   addTrauma(amount: number): void {
     this.trauma = Math.min(1, this.trauma + amount);
   }

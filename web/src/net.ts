@@ -16,6 +16,17 @@ export const MSG_INPUT = 0;
 export const MSG_HASH = 1;
 export const MSG_START = 2;
 export const MSG_MAP = 3;
+export const MSG_NAME = 4; // u8 type, u8 len, utf-8 name — exchanged on connect
+
+export function msgName(name: string): ArrayBuffer {
+  const bytes = new TextEncoder().encode(name.slice(0, 18));
+  const buf = new ArrayBuffer(2 + bytes.length);
+  const v = new DataView(buf);
+  v.setUint8(0, MSG_NAME);
+  v.setUint8(1, bytes.length);
+  new Uint8Array(buf, 2).set(bytes);
+  return buf;
+}
 
 export function msgMap(bytes: Uint8Array): ArrayBuffer {
   const buf = new ArrayBuffer(3 + bytes.length);
@@ -54,8 +65,10 @@ export function msgStart(
   winTarget: number,
   mode: number,
   modeParam: number,
+  botCount: number,
+  botDifficulty: number,
 ): ArrayBuffer {
-  const buf = new ArrayBuffer(11);
+  const buf = new ArrayBuffer(13);
   const v = new DataView(buf);
   v.setUint8(0, MSG_START);
   v.setUint8(1, round);
@@ -65,6 +78,8 @@ export function msgStart(
   v.setUint8(8, winTarget);
   v.setUint8(9, mode);
   v.setUint8(10, modeParam);
+  v.setUint8(11, botCount); // extra bots filling slots 2..2+botCount-1
+  v.setUint8(12, botDifficulty);
   return buf;
 }
 

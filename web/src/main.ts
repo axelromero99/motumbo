@@ -38,7 +38,7 @@ import { LocalInput } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
-import { NetSession, Lockstep, msgStart, msgMap, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP } from './net';
+import { NetSession, Lockstep, msgStart, msgMap, msgName, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP, MSG_NAME } from './net';
 import { RoomSignal, randomRoomCode, normalizeRoomCode } from './signal';
 import { UiShell, type Settings } from './ui';
 import { renderLevelThumbs } from './minimap';
@@ -91,6 +91,8 @@ async function main(): Promise<void> {
   let gameMode = MODE_SUMO;
   let gameModeParam = 0;
   let botDifficulty = 1;
+  let netBotCount = 0; // extra bots in an online room (host-chosen, 0-2)
+  let remoteName = ''; // the online opponent's chosen name
   let playerCount = 2;
   let botSlots: number[] = [];
   let wins: number[] = [];
@@ -122,9 +124,12 @@ async function main(): Promise<void> {
   const isNetGuest = (): boolean => mode === 'net' && !isHost;
 
   const displayName = (i: number): string => {
-    const you = (mode === 'net' && i === mySlot) || (intent === 'solo' && i === 0 && mode !== 'net') ? ' (vos)' : '';
-    const bot = botSlots.includes(i) ? ' BOT' : '';
-    return `${PLAYER_NAMES[i]}${bot}${you}`;
+    if (botSlots.includes(i)) return `${PLAYER_NAMES[i]} BOT`;
+    // Slither-style names: your chosen name for you, the peer's for them.
+    const isLocalHuman = (mode === 'net' && i === mySlot) || (intent === 'solo' && mode !== 'net' && i === 0);
+    if (isLocalHuman) return `${ui.username || PLAYER_NAMES[i]} (vos)`;
+    if (mode === 'net' && i === 1 - mySlot && remoteName) return remoteName;
+    return PLAYER_NAMES[i];
   };
 
   interface RoundSpec {
@@ -177,6 +182,7 @@ async function main(): Promise<void> {
       mParam = 0,
       botDiff = 1,
       rivals: 'bots' | 'humano' = 'bots',
+      onlineBots = 0,
     ) => {
       audio.uiClick();
       levelChoice = level;
@@ -186,7 +192,10 @@ async function main(): Promise<void> {
       botDifficulty = botDiff;
       // With a live session the match is online; otherwise RIVALES decides.
       if (session) {
-        if (isHost) hostStartMatch();
+        if (isHost) {
+          netBotCount = Math.max(0, Math.min(2, onlineBots));
+          hostStartMatch();
+        }
       } else {
         intent = rivals === 'bots' ? 'solo' : 'local';
         startMatch();
@@ -299,6 +308,8 @@ async function main(): Promise<void> {
       playerCount = 2;
       botSlots = [];
     }
+    // Only couch 2-player splits the keyboard; SOLO gets WASD + arrows both.
+    input.dualLocal = intent === 'local';
     wins = new Array(playerCount).fill(0);
     matchOver = false;
     stats.reset(playerCount);
@@ -346,21 +357,26 @@ async function main(): Promise<void> {
       const type = v.getUint8(0);
       if (type === MSG_INPUT) lockstep?.onRemoteInput(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
       else if (type === MSG_HASH) lockstep?.onRemoteHash(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
-      else if (type === MSG_MAP && !isHost) {
+      else if (type === MSG_NAME) {
+        const len = v.getUint8(1);
+        remoteName = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 2, len)).slice(0, 18);
+        if (mode === 'net') updateScorebar(true);
+      } else if (type === MSG_MAP && !isHost) {
         const len = v.getUint16(1, true);
         pendingGuestMap = new Uint8Array(v.buffer.slice(v.byteOffset + 3, v.byteOffset + 3 + len));
       } else if (type === MSG_START && !isHost) {
         const round = v.getUint8(1);
         const netSeed = v.getUint32(2, true);
         const lvl = v.getUint8(6);
-        if (v.getUint8(7) === 1) {
-          matchOver = false;
-          wins = [0, 0];
-          stats.reset(2);
-        }
+        const doReset = v.getUint8(7) === 1;
         winTarget = v.getUint8(8);
         gameMode = v.getUint8(9);
         gameModeParam = v.getUint8(10);
+        // Bots the host added to the room; the guest sets the SAME slots so
+        // both sims stay bit-identical.
+        netBotCount = v.getUint8(11);
+        botDifficulty = v.getUint8(12);
+        if (doReset) resetNetMatch();
         roundId = round;
         const spec: RoundSpec =
           lvl === LEVEL_CUSTOM && pendingGuestMap
@@ -447,6 +463,9 @@ async function main(): Promise<void> {
     roomSignal?.close();
     roomSignal = null;
     window.clearTimeout(connectTimeout);
+    // Exchange chosen names so both sides show real nicknames.
+    remoteName = '';
+    session?.send(msgName(ui.username || (isHost ? 'ANFITRIÓN' : 'RIVAL')));
     playerCount = 2;
     botSlots = [];
     wins = [0, 0];
@@ -460,10 +479,26 @@ async function main(): Promise<void> {
     }
   };
 
+  // Online player layout: humans on slots 0 (host) and 1 (guest), then
+  // netBotCount deterministic bots on slots 2.. — they cost zero bytes on the
+  // wire because both peers compute their inputs from the same sim.
+  const resetNetMatch = (): void => {
+    matchOver = false;
+    wins = new Array(2 + netBotCount).fill(0);
+    stats.reset(2 + netBotCount);
+  };
+
   const startNetRound = (netSeed: number, spec: RoundSpec, round: number): void => {
     mode = 'net';
-    playerCount = 2;
+    input.dualLocal = false; // one human at this keyboard; arrows also drive them
+    playerCount = 2 + netBotCount;
     botSlots = [];
+    for (let s = 2; s < playerCount; s++) botSlots.push(s);
+    // Safety: keep the score array sized to the field (match start / count change).
+    if (wins.length !== playerCount) {
+      wins = new Array(playerCount).fill(0);
+      stats.reset(playerCount);
+    }
     initRound(netSeed, spec);
     lockstep = new Lockstep(session!, mySlot, round);
     lastNetProgress = performance.now();
@@ -474,28 +509,24 @@ async function main(): Promise<void> {
 
   const hostStartMatch = (): void => {
     roundId = 0;
-    wins = [0, 0];
-    matchOver = false;
-    stats.reset(2);
+    resetNetMatch();
     const netSeed = randomSeed();
     const spec = resolveRound();
     if (spec.bytes) session!.send(msgMap(spec.bytes));
-    session!.send(msgStart(0, netSeed, spec.level, true, winTarget, gameMode, gameModeParam));
+    session!.send(msgStart(0, netSeed, spec.level, true, winTarget, gameMode, gameModeParam, netBotCount, botDifficulty));
     startNetRound(netSeed, spec, 0);
   };
 
   const hostNextRound = (resetWins: boolean): void => {
     if (!session) return;
-    if (resetWins) {
-      wins.fill(0);
-      matchOver = false;
-      stats.reset(2);
-    }
+    if (resetWins) resetNetMatch();
     roundId = (roundId + 1) & 0xff;
     const netSeed = randomSeed();
     const spec = resolveRound();
     if (spec.bytes) session.send(msgMap(spec.bytes));
-    session.send(msgStart(roundId, netSeed, spec.level, resetWins, winTarget, gameMode, gameModeParam));
+    session.send(
+      msgStart(roundId, netSeed, spec.level, resetWins, winTarget, gameMode, gameModeParam, netBotCount, botDifficulty),
+    );
     startNetRound(netSeed, spec, roundId);
   };
 
@@ -546,7 +577,32 @@ async function main(): Promise<void> {
     renderer.fx.addTrauma(reducedMotion ? Math.min(amount, 0.1) : amount);
   };
 
-  const showResults = (championIdx: number | null): void => {
+  // Full-screen color wash for win/lose beats.
+  const flashEl = $('flash');
+  let flashTimer = 0;
+  const flash = (css: string): void => {
+    flashEl.style.background = css;
+    flashEl.style.opacity = '1';
+    window.clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => (flashEl.style.opacity = '0'), 120);
+  };
+  const localHumanSlot = (): number => (mode === 'net' ? mySlot : 0);
+
+  // World-space flourish at round/match end (the results title does the text).
+  const playOutcome = (localWon: boolean, isMatch: boolean): void => {
+    if (localWon) {
+      renderer.fx.confetti(0, 0, 12);
+      if (isMatch) window.setTimeout(() => renderer.fx.confetti(0, 0, 13), 350);
+      flash('radial-gradient(circle at 50% 42%, rgba(255,224,130,0.55), rgba(255,180,40,0) 62%)');
+    } else {
+      flash('radial-gradient(circle at 50% 46%, rgba(0,0,0,0) 34%, rgba(190,24,44,0.5) 100%)');
+    }
+  };
+
+  const showResults = (championIdx: number | null, roundWinner: number): void => {
+    // youWon only in couch when the human's ball is the winner is fuzzy; leave
+    // it undefined there so we don't wrongly say "PERDISTE".
+    const youWon = roundWinner < 0 ? undefined : mode === 'local' && intent === 'local' ? undefined : isWinnerLocal(roundWinner);
     ui.showResults({
       rows: wins.map((w, i) => ({
         name: displayName(i),
@@ -560,6 +616,7 @@ async function main(): Promise<void> {
       winTarget,
       champion: championIdx,
       nextInMs: championIdx === null && restartAt > 0 ? restartAt - performance.now() : null,
+      youWon,
     });
   };
 
@@ -631,6 +688,8 @@ async function main(): Promise<void> {
             music.duck(500);
             trauma(0.3);
             renderer.fx.addPunch(x * 0.05, z * 0.05);
+            // Immediate "you're out" wash when the local human is eliminated.
+            if (b === localHumanSlot() && !matchOver) flash('radial-gradient(circle at 50% 46%, rgba(0,0,0,0) 40%, rgba(190,24,44,0.45) 100%)');
           }
           renderer.fx.burst(x, Math.max(y, -6), z, pcolor, { count: 36, speed: 4, up: 4, life: 800 });
           renderer.fx.ring(x, 0.2, z, pcolor, 5);
@@ -693,6 +752,7 @@ async function main(): Promise<void> {
             slowmoUntil = performance.now() + 1300;
           }
           let championIdx: number | null = null;
+          const localWon = winner >= 0 && isWinnerLocal(winner);
           if (winner >= 0) {
             wins[winner]++;
             stats.recordRound(isWinnerLocal(winner));
@@ -702,15 +762,17 @@ async function main(): Promise<void> {
               audio.champion();
               stats.recordMatch(isWinnerLocal(winner));
               ui.setLifetimeLine(stats.summaryLine());
+              playOutcome(localWon, true);
             } else {
               audio.roundEnd();
+              playOutcome(localWon, false);
               if (mode === 'local' || isHost) restartAt = performance.now() + 3600;
             }
           } else {
             audio.roundEnd();
             if (mode === 'local' || isHost) restartAt = performance.now() + 3600;
           }
-          showResults(championIdx);
+          showResults(championIdx, winner);
           break;
         }
       }

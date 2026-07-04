@@ -66,8 +66,24 @@
     }
 
     #status { top: 58px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; color: var(--muted); }
-    #banner { top: 40%; font-size: 44px; font-weight: 800; display: none; }
+    #banner { top: 38%; font-size: 44px; font-weight: 800; display: none; }
     #banner small { font-size: 20px; font-weight: 600; opacity: 0.8; }
+    #banner.win { animation: banner-win 0.6s cubic-bezier(0.2, 1.4, 0.4, 1) both; color: #ffe28a; text-shadow: 0 0 24px rgba(255, 200, 60, 0.7), 0 3px 12px rgba(0,0,0,.8); }
+    #banner.lose { animation: banner-lose 0.5s ease both; color: #ff8a95; }
+    @keyframes banner-win {
+      0% { opacity: 0; transform: scale(0.4) rotate(-6deg); }
+      60% { transform: scale(1.12) rotate(2deg); }
+      100% { opacity: 1; transform: scale(1) rotate(0); }
+    }
+    @keyframes banner-lose {
+      0% { opacity: 0; transform: translateY(-18px) scale(1.15); filter: blur(4px); }
+      100% { opacity: 1; transform: none; filter: none; }
+    }
+    /* Full-screen color wash for win/lose moments. */
+    #flash {
+      position: fixed; inset: 0; z-index: 12; pointer-events: none;
+      opacity: 0; transition: opacity 0.5s ease;
+    }
     #countdown {
       top: 30%; font-size: 110px; font-weight: 900; display: none;
       -webkit-text-stroke: 2px rgba(255, 255, 255, 0.25);
@@ -181,7 +197,16 @@
       42% { transform: translateY(0.02em) scale(1.1, 0.86); }
       52% { transform: translateY(0) scale(0.96, 1.05); }
     }
-    .tagline { margin: 0 0 26px; color: var(--muted); font-size: 14px; letter-spacing: 0.28em; }
+    .tagline { margin: 0 0 20px; color: var(--muted); font-size: 14px; letter-spacing: 0.28em; }
+    .username-input {
+      display: block; width: min(340px, 82vw); margin: 0 auto 16px; padding: 12px 16px;
+      font-size: 16px; font-weight: 700; text-align: center; letter-spacing: 0.04em;
+      color: var(--text); background: rgba(12, 16, 34, 0.7);
+      border: 1px solid var(--line); border-radius: 12px; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .username-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(53, 167, 255, 0.18); }
+    .username-input::placeholder { color: var(--muted); font-weight: 600; }
     .menu-btn {
       display: block; width: min(340px, 82vw); margin: 10px auto; padding: 14px 18px;
       font-size: 18px; font-weight: 800; letter-spacing: 0.1em; text-align: center;
@@ -387,6 +412,8 @@
     .pause-panel .btn { display: block; width: min(300px, 80vw); margin: 10px auto; }
 
     /* ================= Results ================= */
+    #results-title.win { color: #ffe28a; text-shadow: 0 0 20px rgba(255, 200, 60, 0.6); animation: banner-win 0.6s cubic-bezier(0.2, 1.4, 0.4, 1) both; }
+    #results-title.lose { color: #ff8a95; animation: banner-lose 0.5s ease both; }
     #results-champion {
       display: none; text-align: center; margin: 0 0 18px; padding: 16px 10px;
       border: 1px solid var(--warn); border-radius: 12px;
@@ -450,6 +477,8 @@
   <div id="boot"><div class="boot-ball"></div>TUMBO</div>
   <div id="app"></div>
 
+  <div id="flash"></div>
+
   <!-- ============ HUD in-game (ids legacy: los usa main.ts) ============ -->
   <div id="hud">
     <div id="scorebar"></div>
@@ -466,6 +495,7 @@
     <div class="title-wrap">
       <h1 class="logo">TUMB<span class="logo-ball" aria-label="O"></span></h1>
       <p class="tagline">SUMO · FÍSICA · PLATAFORMA QUE SE CAE</p>
+      <input id="username-input" class="username-input" type="text" maxlength="18" placeholder="tu nombre" autocomplete="off" spellcheck="false" />
       <button class="menu-btn primary" id="btn-play">JUGAR<span class="sub">BOTS O AMIGO EN EL TECLADO</span></button>
       <button class="menu-btn" id="btn-online">ONLINE<span class="sub">1V1 CON CÓDIGO DE SALA</span></button>
       <button class="menu-btn" id="btn-editor">EDITOR<span class="sub">CREÁ TU ARENA</span></button>
@@ -498,6 +528,23 @@
             <span class="rtitle">AMIGO</span>
             <span class="rsub">en el mismo teclado</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Solo visible con sala online conectada: sumar bots al 1v1. -->
+      <div id="online-bots-block" style="display:none">
+        <div class="sect-head">BOTS EN LA SALA</div>
+        <div class="setup-row">
+          <span class="seg" id="seg-online-bots">
+            <button type="button" data-bots="0" class="active">SIN BOTS</button>
+            <button type="button" data-bots="1">+1</button>
+            <button type="button" data-bots="2">+2</button>
+          </span>
+          <span class="seg seg-sm" id="seg-online-botdiff">
+            <button type="button" data-diff="0">FÁCIL</button>
+            <button type="button" data-diff="1" class="active">NORMAL</button>
+            <button type="button" data-diff="2">DIFÍCIL</button>
+          </span>
         </div>
       </div>
 
