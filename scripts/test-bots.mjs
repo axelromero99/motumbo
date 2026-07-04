@@ -95,16 +95,19 @@ for (const diff of [0, 1, 2]) {
   );
 }
 
-console.log('=== duelo de dificultades: 2 difíciles vs 2 fáciles ===');
-let hardWins = 0;
-let games = 0;
-for (const level of LEVELS) {
-  for (const seed of SEEDS) {
-    const r = await runMatch(seed, level, [2, 2, 0, 0]);
-    if (r.winner >= 0) {
-      games++;
-      if (r.winner < 2) hardWins++;
+// 1 campeón (slot 0) de dificultad D vs 3 de baseline (dif 1). Base = 25%.
+console.log('=== campeón vs 3 baseline (dif 1) — base 25% ===');
+for (const champ of [0, 1, 2]) {
+  let wins = 0;
+  let games = 0;
+  for (const level of LEVELS) {
+    for (const seed of SEEDS) {
+      const r = await runMatch(seed, level, [champ, 1, 1, 1]);
+      if (r.winner >= 0) {
+        games++;
+        if (r.winner === 0) wins++;
+      }
     }
   }
+  console.log(`campeón dif ${champ}: gana ${wins}/${games} (${((wins / Math.max(1, games)) * 100).toFixed(0)}%)`);
 }
-console.log(`difíciles ganan ${hardWins}/${games} (${((hardWins / Math.max(1, games)) * 100).toFixed(0)}%)`);

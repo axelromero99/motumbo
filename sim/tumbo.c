@@ -326,7 +326,10 @@ static void PushEvent( int type, float x, float y, float z, float a, float b )
 // (crumble shuffle, orb placement), one for bot noise, so enabling bots
 // never perturbs the level/orb stream.
 static uint64_t g_rngState;
-static uint64_t g_botRngState;
+// One independent bot RNG substream PER SLOT: a bot's random choices never
+// perturb another bot's behavior (and difficulty stays cleanly measurable).
+static uint64_t g_botRngState[MAX_PLAYERS];
+static int g_curBot;
 
 static uint32_t PcgNext( uint64_t* state )
 {
@@ -342,9 +345,10 @@ static uint32_t RngNext( void )
 	return PcgNext( &g_rngState );
 }
 
+// Draws from the CURRENT bot's substream (g_curBot set per slot in StepBots).
 static uint32_t BotRng( void )
 {
-	return PcgNext( &g_botRngState );
+	return PcgNext( &g_botRngState[g_curBot] );
 }
 
 TUMBO_EXPORT uint32_t* tumbo_inputs_ptr( void )
@@ -1727,7 +1731,11 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	}
 
 	g_rngState = ( (uint64_t)seed << 1u ) | 1u;
-	g_botRngState = ( ( (uint64_t)seed ^ 0xB07B07ull ) << 1u ) | 1u;
+	for ( int b = 0; b < MAX_PLAYERS; ++b )
+	{
+		g_botRngState[b] = ( ( (uint64_t)seed ^ 0xB07B07ull ^ ( (uint64_t)( b + 1 ) * 0x9E3779B97F4A7C15ull ) ) << 1u ) | 1u;
+	}
+	g_curBot = 0;
 	g_frame = 0;
 	g_winner = -1;
 	g_crumbleNext = 0;
@@ -1871,8 +1879,13 @@ static bool IsGrounded( const Player* p )
 }
 
 // Index of the standing/warning tile under (x, z), or -1.
+// The NEAREST tile whose top covers (x, z), or -1. Nearest (not first-match)
+// matters: tiles overlap slightly on the grid, and returning the first hit
+// could pick an adjacent boost lane you're only grazing — the "phantom push".
 static int TileIndexAt( float x, float z )
 {
+	int best = -1;
+	float bestD2 = 1e30f;
 	for ( int i = 0; i < g_pieceCount; ++i )
 	{
 		if ( g_pieces[i].state != PIECE_STATIC && g_pieces[i].state != PIECE_WARNING )
@@ -1884,10 +1897,15 @@ static int TileIndexAt( float x, float z )
 		float dz = z - tp.z;
 		if ( dx > -0.78f && dx < 0.78f && dz > -0.78f && dz < 0.78f )
 		{
-			return i;
+			float d2 = dx * dx + dz * dz;
+			if ( d2 < bestD2 )
+			{
+				bestD2 = d2;
+				best = i;
+			}
 		}
 	}
-	return -1;
+	return best;
 }
 
 // 2 = standing on solid ground here, 1 = tile is about to drop, 0 = nothing.
@@ -2177,12 +2195,19 @@ static void BotReplan( int slot )
 		float dirx = ( op.x - pos.x ) / dist;
 		float dirz = ( op.z - pos.z ) / dist;
 		bool lethal = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f ) == 0;
-		bool safe = BotDashSafe( pos, dirx, dirz ) || dist < 1.2f;
-		if ( bot->difficulty == 0 )
+		bool safe = BotDashSafe( pos, dirx, dirz );
+		// Easy bots occasionally dash off recklessly; that's their weakness.
+		if ( bot->difficulty == 0 && !safe )
 		{
-			safe = safe || ( BotRng() & 3u ) == 0u;
+			safe = ( BotRng() & 3u ) == 0u;
 		}
-		bool eager = bot->difficulty == 2 ? ( BotRng() % 3u ) != 0u : ( BotRng() & 3u ) == 0u;
+		// A lethal dash (shoves the rival into the void) always fires when
+		// safe — that's the smart, low-risk way to score. NON-lethal
+		// "positioning" dashes just expose you to a counter, so the harder
+		// (smarter) the bot, the LESS it throws them away: easy brawls
+		// recklessly, hard waits for the kill.
+		bool eager = bot->difficulty == 0 ? ( BotRng() & 1u ) == 0u
+										  : ( bot->difficulty == 1 ? ( BotRng() & 3u ) == 0u : ( BotRng() % 6u ) == 0u );
 		if ( safe && ( lethal || eager ) )
 		{
 			bot->pulseDash = true;
@@ -2256,6 +2281,93 @@ static void BotReplan( int slot )
 	}
 }
 
+// Edge-aware steering: adjusts a desired move direction so a bot never walks
+// off a cliff with no landing. This — not the emergency brake — is what keeps
+// bots alive on scattered-platform maps. Sets *jump when a committed gap
+// crossing or a climbable ledge wants a hop.
+static void BotSafeSteer( int slot, int difficulty, b3Pos pos, float ballR, float dx, float dz, float speedAlong,
+						  bool jumpReady, float* ox, float* oz, bool* jump, float* speedCap )
+{
+	*ox = dx;
+	*oz = dz;
+	*jump = false;
+	*speedCap = MAX_MOVE_SPEED;
+	// Easy bots are clumsier near ledges: looser cap = they roll off more.
+	float careCap = difficulty == 0 ? 6.2f : ( difficulty == 1 ? 4.2f : 3.4f );
+	float probe = ballR + 0.7f + ( speedAlong > 0.0f ? speedAlong : 0.0f ) * 0.14f;
+
+	if ( SupportStateAt( pos.x + dx * probe, pos.z + dz * probe ) >= 1 )
+	{
+		// Solid ground ahead. Climbable ledge right in front? Hop onto it.
+		int ahead = TileIndexAt( pos.x + dx * ( ballR + 0.6f ), pos.z + dz * ( ballR + 0.6f ) );
+		if ( jumpReady && ahead >= 0 )
+		{
+			float top = b3Body_GetPosition( g_pieces[ahead].body ).y + PIECE_HY;
+			if ( top > pos.y - ballR + 0.28f )
+			{
+				*jump = true;
+			}
+		}
+		// Small platform (an edge lurks just past the probe)? Ease off the gas
+		// so we can actually stop instead of rolling off the far side.
+		if ( SupportStateAt( pos.x + dx * ( probe + 1.4f ), pos.z + dz * ( probe + 1.4f ) ) == 0 )
+		{
+			*speedCap = careCap;
+		}
+		return;
+	}
+
+	// Void ahead. Is there a reachable landing across the gap?
+	bool landing = false;
+	for ( float L = 2.2f; L <= 4.0f; L += 0.6f )
+	{
+		if ( SupportStateAt( pos.x + dx * L, pos.z + dz * L ) >= 1 )
+		{
+			landing = true;
+			break;
+		}
+	}
+	if ( landing )
+	{
+		// Commit to the crossing: jump the moment we reach the lip. Full speed
+		// so we actually clear the gap.
+		if ( jumpReady && SupportStateAt( pos.x + dx * ( ballR + 0.3f ), pos.z + dz * ( ballR + 0.3f ) ) == 0 )
+		{
+			*jump = true;
+		}
+		return;
+	}
+
+	// Fatal cliff, no landing. Veer to stay on solid ground, preferring the
+	// smallest deviation from the desired heading. Slow down while hugging it.
+	*speedCap = careCap;
+	static const float angs[4] = { 0.7f, -0.7f, 1.4f, -1.4f };
+	for ( int a = 0; a < 4; ++a )
+	{
+		float c = cosf( angs[a] );
+		float s = sinf( angs[a] );
+		float rx = dx * c - dz * s;
+		float rz = dx * s + dz * c;
+		if ( SupportStateAt( pos.x + rx * probe, pos.z + rz * probe ) >= 1 )
+		{
+			*ox = rx;
+			*oz = rz;
+			return;
+		}
+	}
+
+	// Boxed in on a shrinking island: retreat to the safest inward tile.
+	*speedCap = 3.0f;
+	float sx, sz;
+	NearestSafeTile( pos.x, pos.z, slot, &sx, &sz );
+	float rl = sqrtf( ( sx - pos.x ) * ( sx - pos.x ) + ( sz - pos.z ) * ( sz - pos.z ) );
+	if ( rl > 0.3f )
+	{
+		*ox = ( sx - pos.x ) / rl;
+		*oz = ( sz - pos.z ) / rl;
+	}
+}
+
 static void StepBots( void )
 {
 	if ( g_frame < COUNTDOWN_TICKS )
@@ -2277,6 +2389,7 @@ static void StepBots( void )
 		{
 			continue;
 		}
+		g_curBot = i; // BotRng() now draws from this slot's own substream
 
 		int d = bot->difficulty;
 		bot->think -= 1;
@@ -2297,72 +2410,39 @@ static void StepBots( void )
 
 		b3Pos pos = b3Body_GetPosition( g_players[i].body );
 		b3Vec3 vel = b3Body_GetLinearVelocity( g_players[i].body );
-		float speed2 = vel.x * vel.x + vel.z * vel.z;
+		float ballR = g_players[i].ballR;
+		bool jumpReady = g_players[i].jumpCooldown == 0;
 		uint32_t word = 0;
 
-		// Predicted velocity: standing on a boost pad accelerates us beyond
-		// current momentum, so project that in before checking for the void.
-		float pvx = vel.x;
-		float pvz = vel.z;
-		int under = TileIndexAt( pos.x, pos.z );
-		if ( under >= 0 && g_pieces[under].special == SPECIAL_BOOST )
+		// EMERGENCY: being SHOVED toward a void with no landing (a dash knocked
+		// us off, not our own steering). Kill the momentum. Edge-aware steering
+		// below handles the far more common "don't walk off" case.
+		float speed2 = vel.x * vel.x + vel.z * vel.z;
+		float fx = pos.x + vel.x * lookahead[d];
+		float fz = pos.z + vel.z * lookahead[d];
+		bool shovedOff = speed2 > 9.0f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
+		if ( shovedOff )
 		{
-			pvx += g_pieces[under].dirX * 3.0f;
-			pvz += g_pieces[under].dirZ * 3.0f;
-			speed2 = pvx * pvx + pvz * pvz;
-		}
-
-		// EMERGENCY: our own momentum is carrying us over the void. The jump
-		// check runs FIRST — braking before even considering the jump left
-		// bots dithering forever at the edge of jumpable gaps.
-		float fx = pos.x + pvx * lookahead[d];
-		float fz = pos.z + pvz * lookahead[d];
-		bool slidingToVoid = speed2 > 1.2f && SupportStateAt( fx, fz ) == 0 && SupportStateAt( pos.x, pos.z ) >= 1;
-
-		if ( slidingToVoid )
-		{
+			// Can we turn the fall into a jump to real ground? Otherwise brake.
 			float sp = sqrtf( speed2 );
-			float reach = sp * 0.8f > 2.6f ? sp * 0.8f : 2.6f;
-			float jx = pos.x + pvx / sp * reach;
-			float jz = pos.z + pvz / sp * reach;
-			if ( SupportStateAt( jx, jz ) >= 1 )
+			bool saved = false;
+			if ( jumpReady )
 			{
-				if ( sp >= 2.6f )
+				for ( float L = 2.4f; L <= 4.0f; L += 0.8f )
 				{
-					// Enough momentum to clear the gap: send it.
-					if ( g_players[i].jumpCooldown == 0 )
+					if ( SupportStateAt( pos.x + vel.x / sp * L, pos.z + vel.z / sp * L ) >= 1 )
 					{
 						word |= IN_JUMP;
+						saved = true;
+						break;
 					}
-					slidingToVoid = false;
-				}
-				else
-				{
-					// Landing exists but we're too slow to make it. DON'T
-					// brake — keep accelerating and jump on a later tick.
-					// (Braking here is what used to drop bots into gaps.)
-					slidingToVoid = false;
 				}
 			}
-		}
-
-		if ( slidingToVoid )
-		{
-			if ( d >= 1 )
+			if ( !saved )
 			{
-				// Brace is a handbrake: kills momentum in a few ticks.
-				word = IN_BRACE;
+				g_inputs[i] = IN_BRACE; // handbrake
+				continue;
 			}
-			else
-			{
-				// Easy bots just paddle against their velocity.
-				if ( vel.z > 0.5f ) word |= IN_UP;
-				if ( vel.z < -0.5f ) word |= IN_DOWN;
-				if ( vel.x > 0.5f ) word |= IN_LEFT;
-				if ( vel.x < -0.5f ) word |= IN_RIGHT;
-			}
-			g_inputs[i] = word;
-			continue;
 		}
 
 		float dx = bot->tx - pos.x;
@@ -2373,16 +2453,26 @@ static void StepBots( void )
 		{
 			dx /= dist;
 			dz /= dist;
+			float speedAlong = vel.x * dx + vel.z * dz;
 
-			// Arrive steering: chase a desired VELOCITY, not a position, so
-			// the bot brakes into targets instead of flying past them.
-			float desired = 1.8f * dist + 0.8f;
-			if ( desired > MAX_MOVE_SPEED )
+			// Edge-aware: never steer off a cliff without a landing.
+			float mx, mz, speedCap;
+			bool jumpGap;
+			BotSafeSteer( i, d, pos, ballR, dx, dz, speedAlong, jumpReady, &mx, &mz, &jumpGap, &speedCap );
+			if ( jumpGap )
 			{
-				desired = MAX_MOVE_SPEED;
+				word |= IN_JUMP;
 			}
-			float sx = dx * desired - vel.x;
-			float sz = dz * desired - vel.z;
+
+			// Arrive steering on the SAFE direction: chase a desired velocity
+			// so the bot eases into targets instead of overshooting the edge.
+			float desired = 1.8f * dist + 0.8f;
+			if ( desired > speedCap )
+			{
+				desired = speedCap;
+			}
+			float sx = mx * desired - vel.x;
+			float sz = mz * desired - vel.z;
 			float sl = sqrtf( sx * sx + sz * sz );
 			if ( sl > 0.6f )
 			{
@@ -2392,30 +2482,6 @@ static void StepBots( void )
 				if ( sz > 0.38f ) word |= IN_DOWN;
 				if ( sx < -0.38f ) word |= IN_LEFT;
 				if ( sx > 0.38f ) word |= IN_RIGHT;
-			}
-
-			if ( g_players[i].jumpCooldown == 0 && dist > 1.2f )
-			{
-				// Gap on the way to the target with solid ground past it: jump.
-				if ( SupportStateAt( pos.x + dx * 1.6f, pos.z + dz * 1.6f ) == 0 &&
-					 SupportStateAt( pos.x + dx * 3.2f, pos.z + dz * 3.2f ) >= 1 )
-				{
-					word |= IN_JUMP;
-				}
-				else
-				{
-					// Ledge ahead (terrace wall, raised pad): hop onto it
-					// instead of grinding against it forever.
-					int ahead = TileIndexAt( pos.x + dx * 1.3f, pos.z + dz * 1.3f );
-					if ( ahead >= 0 )
-					{
-						float top = b3Body_GetPosition( g_pieces[ahead].body ).y + PIECE_HY;
-						if ( top > pos.y - g_players[i].ballR + 0.25f )
-						{
-							word |= IN_JUMP;
-						}
-					}
-				}
 			}
 		}
 
@@ -2542,8 +2608,10 @@ static void StepPlayers( void )
 		}
 		p->braceTicks = 0;
 
-		// Boost pads: the floor itself accelerates you (bracing opts out,
-		// and nothing pushes helpless players during the countdown).
+		// Boost pads accelerate a ball that is ALREADY ROLLING along the lane
+		// (bracing opts out, nothing pushes during the countdown). Requiring
+		// motion kills the "something shoves me while I stand still" feel and
+		// matches how a real speed strip works.
 		if ( grounded && !frozen )
 		{
 			b3Pos bpos = b3Body_GetPosition( p->body );
@@ -2551,7 +2619,10 @@ static void StepPlayers( void )
 			if ( ti >= 0 && g_pieces[ti].special == SPECIAL_BOOST )
 			{
 				b3Vec3 v = b3Body_GetLinearVelocity( p->body );
-				if ( v.x * g_pieces[ti].dirX + v.z * g_pieces[ti].dirZ < BOOST_MAX_SPEED )
+				float along = v.x * g_pieces[ti].dirX + v.z * g_pieces[ti].dirZ;
+				float speed2 = v.x * v.x + v.z * v.z;
+				// Only if moving (>1 m/s) and not already faster than the lane.
+				if ( speed2 > 1.0f && along < BOOST_MAX_SPEED )
 				{
 					b3Vec3 f = { BOOST_ACCEL * mass * g_pieces[ti].dirX, 0.0f, BOOST_ACCEL * mass * g_pieces[ti].dirZ };
 					b3Body_ApplyForceToCenter( p->body, f, true );
