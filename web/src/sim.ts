@@ -86,13 +86,14 @@ export const ORB_MEGA = 2;
 export const ORB_SHIELD = 3;
 export const ORB_SHOCK = 4;
 
-// Per-type presentation: color, short label, one-line description.
+// Per-type presentation: color, emoji icon, short label, one-line description.
+// The icon mirrors the billboard glyph drawn over the orb in render.ts.
 export const ORB_INFO = [
-  { color: 0xffc93c, name: 'SÚPER', desc: 'próximo dash ×2.3' },
-  { color: 0x35e8ff, name: 'TURBO', desc: 'más velocidad (acumulable)' },
-  { color: 0xff5964, name: 'MEGA', desc: 'crecés y pesás más' },
-  { color: 0x8affc0, name: 'ESCUDO', desc: 'bloquea el próximo empujón' },
-  { color: 0xff8a3d, name: 'BOMBA', desc: 'onda que empuja a todos' },
+  { color: 0xffc93c, icon: '⚡', name: 'SÚPER', desc: 'próximo dash ×2.3' },
+  { color: 0x35e8ff, icon: '»»', name: 'TURBO', desc: 'más velocidad (acumulable)' },
+  { color: 0xff5964, icon: '✥', name: 'MEGA', desc: 'crecés y pesás más' },
+  { color: 0x8affc0, icon: '🛡', name: 'ESCUDO', desc: 'bloquea el próximo empujón' },
+  { color: 0xff8a3d, icon: '💥', name: 'BOMBA', desc: 'onda que empuja a todos' },
 ] as const;
 
 export const FLAG_SHIELD = 65536;

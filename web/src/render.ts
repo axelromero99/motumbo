@@ -315,6 +315,186 @@ export function makeBallMaterial(colorHex: number, index: number, playerNumber: 
   return new THREE.MeshStandardMaterial(p);
 }
 
+// Crisp white pictogram per orb type, drawn once and billboarded above the orb
+// so a glance tells you what a pickup DOES — colour alone never read clearly.
+export function makeOrbGlyphTexture(type: number): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d')!;
+  g.clearRect(0, 0, 128, 128);
+  g.strokeStyle = '#ffffff';
+  g.fillStyle = '#ffffff';
+  g.lineWidth = 13;
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  // Dark halo so the white glyph pops on light-coloured orbs too.
+  g.shadowColor = 'rgba(0,0,0,0.75)';
+  g.shadowBlur = 7;
+  const cx = 64;
+  const cy = 64;
+  switch (((type % 5) + 5) % 5) {
+    case 0: // SÚPER — lightning bolt (next dash ×2.3)
+      g.beginPath();
+      g.moveTo(78, 16);
+      g.lineTo(40, 70);
+      g.lineTo(62, 70);
+      g.lineTo(50, 112);
+      g.lineTo(94, 52);
+      g.lineTo(70, 52);
+      g.closePath();
+      g.fill();
+      break;
+    case 1: // TURBO — double chevron (stacking speed)
+      g.lineWidth = 15;
+      for (const dx of [-14, 16]) {
+        g.beginPath();
+        g.moveTo(cx - 22 + dx, 30);
+        g.lineTo(cx + 10 + dx, 64);
+        g.lineTo(cx - 22 + dx, 98);
+        g.stroke();
+      }
+      break;
+    case 2: // MEGA — four outward arrows (you grow)
+      g.lineWidth = 12;
+      for (let k = 0; k < 4; k++) {
+        const a = k * (Math.PI / 2) + Math.PI / 4;
+        const ux = Math.cos(a);
+        const uy = Math.sin(a);
+        const x1 = cx + ux * 48;
+        const y1 = cy + uy * 48;
+        g.beginPath();
+        g.moveTo(cx + ux * 18, cy + uy * 18);
+        g.lineTo(x1, y1);
+        g.stroke();
+        g.beginPath();
+        g.moveTo(x1, y1);
+        g.lineTo(x1 + Math.cos(a + 2.5) * 17, y1 + Math.sin(a + 2.5) * 17);
+        g.moveTo(x1, y1);
+        g.lineTo(x1 + Math.cos(a - 2.5) * 17, y1 + Math.sin(a - 2.5) * 17);
+        g.stroke();
+      }
+      break;
+    case 3: // ESCUDO — shield (blocks the next shove)
+      g.lineWidth = 12;
+      g.beginPath();
+      g.moveTo(cx, 20);
+      g.lineTo(102, 40);
+      g.lineTo(102, 68);
+      g.quadraticCurveTo(102, 100, cx, 112);
+      g.quadraticCurveTo(26, 100, 26, 68);
+      g.lineTo(26, 40);
+      g.closePath();
+      g.stroke();
+      break;
+    default: // BOMBA — burst star (shockwave that shoves everyone)
+      g.beginPath();
+      for (let k = 0; k < 12; k++) {
+        const a = k * (Math.PI / 6);
+        const rr = k % 2 === 0 ? 48 : 21;
+        const x = cx + Math.cos(a) * rr;
+        const y = cy + Math.sin(a) * rr;
+        if (k === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      }
+      g.closePath();
+      g.fill();
+      break;
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Diagonal caution stripes so beams and pistons read as "danger", not decor.
+function makeHazardTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#ffcf1a';
+  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#161616';
+  // Slanted black bars (shift by one tile-height over the tile → ~45°).
+  for (let x = -64; x < 128; x += 30) {
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.lineTo(x + 15, 0);
+    g.lineTo(x + 15 + 64, 64);
+    g.lineTo(x + 64, 64);
+    g.closePath();
+    g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// ---- Ball faces -----------------------------------------------------------
+// A pair of eyes + eyebrows on the front of each ball that TURN toward the
+// travel heading (clamped to the front so they never rotate out of sight) and
+// react to what the ball is doing. Purely cosmetic: reads sim flags/velocity,
+// never writes back. Shared geometry and unlit materials keep it bright and
+// cheap across 8 balls.
+const EYE_GEO = new THREE.SphereGeometry(1, 16, 12);
+const PUPIL_GEO = new THREE.SphereGeometry(1, 12, 10);
+const BROW_GEO = new THREE.BoxGeometry(1, 1, 1);
+const EYE_WHITE_MAT = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const FACE_DARK_MAT = new THREE.MeshBasicMaterial({ color: 0x181c26 });
+// Eye anchor on the front-upper hemisphere (in units of the ball radius).
+const EX = 0.32;
+const EY = 0.4;
+const EZ = 0.76;
+// The face turns toward travel but never past this (eyes would hide behind the
+// ball silhouette from the elevated camera).
+const FACE_YAW_MAX = 0.85;
+
+interface FaceRig {
+  group: THREE.Group;
+  eyeL: THREE.Mesh;
+  eyeR: THREE.Mesh;
+  pupilL: THREE.Mesh;
+  pupilR: THREE.Mesh;
+  browL: THREE.Mesh;
+  browR: THREE.Mesh;
+  yaw: number; // smoothed heading the face turns toward (radians)
+  blink: number; // seconds until the next blink
+  closing: number; // 0 open .. 1 shut
+  browY: number; // smoothed expression params
+  browAngle: number;
+  eyeSY: number;
+  pupilS: number;
+}
+
+function makeFace(): FaceRig {
+  const group = new THREE.Group();
+  // Yaw (turn toward travel) then pitch (tilt up toward the high camera).
+  group.rotation.order = 'YXZ';
+  const eyeL = new THREE.Mesh(EYE_GEO, EYE_WHITE_MAT);
+  const eyeR = new THREE.Mesh(EYE_GEO, EYE_WHITE_MAT);
+  eyeL.position.set(-EX, EY, EZ);
+  eyeR.position.set(EX, EY, EZ);
+  eyeL.scale.set(0.26, 0.3, 0.14);
+  eyeR.scale.copy(eyeL.scale);
+  const pupilL = new THREE.Mesh(PUPIL_GEO, FACE_DARK_MAT);
+  const pupilR = new THREE.Mesh(PUPIL_GEO, FACE_DARK_MAT);
+  pupilL.scale.setScalar(0.13);
+  pupilR.scale.setScalar(0.13);
+  pupilL.position.set(-EX, EY, EZ + 0.08);
+  pupilR.position.set(EX, EY, EZ + 0.08);
+  const browL = new THREE.Mesh(BROW_GEO, FACE_DARK_MAT);
+  const browR = new THREE.Mesh(BROW_GEO, FACE_DARK_MAT);
+  browL.scale.set(0.3, 0.07, 0.09);
+  browR.scale.copy(browL.scale);
+  browL.position.set(-EX, EY + 0.3, EZ);
+  browR.position.set(EX, EY + 0.3, EZ);
+  group.add(eyeL, eyeR, pupilL, pupilR, browL, browR);
+  return { group, eyeL, eyeR, pupilL, pupilR, browL, browR, yaw: 0, blink: 2 + Math.random() * 3, closing: 0, browY: 0, browAngle: 0, eyeSY: 1, pupilS: 1 };
+}
+
 // Gradient dome (skyBottom → skyTop) with cheap hashed twinkling stars.
 // Sky dome: aurora curtains drifting over a vertical gradient, a soft moon
 // halo and a handful of big slow stars. Everything tinted by the theme.
@@ -575,9 +755,14 @@ export class GameRenderer {
   private lastSimFrame = -1;
   private lastUpdateMs = -1;
 
+  private faces: FaceRig[] = [];
+
   private hazardMeshes: THREE.Mesh[] = [];
+  private hazardTex = makeHazardTexture();
   private orbs: THREE.Mesh[] = [];
   private orbLights: THREE.PointLight[] = [];
+  private orbGlyphs: THREE.Sprite[] = [];
+  private orbGlyphTex = ORB_INFO.map((_, i) => makeOrbGlyphTexture(i));
 
   // Rey de la colina zone marker (cosmetic; position mirrors the sim's mode section).
   private zoneMesh: THREE.Mesh;
@@ -656,9 +841,17 @@ export class GameRenderer {
       orb.visible = false;
       const light = new THREE.PointLight(0xffb300, 8, 6);
       orb.add(light);
+      // Billboard glyph floating just above the orb so you can read what it is.
+      const glyph = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: this.orbGlyphTex[0], transparent: true, depthTest: true, depthWrite: false }),
+      );
+      glyph.scale.setScalar(0.62);
+      glyph.position.set(0, 0.62, 0);
+      orb.add(glyph);
       this.scene.add(orb);
       this.orbs.push(orb);
       this.orbLights.push(light);
+      this.orbGlyphs.push(glyph);
     }
 
     // Rey de la colina zone ring, reused across rounds (hidden outside KOTH).
@@ -746,6 +939,7 @@ export class GameRenderer {
     this.playerDeforms = [];
     this.playerMeshes = [];
     this.playerMats = [];
+    this.faces = [];
     this.cdRings = [];
     this.cdRingMats = [];
     this.shields = [];
@@ -798,6 +992,11 @@ export class GameRenderer {
       deform.add(mesh);
       const root = new THREE.Group();
       root.add(deform);
+      // Face rides on the root (position + squash, but NOT the rolling spin or
+      // velocity stretch) so the eyes stay upright and readable.
+      const face = makeFace();
+      root.add(face.group);
+      this.faces.push(face);
       this.scene.add(root);
       this.playerRoots.push(root);
       this.playerDeforms.push(deform);
@@ -843,10 +1042,12 @@ export class GameRenderer {
       const base = sim.hazardBase(i);
       const geo = new THREE.BoxGeometry(state[base + 7] * 2, state[base + 8] * 2, state[base + 9] * 2);
       const mat = new THREE.MeshStandardMaterial({
-        color: this.theme.beam,
+        map: this.hazardTex,
+        color: 0xffffff,
         emissive: this.theme.beam,
-        emissiveIntensity: 0.35,
-        roughness: 0.4,
+        emissiveIntensity: 0.28,
+        roughness: 0.55,
+        metalness: 0.1,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
@@ -1000,6 +1201,74 @@ export class GameRenderer {
       } else {
         mat.emissiveIntensity = 0;
       }
+
+      // Face: turns to look where the ball is heading, expression follows mood.
+      const face = this.faces[i];
+      if (face) {
+        // Local eye/brow offsets are ~unit vectors, so scaling by ballR seats
+        // them right on the ball surface (any size).
+        face.group.scale.setScalar(ballR);
+
+        const hsp = Math.sqrt(vx * vx + vz * vz);
+        // Turn the face toward the travel heading, but clamp to the front so the
+        // eyes never rotate behind the silhouette; hold heading when near-still.
+        if (hsp > 1.8) {
+          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, Math.atan2(vx, vz)));
+          face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
+        }
+        // Small upward tilt so the eyes read from the elevated camera.
+        face.group.rotation.set(-0.18, face.yaw, 0);
+
+        // Pupils glance slightly up/forward in the face's local frame.
+        const lx = 0;
+        const ly = hsp > 1.2 ? 0.35 : 0;
+
+        const braced = (flags & FLAG_BRACED) !== 0;
+        const hasPower = (flags & FLAG_HAS_POWER) !== 0;
+        const ouch = !braced && this.sqS[i] < 0.86;
+        let tBrowY = 0;
+        let tBrowA = 0;
+        let tEyeSY = 1;
+        let tPupil = 1;
+        if (cursed) {
+          tBrowY = 0.1; tBrowA = -0.38; tEyeSY = 1.28; tPupil = 0.6; // pánico
+        } else if (braced) {
+          tBrowY = -0.03; tBrowA = 0.5; tEyeSY = 0.55; // apretando los dientes
+        } else if (ouch) {
+          tBrowA = 0.32; tEyeSY = 0.38; tPupil = 1.2; // ojos exprimidos
+        } else if (hasPower) {
+          tBrowY = 0.08; tEyeSY = 1.16; tPupil = 1.1; // envalentonado
+        } else if (hsp > 8) {
+          tBrowA = 0.2; tEyeSY = 0.85; // concentrado
+        }
+        const kk = Math.min(1, dts * 12);
+        face.browY += (tBrowY - face.browY) * kk;
+        face.browAngle += (tBrowA - face.browAngle) * kk;
+        face.eyeSY += (tEyeSY - face.eyeSY) * kk;
+        face.pupilS += (tPupil - face.pupilS) * kk;
+
+        // Occasional blink (never mid-panic).
+        face.blink -= dts;
+        if (face.blink <= 0 && !cursed) {
+          face.closing = 1;
+          face.blink = 2.4 + Math.random() * 3.2;
+        }
+        face.closing = Math.max(0, face.closing - dts * 9);
+        const lidY = face.eyeSY * (1 - 0.9 * face.closing);
+        face.eyeL.scale.set(0.26, 0.3 * lidY, 0.14);
+        face.eyeR.scale.set(0.26, 0.3 * lidY, 0.14);
+
+        const jit = cursed ? (Math.random() - 0.5) * 0.05 : 0;
+        const pupilScale = 0.13 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
+        face.pupilL.position.set(-EX + lx * 0.08 + jit, EY + ly * 0.07, EZ + 0.08);
+        face.pupilR.position.set(EX + lx * 0.08 + jit, EY + ly * 0.07, EZ + 0.08);
+        face.pupilL.scale.setScalar(pupilScale);
+        face.pupilR.scale.setScalar(pupilScale);
+        face.browL.position.set(-EX, EY + 0.3 + face.browY, EZ);
+        face.browR.position.set(EX, EY + 0.3 + face.browY, EZ);
+        face.browL.rotation.z = face.browAngle;
+        face.browR.rotation.z = -face.browAngle;
+      }
     }
     if (tickChanged) this.lastSimFrame = curr[0];
 
@@ -1065,7 +1334,7 @@ export class GameRenderer {
       const orb = this.orbs[k];
       orb.visible = active;
       if (active) {
-        const orbType = Math.round(curr[b + 3]) - 1;
+        const orbType = ((Math.round(curr[b + 3]) - 1) % ORB_INFO.length + ORB_INFO.length) % ORB_INFO.length;
         const orbColor = ORB_INFO[orbType]?.color ?? 0xffc93c;
         const om = orb.material as THREE.MeshStandardMaterial;
         om.color.setHex(orbColor);
@@ -1073,6 +1342,14 @@ export class GameRenderer {
         this.orbLights[k].color.setHex(orbColor);
         orb.position.set(curr[b], curr[b + 1] + 0.15 * Math.sin(timeMs * 0.004 + k), curr[b + 2]);
         orb.rotation.y = timeMs * 0.002 + k;
+        // Point the type glyph at this orb; a gentle bob keeps it lively.
+        const glyph = this.orbGlyphs[k];
+        const gm = glyph.material as THREE.SpriteMaterial;
+        if (gm.map !== this.orbGlyphTex[orbType]) {
+          gm.map = this.orbGlyphTex[orbType];
+          gm.needsUpdate = true;
+        }
+        glyph.position.y = 0.66 + 0.05 * Math.sin(timeMs * 0.004 + k);
       }
     }
 

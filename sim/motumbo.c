@@ -1288,11 +1288,68 @@ static float GenF( float lo, float hi )
 	return lo + ( hi - lo ) * (float)( GenNext() % 1024u ) / 1023.0f;
 }
 
-// Greedy max-min spread over plain tiles: spawns as far apart as possible,
-// never on boost lanes, never over the void.
+// Greedy max-min spread over SOLID plain tiles: spawns as far apart as
+// possible, but only on flat tiles that sit inside a group — never a boost
+// lane, never a tilted ramp (you'd slide off during the countdown), never a
+// lone 1-tile speck at the rim (you'd start stranded and helpless). The
+// max-min metric loves the outermost tiles, which are exactly the isolated
+// ones, so without this filter generated arenas kept marooning players.
 static void PickGeneratedSpawns( void )
 {
 	g_genSpawnCount = 0;
+
+	// Per-tile eligibility: plain (no special) AND flat (rotation ≈ identity;
+	// ramps carry a tilt in their quat), plus a count of static neighbours
+	// within one grid step (diagonals included) as a connectivity proxy.
+	bool flat[MAX_PIECES];
+	int neigh[MAX_PIECES];
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		flat[i] = g_pieces[i].special == SPECIAL_NONE &&
+				  fabsf( b3Body_GetRotation( g_pieces[i].body ).s ) > 0.999f;
+		neigh[i] = 0;
+		if ( !flat[i] )
+		{
+			continue;
+		}
+		b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+		for ( int j = 0; j < g_pieceCount; ++j )
+		{
+			if ( j == i )
+			{
+				continue;
+			}
+			b3Pos op = b3Body_GetPosition( g_pieces[j].body );
+			float dx = tp.x - op.x;
+			float dz = tp.z - op.z;
+			float d2 = dx * dx + dz * dz;
+			if ( d2 > 0.6f && d2 < 2.4f * 2.4f )
+			{
+				neigh[i] += 1;
+			}
+		}
+	}
+
+	// Prefer solidly-connected tiles (≥3 neighbours). Relax the bar only if the
+	// arena is too sparse to seat everyone, so we never seat fewer than before.
+	int minNeigh = 3;
+	while ( minNeigh > 0 )
+	{
+		int eligible = 0;
+		for ( int i = 0; i < g_pieceCount; ++i )
+		{
+			if ( flat[i] && neigh[i] >= minNeigh )
+			{
+				eligible += 1;
+			}
+		}
+		if ( eligible >= g_playerCount )
+		{
+			break;
+		}
+		minNeigh -= 1;
+	}
+
 	int chosen[MAX_PLAYERS];
 	for ( int s = 0; s < MAX_PLAYERS; ++s )
 	{
@@ -1300,7 +1357,7 @@ static void PickGeneratedSpawns( void )
 		float bestScore = -1.0f;
 		for ( int i = 0; i < g_pieceCount; ++i )
 		{
-			if ( g_pieces[i].special != SPECIAL_NONE )
+			if ( !flat[i] || neigh[i] < minNeigh )
 			{
 				continue;
 			}
@@ -1841,9 +1898,10 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 
 	if ( level == LEVEL_ASPAS )
 	{
-		// Everyone starts inside the safe hub.
-		*outX = 1.6f * dirs[index][0];
-		*outZ = 1.6f * dirs[index][1];
+		// Everyone starts inside the safe hub (r ≤ 2.2). 1.85 keeps all eight
+		// clear of each other (~0.14 m gap) without spilling off the hub.
+		*outX = 1.85f * dirs[index][0];
+		*outZ = 1.85f * dirs[index][1];
 		return;
 	}
 
@@ -1860,9 +1918,13 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 
 	if ( level == LEVEL_PANAL )
 	{
+		// A solid 2×2 pad under every spawn: the radial cull nibbles the rim
+		// pads down to lone slivers, and the old ±9 corners landed a player on
+		// one — stranded and helpless. These eight sit on full pads, spread so
+		// the first four (1–4 players) fall ~90° apart.
 		static const float pads[MAX_PLAYERS][2] = {
-			{ 9.0f, 9.0f }, { -9.0f, -9.0f }, { 9.0f, -9.0f }, { -9.0f, 9.0f },
-			{ 9.0f, 0.0f }, { -9.0f, 0.0f },  { 0.0f, 9.0f },  { 0.0f, -9.0f },
+			{ 9.0f, 4.5f },	 { -7.5f, -3.0f }, { -3.0f, 9.0f }, { 4.5f, -7.5f },
+			{ 4.5f, 9.0f },	 { -3.0f, -7.5f }, { -7.5f, 4.5f }, { 9.0f, -3.0f },
 		};
 		*outX = pads[index][0];
 		*outZ = pads[index][1];

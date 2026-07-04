@@ -804,7 +804,14 @@ async function main(): Promise<void> {
           if (!attract) audio.orbPickup();
           const info = ORB_INFO[a];
           renderer.fx.burst(x, y, z, info?.color ?? ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
-          if (!attract && b >= 0 && info) ui.toast(`${info.name} · ${PLAYER_NAMES[b]}`);
+          if (!attract && b >= 0 && info) {
+            // The local player gets the full "what it does"; rivals get a tag.
+            ui.toast(
+              b === localHumanSlot()
+                ? `${info.icon} ${info.name} — ${info.desc}`
+                : `${info.icon} ${info.name} · ${PLAYER_NAMES[b]}`,
+            );
+          }
           break;
         }
         case EVT_SHIELD:

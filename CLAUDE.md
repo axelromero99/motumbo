@@ -11,7 +11,9 @@ fuera de una plataforma que se desmorona; el último en pie gana la ronda.
   inputs empaquetados (uint32 por jugador) y lee un buffer de floats con el estado.
 - **`web/`** — Vite + TypeScript + Three.js. Solo presentación e I/O:
   `sim.ts` (wrapper WASM), `render.ts` (Three: skybox/abismo por shader, squash&stretch,
-  anillo de cooldown, texturas de bola con patrón+número), `fx.ts` (partículas, shockwaves,
+  anillo de cooldown, texturas de bola con patrón+número, **caras con ojos que siguen la
+  velocidad + expresiones por estado**, glifos billboard sobre los orbes y rayas de peligro
+  en los hazards — todo cosmético, lee flags/velocidad y nunca escribe al sim), `fx.ts` (partículas, shockwaves,
   shake+punch), `audio.ts` (SFX sintetizados, buses), `music.ts` (música procedural
   adaptativa por nivel, capas por tensión), `input.ts` (teclado), `ui.ts` (shell de
   pantallas: título/setup/online/pausa/resultados/opciones, settings en localStorage),
@@ -104,7 +106,11 @@ modeParam].
 
 - Niveles 20-69 son PROCEDURALES (`BuildGenerated` en motumbo.c): 6 familias, todo
   derivado del id con RNG propio (idéntico en cada peer). Spawns por greedy
-  max-min sobre baldosas sin especiales. Radios hasta 13.4m; MAX_PIECES 512.
+  max-min en `PickGeneratedSpawns`, pero SOLO sobre baldosas planas (no rampas),
+  sin especiales y bien conectadas (≥3 vecinas; relaja el umbral solo si la arena
+  es muy escasa) — si no, el max-min varaba jugadores en islas de 1 baldosa o los
+  ponía sobre rampas donde resbalaban en el countdown. Radios hasta 13.4m; MAX_PIECES 512.
+  `scripts/audit-levels.mjs` audita los 76 niveles (spawns al vacío / rampa / isla, arenas vacías).
 - Cada nivel elige el TAMAÑO DE BOLA (0.45-0.9m; tabla en motumbo_init + pick del
   generador). El radio actual viaja en bits 11-15 de los flags (0.05m/unidad,
   helper `ballRadiusFrom` en sim.ts); la cámara se auto-ajusta al extent en
