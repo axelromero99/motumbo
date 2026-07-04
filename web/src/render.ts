@@ -16,6 +16,8 @@ import {
   DASH_COOLDOWN_TICKS,
   dashCooldownFrom,
   ballRadiusFrom,
+  ORB_INFO,
+  hasShield,
   pieceStateOf,
   pieceSpecialOf,
   SPECIAL_BOOST,
@@ -449,6 +451,7 @@ export class GameRenderer {
   private playerMats: THREE.MeshStandardMaterial[] = [];
   private cdRings: THREE.Mesh[] = [];
   private cdRingMats: THREE.ShaderMaterial[] = [];
+  private shields: THREE.Mesh[] = [];
 
   // Cosmetic per-player animation state (springs never touch the sim).
   private sqS = new Float32Array(0);
@@ -611,6 +614,11 @@ export class GameRenderer {
       this.cdRings[i].geometry.dispose();
       this.cdRingMats[i].dispose();
     }
+    for (const s of this.shields) {
+      this.scene.remove(s);
+      s.geometry.dispose();
+      (s.material as THREE.Material).dispose();
+    }
     for (const h of this.hazardMeshes) {
       this.scene.remove(h);
       h.geometry.dispose();
@@ -622,6 +630,7 @@ export class GameRenderer {
     this.playerMats = [];
     this.cdRings = [];
     this.cdRingMats = [];
+    this.shields = [];
     this.hazardMeshes = [];
 
     const state = sim.curr;
@@ -686,6 +695,21 @@ export class GameRenderer {
       this.scene.add(ring.mesh);
       this.cdRings.push(ring.mesh);
       this.cdRingMats.push(ring.mat);
+
+      // Translucent shield bubble, hidden until the player grabs an ESCUDO.
+      const bubble = new THREE.Mesh(
+        new THREE.SphereGeometry(PLAYER_RADIUS * 1.5, 20, 16),
+        new THREE.MeshBasicMaterial({
+          color: 0x8affc0,
+          transparent: true,
+          opacity: 0.28,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      bubble.visible = false;
+      this.scene.add(bubble);
+      this.shields.push(bubble);
     }
 
     // Reset cosmetic animation state for the new round.
@@ -839,6 +863,15 @@ export class GameRenderer {
         this.cdRingMats[i].uniforms.uAlpha.value = 0.55 + 0.45 * pulse;
       }
 
+      // Shield bubble follows the ball while the ESCUDO is up.
+      const shielded = alive && hasShield(flags);
+      this.shields[i].visible = shielded;
+      if (shielded) {
+        this.shields[i].position.copy(root.position);
+        const s = (ballR / PLAYER_RADIUS) * (1 + 0.05 * Math.sin(timeMs * 0.006));
+        this.shields[i].scale.setScalar(s);
+      }
+
       // Cursed aura beats every other glow; then power orb, then dash ready.
       const mat = this.playerMats[i];
       if (cursed) {
@@ -914,9 +947,9 @@ export class GameRenderer {
     const orbActive = curr[orbBase + 3] > 0.5;
     this.orb.visible = orbActive;
     if (orbActive) {
-      // Bomberman-style pickups: gold = super dash, cyan = turbo, red = mega.
+      // Bomberman-style pickups: color reads the type from the state buffer.
       const orbType = Math.round(curr[orbBase + 3]) - 1;
-      const orbColor = orbType === 1 ? 0x35e8ff : orbType === 2 ? 0xff5964 : 0xffc93c;
+      const orbColor = ORB_INFO[orbType]?.color ?? 0xffc93c;
       const om = this.orb.material as THREE.MeshStandardMaterial;
       om.color.setHex(orbColor);
       om.emissive.setHex(orbColor);

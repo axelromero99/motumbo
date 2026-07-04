@@ -22,6 +22,9 @@ import {
   EVT_CURSE,
   EVT_ZONE,
   EVT_MODE_POINT,
+  EVT_SHIELD,
+  EVT_SHOCK,
+  ORB_INFO,
   PIECE_STATIC,
   pieceStateOf,
   FLAG_CURSED,
@@ -635,20 +638,31 @@ async function main(): Promise<void> {
         case EVT_ORB_SPAWN: {
           // `a` is the orb type; `b >= 0` means it was knocked out of a carrier.
           if (!attract) (b >= 0 ? audio.orbLoose() : audio.orbSpawn());
-          const spawnColor = a === 1 ? 0x35e8ff : a === 2 ? 0xff5964 : ORB_GOLD;
+          const spawnColor = ORB_INFO[a]?.color ?? ORB_GOLD;
           renderer.fx.burst(x, y, z, spawnColor, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
           break;
         }
         case EVT_ORB_PICKUP: {
           if (!attract) audio.orbPickup();
-          const pickColor = a === 1 ? 0x35e8ff : a === 2 ? 0xff5964 : ORB_GOLD;
-          renderer.fx.burst(x, y, z, pickColor, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
-          if (!attract && b >= 0) {
-            if (a === 1) ui.toast(`⚡ ¡TURBO para ${PLAYER_NAMES[b]}!`);
-            else if (a === 2) ui.toast(`🔴 ¡${PLAYER_NAMES[b]} creció!`);
-          }
+          const info = ORB_INFO[a];
+          renderer.fx.burst(x, y, z, info?.color ?? ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
+          if (!attract && b >= 0 && info) ui.toast(`${info.name} · ${PLAYER_NAMES[b]}`);
           break;
         }
+        case EVT_SHIELD:
+          if (!attract) audio.parry();
+          renderer.fx.ring(x, y, z, 0x8affc0, 3);
+          renderer.fx.burst(x, y, z, 0x8affc0, { count: 22, speed: 3, life: 450 });
+          break;
+        case EVT_SHOCK:
+          if (!attract) {
+            audio.dash(true);
+            renderer.fx.addTrauma(0.3);
+            renderer.fx.addPunch(0, 0);
+          }
+          renderer.fx.ring(x, y, z, 0xff8a3d, 6);
+          renderer.fx.burst(x, y, z, 0xff8a3d, { count: 40, speed: 5, up: 2, life: 600 });
+          break;
         case EVT_CURSE:
           if (!attract) {
             audio.orbLoose();

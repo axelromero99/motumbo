@@ -19,29 +19,35 @@
 #define MAX_PIECES 512
 #define MAX_HAZARDS 4
 
-// 20 hand-crafted arenas + 50 procedurally generated ones. Generated levels
-// derive ONLY from their id (own PCG stream), so every peer builds the exact
-// same arena for level N regardless of round seed.
+// 20 hand-crafted arenas + 50 procedurally generated + 5 huge "mega" arenas.
+// Generated levels derive ONLY from their id (own PCG stream), so every peer
+// builds the exact same arena for level N regardless of round seed.
 #define LEVEL_HANDMADE 20
-#define LEVEL_COUNT 70
+#define LEVEL_MEGA 70	 // levels 70..74 are the oversized mega arenas
+#define LEVEL_COUNT 75
 
 // Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
 // format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
 // deterministic setup, so lockstep peers must load identical bytes.
-#define LEVEL_CUSTOM 70
+#define LEVEL_CUSTOM 75
 #define CUSTOM_DATA_MAX 1024
 
-// Bomberman-style pickups: the orb now has a type.
+// Bomberman-style pickups: the orb now has one of 5 types.
 enum
 {
-	ORB_SUPER = 0,	// next dash x2.3 (the classic)
-	ORB_TURBO = 1,	// permanent (per round) speed stack
-	ORB_MEGA = 2,	// permanent (per round) size/mass stack
+	ORB_SUPER = 0,	 // next dash x2.3 (the classic)
+	ORB_TURBO = 1,	 // permanent (per round) speed stack
+	ORB_MEGA = 2,	 // permanent (per round) size/mass stack
+	ORB_SHIELD = 3,	 // blocks the next shove you take (one use)
+	ORB_SHOCK = 4,	 // instant: shoves everyone around you on pickup
+	ORB_TYPE_COUNT = 5,
 };
 #define TURBO_STEP 0.16f
 #define TURBO_MAX 1.5f
 #define MEGA_STEP 1.16f
 #define MEGA_MAX 1.55f
+#define SHOCK_RADIUS 5.0f
+#define SHOCK_FORCE 8.0f
 
 // Game modes (tumbo_set_mode). All win conditions resolve inside the sim.
 enum
@@ -124,6 +130,7 @@ enum
 #define FLAG_CD_SHIFT 3
 #define FLAG_BRACED 512
 #define FLAG_CURSED 1024
+#define FLAG_SHIELD 65536 // bit16 (bits 11-15 hold the ball radius)
 
 // Mode section appended to the state buffer: [mode, m0, m1, m2] + 8 scores.
 #define MODE_FLOATS 12
@@ -186,6 +193,8 @@ enum
 	EVT_CURSE = 11,		 // a = newly cursed, b = previous (-1 at round start)
 	EVT_ZONE = 12,		 // zone moved to (x, z)
 	EVT_MODE_POINT = 13, // a = player, b = new score (zone seconds / orbs)
+	EVT_SHIELD = 14,	 // a = attacker whose shove was blocked, b = shielded
+	EVT_SHOCK = 15,		 // b = player who set off a SHOCK pickup
 };
 
 #define MAX_EVENTS 32
@@ -206,7 +215,8 @@ typedef struct Player
 	float ballR;	 // current radius (MEGA grows it)
 	float baseR;	 // the level's base radius
 	float speedMult; // TURBO stacks
-	bool hasPower;
+	bool hasPower;	 // carrying SUPER (next dash empowered)
+	bool hasShield;	 // carrying SHIELD (blocks next shove)
 	bool alive;
 } Player;
 
@@ -459,7 +469,8 @@ static void WriteState( void )
 		int rBits = (int)( p->ballR * 20.0f + 0.5f ) & 31; // bits 11-15, 0.05m units
 		int flags = ( p->alive ? FLAG_ALIVE : 0 ) | ( p->dashCooldown == 0 ? FLAG_DASH_READY : 0 ) |
 					( p->hasPower ? FLAG_HAS_POWER : 0 ) | ( cd << FLAG_CD_SHIFT ) |
-					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 ) | ( rBits << 11 );
+					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 ) | ( rBits << 11 ) |
+					( p->hasShield ? FLAG_SHIELD : 0 );
 		out[7] = (float)flags;
 		out += STATE_STRIDE;
 	}
@@ -1501,6 +1512,156 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 	g_crumbleInterval = (uint32_t)( interval < 4 ? 4 : ( interval > 26 ? 26 : interval ) );
 }
 
+// ---------------------------------------------------------------------------
+// Mega arenas (levels 70..74): the biggest the 512-tile budget allows
+// (~17m radius, roughly double the area of the largest handmade arena), each
+// hand-designed around traversal at that scale.
+// ---------------------------------------------------------------------------
+static void BuildMega( int level, const b3BoxHull* hull )
+{
+	int m = level - LEVEL_MEGA;
+	int extent = 13;
+	for ( int gx = -extent; gx <= extent; ++gx )
+	{
+		for ( int gz = -extent; gz <= extent; ++gz )
+		{
+			float cx = gx * PIECE_STEP;
+			float cz = gz * PIECE_STEP;
+			float d2 = cx * cx + cz * cz;
+			float r = sqrtf( d2 );
+
+			if ( m == 0 )
+			{
+				// COLOSO: giant disc, raised central plateau (king of the
+				// hill), and a counterclockwise boost ring near the rim.
+				if ( r <= 17.5f )
+				{
+					if ( r <= 4.5f )
+					{
+						AddPiece( cx, cz, 0.8f, 40, hull ); // plateau, falls last
+					}
+					else if ( r >= 12.5f && r <= 15.5f )
+					{
+						AddPieceEx( cx, cz, 0.0f, (int)( r * 1.2f ), hull, SPECIAL_BOOST, -cz / r, cx / r, -1 );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.0f, (int)( r * 1.2f ), hull );
+					}
+				}
+			}
+			else if ( m == 1 )
+			{
+				// ARCHIPIÉLAGO: a big central island and six outer islands on
+				// a ring, linked by boost spokes — cross by riding the strips.
+				bool placed = false;
+				if ( r <= 4.0f )
+				{
+					AddPiece( cx, cz, 0.0f, 20, hull );
+					placed = true;
+				}
+				for ( int k = 0; k < 6 && !placed; ++k )
+				{
+					float a = 6.2831853f * (float)k / 6.0f;
+					float ix = cosf( a ) * 13.0f;
+					float iz = sinf( a ) * 13.0f;
+					if ( ( cx - ix ) * ( cx - ix ) + ( cz - iz ) * ( cz - iz ) <= 3.6f * 3.6f )
+					{
+						AddPiece( cx, cz, 0.0f, 5, hull );
+						placed = true;
+					}
+				}
+				// Boost spokes: thin lanes from center out to each island.
+				if ( !placed && r > 3.5f && r < 13.5f )
+				{
+					float ang = atan2f( cz, cx );
+					float sect = ang / ( 6.2831853f / 6.0f );
+					float frac = sect - floorf( sect + 0.5f );
+					if ( frac > -0.16f && frac < 0.16f )
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, cx / r, cz / r, -1 );
+					}
+				}
+			}
+			else if ( m == 2 )
+			{
+				// GRAN CRUZ: a colossal plus. Long arms collapse from the tips
+				// inward, herding everyone to the center for a final clash.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				if ( ( az <= 1 && ax <= 13 ) || ( ax <= 1 && az <= 13 ) )
+				{
+					int mm = ax > az ? ax : az;
+					AddPiece( cx, cz, 0.0f, mm, hull );
+				}
+			}
+			else if ( m == 3 )
+			{
+				// DOBLE ANILLO: two huge concentric rings with a jumpable moat
+				// between them; the outer ring falls first.
+				if ( r >= 4.0f && r <= 7.0f )
+				{
+					AddPiece( cx, cz, 0.0f, 10, hull );
+				}
+				else if ( r >= 10.5f && r <= 15.0f )
+				{
+					AddPiece( cx, cz, 0.0f, (int)( r * 1.5f ), hull );
+				}
+			}
+			else
+			{
+				// ESTADIO: a long rectangular pitch with one-way boost lanes
+				// down both touchlines and pistons sweeping the midfield.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				if ( ax <= 13 && az <= 8 )
+				{
+					if ( az == 8 && ax <= 12 )
+					{
+						AddPieceEx( cx, cz, 0.0f, 0, hull, SPECIAL_BOOST, gz > 0 ? -1.0f : 1.0f, 0.0f, -1 );
+					}
+					else
+					{
+						AddPiece( cx, cz, 0.0f, 8 - az, hull );
+					}
+				}
+			}
+		}
+	}
+
+	switch ( m )
+	{
+		case 0:
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 6;
+			break;
+		case 1:
+			SortCrumbleOrder();
+			g_crumbleStart = 660;
+			g_crumbleInterval = 9;
+			break;
+		case 2:
+			SortCrumbleOrder();
+			g_crumbleStart = 540;
+			g_crumbleInterval = 7;
+			break;
+		case 3:
+			ShuffleCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ 6.6f, 0.3f, 0.32f }, HAZARD_BEAM, 0.7f, 0.0f, 0.0f );
+			g_crumbleStart = 600;
+			g_crumbleInterval = 8;
+			break;
+		default:
+			SortCrumbleOrder();
+			AddBoxHazard( ( b3Vec3 ){ -6.0f, 0.5f, -9.0f }, ( b3Vec3 ){ 0.6f, 0.5f, 0.9f }, HAZARD_PISTON, 3.0f, 0.0f, 0.0f );
+			AddBoxHazard( ( b3Vec3 ){ 6.0f, 0.5f, 9.0f }, ( b3Vec3 ){ 0.6f, 0.5f, 0.9f }, HAZARD_PISTON, 3.0f, 140.0f, 0.0f );
+			g_crumbleStart = 660;
+			g_crumbleInterval = 8;
+			break;
+	}
+}
+
 static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
 {
 	static const float dirs[MAX_PLAYERS][2] = {
@@ -1773,6 +1934,11 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	{
 		BuildCustomLevel( &tileHull );
 	}
+	else if ( g_level >= LEVEL_MEGA )
+	{
+		BuildMega( g_level, &tileHull );
+		PickGeneratedSpawns(); // greedy max-min spread over the huge floor
+	}
 	else if ( g_level >= LEVEL_HANDMADE )
 	{
 		BuildGenerated( g_level, &tileHull );
@@ -1787,12 +1953,18 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 	// Each arena picks its ball size: tiny = nervous, huge = heavyweight sumo.
 	static const float levelBallR[LEVEL_HANDMADE] = { 0.6f, 0.6f, 0.55f, 0.6f, 0.7f, 0.6f, 0.5f,	0.55f, 0.65f, 0.6f,
 													  0.8f, 0.45f, 0.55f, 0.75f, 0.6f, 0.7f, 0.55f, 0.6f,  0.9f,  0.5f };
+	// Mega arenas use bigger, weightier balls so the vast floors feel epic.
+	static const float megaBallR[5] = { 0.85f, 0.7f, 0.8f, 0.75f, 0.85f };
 	float ballR = PLAYER_RADIUS;
 	if ( g_level < LEVEL_HANDMADE )
 	{
 		ballR = levelBallR[g_level];
 	}
-	else if ( g_level < LEVEL_CUSTOM )
+	else if ( g_level >= LEVEL_MEGA && g_level < LEVEL_CUSTOM )
+	{
+		ballR = megaBallR[g_level - LEVEL_MEGA];
+	}
+	else if ( g_level < LEVEL_MEGA )
 	{
 		ballR = g_genBallR;
 	}
@@ -1825,9 +1997,12 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 		g_players[i].baseR = ballR;
 		g_players[i].speedMult = 1.0f;
 
-		// Face the center.
-		float len = sx * sx + sz * sz;
-		g_players[i].facing = len > 0.001f ? ( b3Vec3 ){ -sx, 0.0f, -sz } : ( b3Vec3 ){ 0.0f, 0.0f, -1.0f };
+		// Face the center — NORMALIZED. (An un-normalized facing here scaled
+		// the very first standing dash by the spawn radius: 7.5 * ~8m = a
+		// 60 m/s launch straight off the arena.)
+		float len = sqrtf( sx * sx + sz * sz );
+		g_players[i].facing =
+			len > 0.001f ? ( b3Vec3 ){ -sx / len, 0.0f, -sz / len } : ( b3Vec3 ){ 0.0f, 0.0f, -1.0f };
 		g_players[i].body = body;
 		g_players[i].prevIn = 0;
 		g_players[i].dashCooldown = 0;
@@ -1837,6 +2012,7 @@ TUMBO_EXPORT void tumbo_init( uint32_t seed, int playerCount, int level )
 		g_players[i].coyote = 0;
 		g_players[i].braceTicks = 0;
 		g_players[i].hasPower = false;
+		g_players[i].hasShield = false;
 		g_players[i].alive = true;
 	}
 
@@ -2712,6 +2888,15 @@ static void ResolveDashHit( int att, int vic, float nx, float nz, float speed, b
 		return;
 	}
 
+	// Shield: absorbs the whole shove, one use. Emits a parry-style event so
+	// the shell can flash the bubble popping.
+	if ( victim->hasShield )
+	{
+		victim->hasShield = false;
+		PushEvent( EVT_SHIELD, point.x, point.y, point.z, (float)att, (float)vic );
+		return;
+	}
+
 	float factor = victim->braceTicks > 0 ? BRACE_HIT_FACTOR : 1.0f;
 	float pop = victim->braceTicks > 0 ? 0.0f : 0.3f;
 	float mass = b3Body_GetMass( victim->body );
@@ -3069,7 +3254,7 @@ static void StepPowerup( void )
 			int pick = candidates[RngNext() % (uint32_t)count];
 			b3Pos tile = b3Body_GetPosition( g_pieces[pick].body );
 			g_powerup.pos = ( b3Vec3 ){ tile.x, tile.y + PIECE_HY + 1.1f, tile.z };
-			g_powerup.type = (int)( RngNext() % 3u );
+			g_powerup.type = (int)( RngNext() % (uint32_t)ORB_TYPE_COUNT );
 			g_powerup.active = true;
 			PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)g_powerup.type, -1.0f );
 		}
@@ -3084,7 +3269,8 @@ static void StepPowerup( void )
 	for ( int i = 0; i < g_playerCount; ++i )
 	{
 		Player* p = &g_players[i];
-		if ( !p->alive || p->hasPower )
+		// Can't grab a new orb while still holding a pending one (SUPER/SHIELD).
+		if ( !p->alive || p->hasPower || p->hasShield )
 		{
 			continue;
 		}
@@ -3094,18 +3280,45 @@ static void StepPowerup( void )
 		float ddy = pos.y - g_powerup.pos.y;
 		if ( ddx * ddx + ddz * ddz < 1.1f * 1.1f && ddy > -1.4f && ddy < 1.4f )
 		{
-			// Bomberman rules: what you grab changes how you roll.
-			if ( g_powerup.type == ORB_TURBO )
+			// Bomberman rules: what you grab changes how you play.
+			switch ( g_powerup.type )
 			{
-				p->speedMult = p->speedMult + TURBO_STEP > TURBO_MAX ? TURBO_MAX : p->speedMult + TURBO_STEP;
-			}
-			else if ( g_powerup.type == ORB_MEGA )
-			{
-				ApplyMega( p );
-			}
-			else
-			{
-				p->hasPower = true;
+				case ORB_TURBO:
+					p->speedMult = p->speedMult + TURBO_STEP > TURBO_MAX ? TURBO_MAX : p->speedMult + TURBO_STEP;
+					break;
+				case ORB_MEGA:
+					ApplyMega( p );
+					break;
+				case ORB_SHIELD:
+					p->hasShield = true;
+					break;
+				case ORB_SHOCK:
+				{
+					// Instant nova: shove every rival within range.
+					for ( int j = 0; j < g_playerCount; ++j )
+					{
+						if ( j == i || !g_players[j].alive )
+						{
+							continue;
+						}
+						b3Pos op = b3Body_GetPosition( g_players[j].body );
+						float rx = op.x - pos.x;
+						float rz = op.z - pos.z;
+						float d = sqrtf( rx * rx + rz * rz );
+						if ( d < SHOCK_RADIUS && d > 0.01f )
+						{
+							float jm = b3Body_GetMass( g_players[j].body );
+							float f = SHOCK_FORCE * jm * ( 1.0f - d / SHOCK_RADIUS );
+							b3Body_ApplyLinearImpulseToCenter(
+								g_players[j].body, ( b3Vec3 ){ rx / d * f, 0.35f * f, rz / d * f }, true );
+						}
+					}
+					PushEvent( EVT_SHOCK, pos.x, pos.y, pos.z, 0.0f, (float)i );
+					break;
+				}
+				default: // ORB_SUPER
+					p->hasPower = true;
+					break;
 			}
 			g_powerup.active = false;
 			g_powerup.nextEventTick = g_frame + ( g_mode == MODE_COSECHA ? 120 : 300 );

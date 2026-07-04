@@ -67,6 +67,10 @@ const GEN_PREFIX = ['NOVA', 'CRÁTER', 'ARRECIFE', 'FALLA', 'TÚNEL', 'BASTIÓN'
 for (let i = 20; i < 70; i++) {
   LEVEL_NAMES.push(`${GEN_PREFIX[i % 10]} ${i - 19}`);
 }
+// Levels 70-74: the oversized hand-designed mega arenas.
+for (const n of ['⊕ COLOSO', '⊕ ARCHIPIÉLAGO', '⊕ GRAN CRUZ', '⊕ DOBLE ANILLO', '⊕ ESTADIO']) {
+  LEVEL_NAMES.push(n);
+}
 
 /** Current ball radius in meters, decoded from a player's packed flags. */
 export function ballRadiusFrom(flags: number): number {
@@ -78,6 +82,22 @@ export function ballRadiusFrom(flags: number): number {
 export const ORB_SUPER = 0;
 export const ORB_TURBO = 1;
 export const ORB_MEGA = 2;
+export const ORB_SHIELD = 3;
+export const ORB_SHOCK = 4;
+
+// Per-type presentation: color, short label, one-line description.
+export const ORB_INFO = [
+  { color: 0xffc93c, name: 'SÚPER', desc: 'próximo dash ×2.3' },
+  { color: 0x35e8ff, name: 'TURBO', desc: 'más velocidad (acumulable)' },
+  { color: 0xff5964, name: 'MEGA', desc: 'crecés y pesás más' },
+  { color: 0x8affc0, name: 'ESCUDO', desc: 'bloquea el próximo empujón' },
+  { color: 0xff8a3d, name: 'BOMBA', desc: 'onda que empuja a todos' },
+] as const;
+
+export const FLAG_SHIELD = 65536;
+export function hasShield(flags: number): boolean {
+  return (flags & FLAG_SHIELD) !== 0;
+}
 
 // Game modes (deterministic, resolved inside the sim).
 export const MODE_SUMO = 0;
@@ -108,6 +128,8 @@ export const EVT_PARRY = 10;
 export const EVT_CURSE = 11;
 export const EVT_ZONE = 12;
 export const EVT_MODE_POINT = 13;
+export const EVT_SHIELD = 14;
+export const EVT_SHOCK = 15;
 export const EVENT_FLOATS = 6;
 
 interface TumboModule {

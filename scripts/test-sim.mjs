@@ -9,7 +9,7 @@ const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
 const PLAYERS = 4;
 const TICKS = 1500;
-const LEVELS = 70; // 20 hechos a mano + 50 generados
+const LEVELS = 75; // 20 a mano + 50 generados + 5 mega
 
 // Deterministic scripted inputs: phase-shifted direction changes, periodic
 // dashes, jumps and braces.
@@ -86,7 +86,16 @@ for (let level = 0; level < LEVELS; level++) {
     quietOk++;
   }
 }
-console.log(`generados 20-69: ${quietOk}/50 deterministas y sanos`);
+console.log(`generados+mega 20-74: ${quietOk}/55 deterministas y sanos`);
+
+// Mega arenas: report piece counts so we can eyeball sizes and the budget.
+for (let level = 70; level < 75; level++) {
+  const M = await createTumbo();
+  M._tumbo_init(1, 2, level);
+  const S = M.HEAPF32;
+  const b = M._tumbo_state_ptr() >> 2;
+  console.log(`  mega ${level}: ${S[b + 3]} baldosas, ${S[b + 6]} hazards`);
+}
 
 console.log('--- bots ---');
 const ba = await run(3, 'BOTS A', true);
@@ -190,7 +199,7 @@ async function runCustom(label) {
   const bytes = buildTestMap();
   M.HEAPU8.set(bytes, M._tumbo_custom_ptr());
   M._tumbo_set_custom(bytes.length);
-  M._tumbo_init(99, PLAYERS, 70);
+  M._tumbo_init(99, PLAYERS, 75);
   const inputsBase = M._tumbo_inputs_ptr() >> 2;
   const stateBase = M._tumbo_state_ptr() >> 2;
   const hashes = [];
@@ -202,7 +211,7 @@ async function runCustom(label) {
   const S = M.HEAPF32;
   console.log(
     `[custom ${label}] pieces=${S[stateBase + 3]} hazards=${S[stateBase + 6]} ` +
-      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]} (esperado level=70)`,
+      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]} (esperado level=75)`,
   );
   return { hashes, pieces: S[stateBase + 3], hazards: S[stateBase + 6] };
 }
