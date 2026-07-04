@@ -48,6 +48,8 @@ enum
 #define MEGA_MAX 1.55f
 #define SHOCK_RADIUS 5.0f
 #define SHOCK_FORCE 8.0f
+// Several pickups lie around the map at once, scaled to its size.
+#define MAX_ORBS 6
 
 // Game modes (motumbo_set_mode). All win conditions resolve inside the sim.
 enum
@@ -277,7 +279,9 @@ static Player g_players[MAX_PLAYERS];
 static Piece g_pieces[MAX_PIECES];
 static Hazard g_hazards[MAX_HAZARDS];
 static Bot g_bots[MAX_PLAYERS];
-static Powerup g_powerup;
+static Powerup g_orbs[MAX_ORBS];
+static int g_orbTarget;		 // how many orbs to keep on the map (by size)
+static uint32_t g_orbSpawnAt; // next tick a new orb may appear
 static int g_playerCount;
 static int g_pieceCount;
 static int g_hazardCount;
@@ -300,8 +304,8 @@ static int g_customSpawnCount;
 static float g_genSpawns[MAX_PLAYERS][3];
 static int g_genSpawnCount;
 static float g_genBallR;
-static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS + 4 +
-					 MODE_FLOATS];
+static float g_state[STATE_HEADER + STATE_STRIDE * ( MAX_PLAYERS + MAX_PIECES ) + HAZARD_STRIDE * MAX_HAZARDS +
+					 4 * MAX_ORBS + MODE_FLOATS];
 
 // Game-mode state.
 static int g_mode;
@@ -373,8 +377,8 @@ MOTUMBO_EXPORT float* motumbo_state_ptr( void )
 
 MOTUMBO_EXPORT int motumbo_state_floats( void )
 {
-	return STATE_HEADER + STATE_STRIDE * ( g_playerCount + g_pieceCount ) + HAZARD_STRIDE * g_hazardCount + 4 +
-		   MODE_FLOATS;
+	return STATE_HEADER + STATE_STRIDE * ( g_playerCount + g_pieceCount ) + HAZARD_STRIDE * g_hazardCount +
+		   4 * MAX_ORBS + MODE_FLOATS;
 }
 
 MOTUMBO_EXPORT int motumbo_level_count( void )
@@ -450,7 +454,15 @@ static void WriteState( void )
 	g_state[4] = (float)g_winner;
 	g_state[5] = (float)g_level;
 	g_state[6] = (float)g_hazardCount;
-	g_state[7] = g_powerup.active ? 1.0f : 0.0f;
+	int orbActiveCount = 0;
+	for ( int i = 0; i < MAX_ORBS; ++i )
+	{
+		if ( g_orbs[i].active )
+		{
+			orbActiveCount += 1;
+		}
+	}
+	g_state[7] = (float)orbActiveCount;
 
 	float* out = g_state + STATE_HEADER;
 	for ( int i = 0; i < g_playerCount; ++i )
@@ -506,11 +518,14 @@ static void WriteState( void )
 		out[11] = 0.0f;
 		out += HAZARD_STRIDE;
 	}
-	out[0] = g_powerup.pos.x;
-	out[1] = g_powerup.pos.y;
-	out[2] = g_powerup.pos.z;
-	out[3] = g_powerup.active ? (float)( 1 + g_powerup.type ) : 0.0f;
-	out += 4;
+	for ( int i = 0; i < MAX_ORBS; ++i )
+	{
+		out[0] = g_orbs[i].pos.x;
+		out[1] = g_orbs[i].pos.y;
+		out[2] = g_orbs[i].pos.z;
+		out[3] = g_orbs[i].active ? (float)( 1 + g_orbs[i].type ) : 0.0f;
+		out += 4;
+	}
 
 	out[0] = (float)g_mode;
 	if ( g_mode == MODE_MALDITO )
@@ -1908,9 +1923,13 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 		g_level = 0;
 	}
 	g_playerCount = playerCount < 1 ? 1 : ( playerCount > MAX_PLAYERS ? MAX_PLAYERS : playerCount );
-	g_powerup.active = false;
-	g_powerup.pos = ( b3Vec3 ){ 0.0f, -100.0f, 0.0f };
-	g_powerup.nextEventTick = 240;
+	for ( int i = 0; i < MAX_ORBS; ++i )
+	{
+		g_orbs[i].active = false;
+		g_orbs[i].pos = ( b3Vec3 ){ 0.0f, -100.0f, 0.0f };
+	}
+	g_orbSpawnAt = 240;
+	g_orbTarget = 1; // set after the level is built, from the tile count
 	g_mode = MODE_SUMO;
 	g_modeParam = 0;
 	g_zoneActive = false;
@@ -1949,6 +1968,12 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 		BuildLevel( g_level, &tileHull );
 	}
 	g_standingPieces = g_pieceCount;
+	// One orb per ~45 tiles: small arenas get 1, the big megas get up to 6.
+	g_orbTarget = g_pieceCount / 45 + 1;
+	if ( g_orbTarget > MAX_ORBS )
+	{
+		g_orbTarget = MAX_ORBS;
+	}
 
 	// Each arena picks its ball size: tiny = nervous, huge = heavyweight sumo.
 	static const float levelBallR[LEVEL_HANDMADE] = { 0.6f, 0.6f, 0.55f, 0.6f, 0.7f, 0.6f, 0.5f,	0.55f, 0.65f, 0.6f,
@@ -2032,7 +2057,7 @@ MOTUMBO_EXPORT void motumbo_set_mode( int mode, int param )
 	if ( g_mode == MODE_COSECHA )
 	{
 		// Orbs matter from the first second.
-		g_powerup.nextEventTick = COUNTDOWN_TICKS;
+		g_orbSpawnAt = COUNTDOWN_TICKS;
 	}
 	WriteState();
 }
@@ -2180,6 +2205,31 @@ static bool BotDashSafe( b3Pos pos, float dirx, float dirz )
 		   SupportStateAt( pos.x + dirx * 2.0f, pos.z + dirz * 2.0f ) >= 1;
 }
 
+// Nearest active orb to (x, z). Returns its index or -1, filling out coords.
+static int NearestOrb( float x, float z, float* outX, float* outZ )
+{
+	int best = -1;
+	float bestD2 = 1e30f;
+	for ( int k = 0; k < MAX_ORBS; ++k )
+	{
+		if ( !g_orbs[k].active )
+		{
+			continue;
+		}
+		float dx = g_orbs[k].pos.x - x;
+		float dz = g_orbs[k].pos.z - z;
+		float d2 = dx * dx + dz * dz;
+		if ( d2 < bestD2 )
+		{
+			bestD2 = d2;
+			best = k;
+			*outX = g_orbs[k].pos.x;
+			*outZ = g_orbs[k].pos.z;
+		}
+	}
+	return best;
+}
+
 static void BotReplan( int slot )
 {
 	Bot* bot = &g_bots[slot];
@@ -2264,11 +2314,15 @@ static void BotReplan( int slot )
 		}
 		return;
 	}
-	if ( g_mode == MODE_COSECHA && g_powerup.active )
+	if ( g_mode == MODE_COSECHA )
 	{
-		bot->tx = g_powerup.pos.x;
-		bot->tz = g_powerup.pos.z;
-		return;
+		float ox, oz;
+		if ( NearestOrb( pos.x, pos.z, &ox, &oz ) >= 0 )
+		{
+			bot->tx = ox;
+			bot->tz = oz;
+			return;
+		}
 	}
 	if ( g_mode == MODE_MALDITO && g_cursed >= 0 && g_players[g_cursed].alive )
 	{
@@ -2306,16 +2360,20 @@ static void BotReplan( int slot )
 		}
 	}
 
-	// Priority 2: grab the orb when it's close and uncontested-ish.
-	if ( g_powerup.active && !p->hasPower )
+	// Priority 2: grab a nearby orb when not already holding one.
+	if ( !p->hasPower && !p->hasShield )
 	{
-		float ox = g_powerup.pos.x - pos.x;
-		float oz = g_powerup.pos.z - pos.z;
-		if ( ox * ox + oz * oz < 4.5f * 4.5f && ( BotRng() & 3u ) != 0u )
+		float ox, oz;
+		if ( NearestOrb( pos.x, pos.z, &ox, &oz ) >= 0 )
 		{
-			bot->tx = g_powerup.pos.x;
-			bot->tz = g_powerup.pos.z;
-			return;
+			float dx = ox - pos.x;
+			float dz = oz - pos.z;
+			if ( dx * dx + dz * dz < 5.5f * 5.5f && ( BotRng() & 3u ) != 0u )
+			{
+				bot->tx = ox;
+				bot->tz = oz;
+				return;
+			}
 		}
 	}
 
@@ -2910,11 +2968,18 @@ static void ResolveDashHit( int att, int vic, float nx, float nz, float speed, b
 	{
 		victim->hasPower = false;
 		b3Pos vp = b3Body_GetPosition( victim->body );
-		g_powerup.pos = ( b3Vec3 ){ vp.x, vp.y + 1.1f, vp.z };
-		g_powerup.type = ORB_SUPER;
-		g_powerup.active = true;
-		g_powerup.nextEventTick = g_frame + 600;
-		PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)ORB_SUPER, (float)vic );
+		for ( int k = 0; k < MAX_ORBS; ++k )
+		{
+			if ( !g_orbs[k].active )
+			{
+				g_orbs[k].pos = ( b3Vec3 ){ vp.x, vp.y + 1.1f, vp.z };
+				g_orbs[k].type = ORB_SUPER;
+				g_orbs[k].active = true;
+				PushEvent( EVT_ORB_SPAWN, g_orbs[k].pos.x, g_orbs[k].pos.y, g_orbs[k].pos.z, (float)ORB_SUPER,
+						   (float)vic );
+				break;
+			}
+		}
 	}
 }
 
@@ -3235,107 +3300,168 @@ static void ApplyMega( Player* p )
 	p->shape = b3CreateSphereShape( p->body, &shapeDef, &sphere );
 }
 
+// Apply a picked-up orb's effect to player `i` and emit feedback.
+static void ApplyOrb( int i, int type, b3Vec3 at )
+{
+	Player* p = &g_players[i];
+	switch ( type )
+	{
+		case ORB_TURBO:
+			p->speedMult = p->speedMult + TURBO_STEP > TURBO_MAX ? TURBO_MAX : p->speedMult + TURBO_STEP;
+			break;
+		case ORB_MEGA:
+			ApplyMega( p );
+			break;
+		case ORB_SHIELD:
+			p->hasShield = true;
+			break;
+		case ORB_SHOCK:
+		{
+			b3Pos pos = b3Body_GetPosition( p->body );
+			for ( int j = 0; j < g_playerCount; ++j )
+			{
+				if ( j == i || !g_players[j].alive )
+				{
+					continue;
+				}
+				b3Pos op = b3Body_GetPosition( g_players[j].body );
+				float rx = op.x - pos.x;
+				float rz = op.z - pos.z;
+				float d = sqrtf( rx * rx + rz * rz );
+				if ( d < SHOCK_RADIUS && d > 0.01f )
+				{
+					float jm = b3Body_GetMass( g_players[j].body );
+					float f = SHOCK_FORCE * jm * ( 1.0f - d / SHOCK_RADIUS );
+					b3Body_ApplyLinearImpulseToCenter( g_players[j].body,
+													   ( b3Vec3 ){ rx / d * f, 0.35f * f, rz / d * f }, true );
+				}
+			}
+			PushEvent( EVT_SHOCK, at.x, at.y, at.z, 0.0f, (float)i );
+			break;
+		}
+		default: // ORB_SUPER
+			p->hasPower = true;
+			break;
+	}
+	PushEvent( EVT_ORB_PICKUP, at.x, at.y, at.z, (float)type, (float)i );
+	if ( g_mode == MODE_COSECHA && g_winner == -1 )
+	{
+		g_scores[i] += 1;
+		PushEvent( EVT_MODE_POINT, at.x, at.y, at.z, (float)i, (float)g_scores[i] );
+		if ( g_scores[i] >= g_modeParam )
+		{
+			g_winner = i;
+			PushEvent( EVT_ROUND_END, 0.0f, 0.0f, 0.0f, (float)g_winner, -1.0f );
+		}
+	}
+}
+
+// Drop a SUPER orb at a position (orb knocked loose from a carrier).
+static void DropOrb( int type, b3Vec3 at )
+{
+	for ( int k = 0; k < MAX_ORBS; ++k )
+	{
+		if ( !g_orbs[k].active )
+		{
+			g_orbs[k].pos = at;
+			g_orbs[k].type = type;
+			g_orbs[k].active = true;
+			PushEvent( EVT_ORB_SPAWN, at.x, at.y, at.z, (float)type, 1.0f );
+			return;
+		}
+	}
+}
+
 static void StepPowerup( void )
 {
-	if ( g_frame >= g_powerup.nextEventTick )
+	int activeCount = 0;
+	for ( int k = 0; k < MAX_ORBS; ++k )
 	{
-		// (Re)place the orb above a random standing tile.
+		if ( g_orbs[k].active )
+		{
+			activeCount += 1;
+		}
+	}
+
+	// Keep the map stocked: spawn one orb at a time up to the target.
+	if ( activeCount < g_orbTarget && g_frame >= g_orbSpawnAt )
+	{
+		int slot = -1;
+		for ( int k = 0; k < MAX_ORBS; ++k )
+		{
+			if ( !g_orbs[k].active )
+			{
+				slot = k;
+				break;
+			}
+		}
+		// A random standing tile not already under another orb.
 		int candidates[MAX_PIECES];
 		int count = 0;
 		for ( int i = 0; i < g_pieceCount; ++i )
 		{
-			if ( g_pieces[i].state == PIECE_STATIC )
+			if ( g_pieces[i].state != PIECE_STATIC )
+			{
+				continue;
+			}
+			b3Pos tp = b3Body_GetPosition( g_pieces[i].body );
+			bool taken = false;
+			for ( int k = 0; k < MAX_ORBS; ++k )
+			{
+				if ( g_orbs[k].active )
+				{
+					float dx = g_orbs[k].pos.x - tp.x;
+					float dz = g_orbs[k].pos.z - tp.z;
+					if ( dx * dx + dz * dz < 3.0f * 3.0f )
+					{
+						taken = true;
+						break;
+					}
+				}
+			}
+			if ( !taken )
 			{
 				candidates[count++] = i;
 			}
 		}
-		if ( count > 0 )
+		if ( slot >= 0 && count > 0 )
 		{
 			int pick = candidates[RngNext() % (uint32_t)count];
 			b3Pos tile = b3Body_GetPosition( g_pieces[pick].body );
-			g_powerup.pos = ( b3Vec3 ){ tile.x, tile.y + PIECE_HY + 1.1f, tile.z };
-			g_powerup.type = (int)( RngNext() % (uint32_t)ORB_TYPE_COUNT );
-			g_powerup.active = true;
-			PushEvent( EVT_ORB_SPAWN, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)g_powerup.type, -1.0f );
+			g_orbs[slot].pos = ( b3Vec3 ){ tile.x, tile.y + PIECE_HY + 1.1f, tile.z };
+			g_orbs[slot].type = (int)( RngNext() % (uint32_t)ORB_TYPE_COUNT );
+			g_orbs[slot].active = true;
+			PushEvent( EVT_ORB_SPAWN, g_orbs[slot].pos.x, g_orbs[slot].pos.y, g_orbs[slot].pos.z,
+					   (float)g_orbs[slot].type, -1.0f );
 		}
-		g_powerup.nextEventTick = g_frame + 600;
+		// Faster restock in COSECHA (orbs are the objective).
+		g_orbSpawnAt = g_frame + ( g_mode == MODE_COSECHA ? 60 : 150 );
 	}
 
-	if ( !g_powerup.active )
+	// Pickups: check every active orb against every eligible player.
+	for ( int k = 0; k < MAX_ORBS; ++k )
 	{
-		return;
-	}
-
-	for ( int i = 0; i < g_playerCount; ++i )
-	{
-		Player* p = &g_players[i];
-		// Can't grab a new orb while still holding a pending one (SUPER/SHIELD).
-		if ( !p->alive || p->hasPower || p->hasShield )
+		if ( !g_orbs[k].active )
 		{
 			continue;
 		}
-		b3Pos pos = b3Body_GetPosition( p->body );
-		float ddx = pos.x - g_powerup.pos.x;
-		float ddz = pos.z - g_powerup.pos.z;
-		float ddy = pos.y - g_powerup.pos.y;
-		if ( ddx * ddx + ddz * ddz < 1.1f * 1.1f && ddy > -1.4f && ddy < 1.4f )
+		for ( int i = 0; i < g_playerCount; ++i )
 		{
-			// Bomberman rules: what you grab changes how you play.
-			switch ( g_powerup.type )
+			Player* p = &g_players[i];
+			if ( !p->alive || p->hasPower || p->hasShield )
 			{
-				case ORB_TURBO:
-					p->speedMult = p->speedMult + TURBO_STEP > TURBO_MAX ? TURBO_MAX : p->speedMult + TURBO_STEP;
-					break;
-				case ORB_MEGA:
-					ApplyMega( p );
-					break;
-				case ORB_SHIELD:
-					p->hasShield = true;
-					break;
-				case ORB_SHOCK:
-				{
-					// Instant nova: shove every rival within range.
-					for ( int j = 0; j < g_playerCount; ++j )
-					{
-						if ( j == i || !g_players[j].alive )
-						{
-							continue;
-						}
-						b3Pos op = b3Body_GetPosition( g_players[j].body );
-						float rx = op.x - pos.x;
-						float rz = op.z - pos.z;
-						float d = sqrtf( rx * rx + rz * rz );
-						if ( d < SHOCK_RADIUS && d > 0.01f )
-						{
-							float jm = b3Body_GetMass( g_players[j].body );
-							float f = SHOCK_FORCE * jm * ( 1.0f - d / SHOCK_RADIUS );
-							b3Body_ApplyLinearImpulseToCenter(
-								g_players[j].body, ( b3Vec3 ){ rx / d * f, 0.35f * f, rz / d * f }, true );
-						}
-					}
-					PushEvent( EVT_SHOCK, pos.x, pos.y, pos.z, 0.0f, (float)i );
-					break;
-				}
-				default: // ORB_SUPER
-					p->hasPower = true;
-					break;
+				continue;
 			}
-			g_powerup.active = false;
-			g_powerup.nextEventTick = g_frame + ( g_mode == MODE_COSECHA ? 120 : 300 );
-			PushEvent( EVT_ORB_PICKUP, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)g_powerup.type,
-					   (float)i );
-			if ( g_mode == MODE_COSECHA && g_winner == -1 )
+			b3Pos pos = b3Body_GetPosition( p->body );
+			float ddx = pos.x - g_orbs[k].pos.x;
+			float ddz = pos.z - g_orbs[k].pos.z;
+			float ddy = pos.y - g_orbs[k].pos.y;
+			if ( ddx * ddx + ddz * ddz < 1.1f * 1.1f && ddy > -1.4f && ddy < 1.4f )
 			{
-				g_scores[i] += 1;
-				PushEvent( EVT_MODE_POINT, g_powerup.pos.x, g_powerup.pos.y, g_powerup.pos.z, (float)i,
-						   (float)g_scores[i] );
-				if ( g_scores[i] >= g_modeParam )
-				{
-					g_winner = i;
-					PushEvent( EVT_ROUND_END, 0.0f, 0.0f, 0.0f, (float)g_winner, -1.0f );
-				}
+				g_orbs[k].active = false;
+				ApplyOrb( i, g_orbs[k].type, g_orbs[k].pos );
+				break;
 			}
-			break;
 		}
 	}
 }

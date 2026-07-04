@@ -17,6 +17,7 @@ import {
   dashCooldownFrom,
   ballRadiusFrom,
   ORB_INFO,
+  MAX_ORBS,
   hasShield,
   pieceStateOf,
   pieceSpecialOf,
@@ -464,8 +465,8 @@ export class GameRenderer {
   private lastUpdateMs = -1;
 
   private hazardMeshes: THREE.Mesh[] = [];
-  private orb: THREE.Mesh;
-  private orbLight: THREE.PointLight;
+  private orbs: THREE.Mesh[] = [];
+  private orbLights: THREE.PointLight[] = [];
 
   // Rey de la colina zone marker (cosmetic; position mirrors the sim's mode section).
   private zoneMesh: THREE.Mesh;
@@ -534,15 +535,20 @@ export class GameRenderer {
     abyss.renderOrder = -1;
     this.scene.add(abyss);
 
-    // Golden power orb, reused across rounds.
-    this.orb = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.32, 1),
-      new THREE.MeshStandardMaterial({ color: 0xffc93c, emissive: 0xffaa00, emissiveIntensity: 1.4, roughness: 0.3 }),
-    );
-    this.orb.visible = false;
-    this.orbLight = new THREE.PointLight(0xffb300, 8, 6);
-    this.orb.add(this.orbLight);
-    this.scene.add(this.orb);
+    // Pool of power orbs (several lie around the map at once), reused across rounds.
+    const orbGeo = new THREE.IcosahedronGeometry(0.32, 1);
+    for (let i = 0; i < MAX_ORBS; i++) {
+      const orb = new THREE.Mesh(
+        orbGeo,
+        new THREE.MeshStandardMaterial({ color: 0xffc93c, emissive: 0xffaa00, emissiveIntensity: 1.4, roughness: 0.3 }),
+      );
+      orb.visible = false;
+      const light = new THREE.PointLight(0xffb300, 8, 6);
+      orb.add(light);
+      this.scene.add(orb);
+      this.orbs.push(orb);
+      this.orbLights.push(light);
+    }
 
     // Rey de la colina zone ring, reused across rounds (hidden outside KOTH).
     this.zoneMat = makeZoneMaterial();
@@ -943,19 +949,23 @@ export class GameRenderer {
       this.lerpInto(mesh.position, mesh.quaternion, prev, curr, base, alpha);
     }
 
-    const orbBase = sim.powerupBase();
-    const orbActive = curr[orbBase + 3] > 0.5;
-    this.orb.visible = orbActive;
-    if (orbActive) {
-      // Bomberman-style pickups: color reads the type from the state buffer.
-      const orbType = Math.round(curr[orbBase + 3]) - 1;
-      const orbColor = ORB_INFO[orbType]?.color ?? 0xffc93c;
-      const om = this.orb.material as THREE.MeshStandardMaterial;
-      om.color.setHex(orbColor);
-      om.emissive.setHex(orbColor);
-      this.orbLight.color.setHex(orbColor);
-      this.orb.position.set(curr[orbBase], curr[orbBase + 1] + 0.15 * Math.sin(timeMs * 0.004), curr[orbBase + 2]);
-      this.orb.rotation.y = timeMs * 0.002;
+    // Several orbs may be on the map; each state slot is [x, y, z, 0|1+type].
+    const orbsBase = sim.orbsBase();
+    for (let k = 0; k < MAX_ORBS; k++) {
+      const b = orbsBase + k * 4;
+      const active = curr[b + 3] > 0.5;
+      const orb = this.orbs[k];
+      orb.visible = active;
+      if (active) {
+        const orbType = Math.round(curr[b + 3]) - 1;
+        const orbColor = ORB_INFO[orbType]?.color ?? 0xffc93c;
+        const om = orb.material as THREE.MeshStandardMaterial;
+        om.color.setHex(orbColor);
+        om.emissive.setHex(orbColor);
+        this.orbLights[k].color.setHex(orbColor);
+        orb.position.set(curr[b], curr[b + 1] + 0.15 * Math.sin(timeMs * 0.004 + k), curr[b + 2]);
+        orb.rotation.y = timeMs * 0.002 + k;
+      }
     }
 
     // Rey de la colina zone: follow m0/m1 smoothly; the sim parks z at -1000

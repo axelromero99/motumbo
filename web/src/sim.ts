@@ -3,6 +3,7 @@
 import createMotumbo from './gen/motumbo.js';
 
 export const MAX_PLAYERS = 8;
+export const MAX_ORBS = 6;
 export const STATE_HEADER = 8;
 export const STATE_STRIDE = 8;
 export const HAZARD_STRIDE = 12;
@@ -258,13 +259,14 @@ export class Sim {
     return STATE_HEADER + STATE_STRIDE * (this.playerCount + this.pieceCount) + HAZARD_STRIDE * i;
   }
 
-  powerupBase(): number {
+  /** Base of the orb section: MAX_ORBS × [x, y, z, active(0 or 1+type)]. */
+  orbsBase(): number {
     return STATE_HEADER + STATE_STRIDE * (this.playerCount + this.pieceCount) + HAZARD_STRIDE * this.hazardCount;
   }
 
   /** [mode, m0, m1, m2] followed by 8 per-player scores. */
   modeBase(): number {
-    return this.powerupBase() + 4;
+    return this.orbsBase() + 4 * MAX_ORBS;
   }
 
   get mode(): number {
