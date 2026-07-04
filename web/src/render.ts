@@ -492,6 +492,7 @@ interface FaceRig {
   browL: THREE.Mesh;
   browR: THREE.Mesh;
   yaw: number; // smoothed heading the face turns toward (radians)
+  pitch: number; // smoothed tilt: up when heading away, down when toward camera
   blink: number; // seconds until the next blink
   closing: number; // 0 open .. 1 shut
   browY: number; // smoothed expression params
@@ -523,7 +524,7 @@ function makeFace(): FaceRig {
   browL.position.set(-EX, EY + 0.3, EZ);
   browR.position.set(EX, EY + 0.3, EZ);
   group.add(eyeL, eyeR, pupilL, pupilR, browL, browR);
-  return { group, eyeL, eyeR, pupilL, pupilR, browL, browR, yaw: 0, blink: 2 + Math.random() * 3, closing: 0, browY: 0, browAngle: 0, eyeSY: 1, pupilS: 1 };
+  return { group, eyeL, eyeR, pupilL, pupilR, browL, browR, yaw: 0, pitch: -0.18, blink: 2 + Math.random() * 3, closing: 0, browY: 0, browAngle: 0, eyeSY: 1, pupilS: 1 };
 }
 
 // Gradient dome (skyBottom → skyTop) with cheap hashed twinkling stars.
@@ -1259,21 +1260,26 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
-        // Turn the face toward the travel heading, clamped to the front so the
-        // eyes never rotate behind the silhouette; hold heading when near-still.
         const moving = hsp > 1.8;
-        const velHeading = moving ? Math.atan2(vx, vz) : face.yaw;
+        // Split the look into two axes read from the elevated camera:
+        //  · left/right  → yaw the face (using |vz| so heading straight away
+        //    keeps it facing forward instead of snapping sideways),
+        //  · toward/away → pitch it (down toward the camera, up when fleeing).
+        const sideHeading = moving ? Math.atan2(vx, Math.abs(vz) + 1e-4) : face.yaw;
+        const depth = moving ? -vz / hsp : 0; // +1 heading away, −1 toward camera
         if (moving) {
-          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, velHeading));
+          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, sideHeading));
           face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
         }
-        // Small upward tilt so the eyes read from the elevated camera.
-        face.group.rotation.set(-0.18, face.yaw, 0);
+        // Away tilts the eyes up firmly; toward the camera only a gentle dip.
+        const targetPitch = -0.18 - (depth > 0 ? depth * 0.34 : depth * 0.18);
+        face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
+        face.group.rotation.set(face.pitch, face.yaw, 0);
 
-        // Pupils dart toward the heading the face couldn't fully turn to (the
-        // residual past the clamp), so they visibly "look where they're going".
-        const lx = moving ? Math.max(-1, Math.min(1, Math.sin(velHeading - face.yaw) * 1.6)) : 0;
-        const ly = hsp > 1.2 ? 0.4 : 0;
+        // Pupils dart to finish the look: horizontal residual the yaw clamp left
+        // over, plus vertical from the toward/away component.
+        const lx = moving ? Math.max(-1, Math.min(1, Math.sin(sideHeading - face.yaw) * 1.6)) : 0;
+        const ly = depth; // +1 away → look up, −1 toward → look down
 
         const braced = (flags & FLAG_BRACED) !== 0;
         const hasPower = (flags & FLAG_HAS_POWER) !== 0;

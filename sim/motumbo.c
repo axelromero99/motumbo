@@ -2605,6 +2605,37 @@ static void BotReplan( int slot )
 
 	float dist = sqrtf( bestD2 );
 
+	// Read the situation: is there a real OPENING, or should we play neutral?
+	// An opening = the rival is cornered near a ledge, OR just dashed and can't
+	// shove back yet, OR we've been grinding too long. Matones (high aggr) call
+	// an opening on thinner margins; cautious bots wait for a clear one.
+	float rivalExpo = EdgeExposure( op.x, op.z );
+	bool rivalCantCounter = g_players[target].dashCooldown > 12;
+	float openThresh = 0.30f - 0.18f * bot->aggr;
+	bool opening = rivalExpo > openThresh || rivalCantCounter || bot->stuck >= 2;
+
+	// Neutral game: with no opening, circle at poke distance instead of grinding
+	// chest-to-chest. This is the "pensar / alejarse un poco" — bots size each
+	// other up and only commit when it pays, which also stops them barrelling off
+	// the edge chasing a shove that isn't there.
+	if ( !opening && dist > 1.9f && dist < 5.5f )
+	{
+		float ux = ( pos.x - op.x ) / dist;
+		float uz = ( pos.z - op.z ) / dist;
+		float side = ( ( slot + (int)( g_frame / 150 ) ) & 1 ) ? 1.0f : -1.0f;
+		float cx = op.x + ( ux * 0.5f - uz * side ) * 3.0f;
+		float cz = op.z + ( uz * 0.5f + ux * side ) * 3.0f;
+		if ( SupportStateAt( cx, cz ) >= 1 )
+		{
+			bot->tx = cx;
+			bot->tz = cz;
+		}
+		else
+		{
+			NearestSafeTile( cx, cz, slot, &bot->tx, &bot->tz );
+		}
+	}
+
 	// Dash only when the shove is worth it AND we won't fly off ourselves.
 	// Easy bots skip the self-preservation check now and then — that's their charm.
 	if ( p->dashCooldown == 0 && dist < 2.6f && dist > 0.3f )
@@ -2619,10 +2650,11 @@ static void BotReplan( int slot )
 			safe = ( BotRng() & 3u ) == 0u;
 		}
 		// A lethal dash (shoves the rival into the void) always fires when safe.
-		// Otherwise the chance of a positioning dash scales with the bot's
-		// AGGRESSION: matones se tiran seguido, cautelosos casi nunca.
+		// A positioning dash only into an OPENING, its chance scaling with the
+		// bot's AGGRESSION — so they poke and reposition instead of dashing on
+		// cooldown at a rival who's ready to parry.
 		float roll = (float)( BotRng() % 1000u ) / 1000.0f;
-		bool eager = roll < bot->aggr * 0.55f;
+		bool eager = opening && roll < bot->aggr * 0.7f;
 		if ( safe && ( lethal || eager ) )
 		{
 			bot->pulseDash = true;
