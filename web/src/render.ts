@@ -433,6 +433,37 @@ function makeHazardTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+// Floating "VOS" tag that hovers over the local player's ball so you always
+// know which one is you (white with a dark outline → reads on any arena).
+function makeYouMarkerTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d')!;
+  g.clearRect(0, 0, 128, 128);
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = '900 42px system-ui, sans-serif';
+  g.lineWidth = 9;
+  g.strokeStyle = 'rgba(0,0,0,0.85)';
+  g.strokeText('VOS', 64, 30);
+  g.fillStyle = '#ffffff';
+  g.fillText('VOS', 64, 30);
+  // Downward pointer.
+  g.beginPath();
+  g.moveTo(42, 62);
+  g.lineTo(86, 62);
+  g.lineTo(64, 106);
+  g.closePath();
+  g.lineWidth = 9;
+  g.stroke();
+  g.fillStyle = '#ffffff';
+  g.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 // ---- Ball faces -----------------------------------------------------------
 // A pair of eyes + eyebrows on the front of each ball that TURN toward the
 // travel heading (clamped to the front so they never rotate out of sight) and
@@ -756,6 +787,9 @@ export class GameRenderer {
   private lastUpdateMs = -1;
 
   private faces: FaceRig[] = [];
+  // Local human's slot (−1 = none, e.g. attract mode) and the "VOS" tag over it.
+  private localSlot = -1;
+  private youMarker: THREE.Sprite;
 
   private hazardMeshes: THREE.Mesh[] = [];
   private hazardTex = makeHazardTexture();
@@ -862,11 +896,25 @@ export class GameRenderer {
     this.zoneMesh.visible = false;
     this.scene.add(this.zoneMesh);
 
+    // "VOS" tag over the local player (drawn on top so it's never occluded).
+    this.youMarker = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: makeYouMarkerTexture(), transparent: true, depthTest: false, depthWrite: false }),
+    );
+    this.youMarker.scale.set(1.15, 1.15, 1.15);
+    this.youMarker.renderOrder = 10;
+    this.youMarker.visible = false;
+    this.scene.add(this.youMarker);
+
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
+  }
+
+  /** Which slot the local human controls (−1 to hide the "VOS" tag). */
+  setLocalPlayer(slot: number): void {
+    this.localSlot = slot;
   }
 
   /** Runtime quality knobs: shadow map toggle and device pixel ratio cap. */
@@ -1067,6 +1115,7 @@ export class GameRenderer {
     let cx = 0;
     let cz = 0;
     let aliveCount = 0;
+    this.youMarker.visible = false; // set true below when the local ball is alive
 
     // Curse pulse (MALDITO): flicker speeds up as m1 (ticks left) drops below
     // the panic threshold. Phase accumulation keeps the ramp continuous.
@@ -1210,18 +1259,21 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
-        // Turn the face toward the travel heading, but clamp to the front so the
+        // Turn the face toward the travel heading, clamped to the front so the
         // eyes never rotate behind the silhouette; hold heading when near-still.
-        if (hsp > 1.8) {
-          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, Math.atan2(vx, vz)));
+        const moving = hsp > 1.8;
+        const velHeading = moving ? Math.atan2(vx, vz) : face.yaw;
+        if (moving) {
+          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, velHeading));
           face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
         }
         // Small upward tilt so the eyes read from the elevated camera.
         face.group.rotation.set(-0.18, face.yaw, 0);
 
-        // Pupils glance slightly up/forward in the face's local frame.
-        const lx = 0;
-        const ly = hsp > 1.2 ? 0.35 : 0;
+        // Pupils dart toward the heading the face couldn't fully turn to (the
+        // residual past the clamp), so they visibly "look where they're going".
+        const lx = moving ? Math.max(-1, Math.min(1, Math.sin(velHeading - face.yaw) * 1.6)) : 0;
+        const ly = hsp > 1.2 ? 0.4 : 0;
 
         const braced = (flags & FLAG_BRACED) !== 0;
         const hasPower = (flags & FLAG_HAS_POWER) !== 0;
@@ -1259,15 +1311,25 @@ export class GameRenderer {
         face.eyeR.scale.set(0.26, 0.3 * lidY, 0.14);
 
         const jit = cursed ? (Math.random() - 0.5) * 0.05 : 0;
-        const pupilScale = 0.13 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
-        face.pupilL.position.set(-EX + lx * 0.08 + jit, EY + ly * 0.07, EZ + 0.08);
-        face.pupilR.position.set(EX + lx * 0.08 + jit, EY + ly * 0.07, EZ + 0.08);
+        const pupilScale = 0.14 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
+        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * 0.06, EZ + 0.08);
+        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * 0.06, EZ + 0.08);
         face.pupilL.scale.setScalar(pupilScale);
         face.pupilR.scale.setScalar(pupilScale);
         face.browL.position.set(-EX, EY + 0.3 + face.browY, EZ);
         face.browR.position.set(EX, EY + 0.3 + face.browY, EZ);
         face.browL.rotation.z = face.browAngle;
         face.browR.rotation.z = -face.browAngle;
+      }
+
+      // "VOS" tag floats over the local player's ball.
+      if (i === this.localSlot && alive) {
+        this.youMarker.visible = true;
+        this.youMarker.position.set(
+          root.position.x,
+          root.position.y + ballR + 1.0 + 0.1 * Math.sin(timeMs * 0.005),
+          root.position.z,
+        );
       }
     }
     if (tickChanged) this.lastSimFrame = curr[0];

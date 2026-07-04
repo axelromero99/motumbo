@@ -295,6 +295,7 @@ async function main(): Promise<void> {
     if (gameMode !== MODE_SUMO) sim.setMode(gameMode, gameModeParam);
     for (const slot of botSlots) sim.setBot(slot, botDifficulty);
     renderer.setup(sim, spec.theme);
+    renderer.setLocalPlayer(localHumanSlot());
     stats.onRoundStart(0);
     resetRoundLocals();
   };
@@ -312,6 +313,7 @@ async function main(): Promise<void> {
     sim.init(randomSeed(), 4, attractLevel);
     for (const slot of botSlots) sim.setBot(slot, 2);
     renderer.setup(sim);
+    renderer.setLocalPlayer(-1); // attract mode is all bots — no "VOS" tag
     resetRoundLocals();
     attractTimer = performance.now() + 45000;
   };

@@ -189,8 +189,14 @@ export class Sim {
     this.playerCount = playerCount;
     this.curr = this.readState(this.module._motumbo_state_floats());
     this.hazardCount = this.curr[6];
+    // State tail after the pieces = hazards + orbs (MAX_ORBS×4) + mode section
+    // (MODE_FLOATS). Subtracting only 4 (the pre-v7 single powerup) overcounted
+    // pieceCount by 4, so the camera auto-fit read the mode section's −1000
+    // sentinel as a tile, blew `ext` up to ~1000 and parked the camera past the
+    // far plane — every arena rendered black.
     this.pieceCount =
-      (this.module._motumbo_state_floats() - STATE_HEADER - HAZARD_STRIDE * this.hazardCount - 4) / STATE_STRIDE -
+      (this.module._motumbo_state_floats() - STATE_HEADER - HAZARD_STRIDE * this.hazardCount - 4 * MAX_ORBS - MODE_FLOATS) /
+        STATE_STRIDE -
       playerCount;
     this.prev = this.curr.slice();
   }
