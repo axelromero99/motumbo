@@ -2885,14 +2885,38 @@ static void BotReplan( int slot )
 		return;
 	}
 
-	// Parry reaction (medium+): a SHORT brace against an incoming dash.
-	// Holding it longer than the parry window just anchors the bot in place —
-	// three bots doing that at each other is a deadlock, not a fight.
-	if ( bot->difficulty >= 1 && nearby <= 1 && dist < 3.2f &&
+	// Defensive reaction to an incoming dash. Medium+ one-on-one brace for the
+	// parry (holding longer just anchors them — three bots doing that is a
+	// deadlock). Everyone else, and medium+ caught in a crowd where a brace is
+	// risky, SIDESTEPS out of the lane: natural evasion that also makes them
+	// harder to corner and stops easy bots from just tanking dashes.
+	if ( dist < 3.2f && dist > 0.01f &&
 		 g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
 	{
-		bot->braceFor = 10;
-		bot->pulseDash = false;
+		if ( bot->difficulty >= 1 && nearby <= 1 )
+		{
+			bot->braceFor = 10;
+			bot->pulseDash = false;
+		}
+		else if ( !bot->pulseDash && (float)( BotRng() % 1000u ) / 1000.0f < 0.28f + 0.32f * (float)bot->difficulty )
+		{
+			// Dodge reliability scales with skill: easy bots mostly eat it
+			// (beatable), hard bots almost always slip the lane.
+			float side = ( ( slot + (int)g_frame ) & 1 ) ? 1.0f : -1.0f;
+			float ux = ( pos.x - op.x ) / dist;
+			float uz = ( pos.z - op.z ) / dist;
+			float ex = pos.x + ( -uz ) * 2.6f * side;
+			float ez = pos.z + ( ux ) * 2.6f * side;
+			if ( SupportStateAt( ex, ez ) >= 1 )
+			{
+				bot->tx = ex;
+				bot->tz = ez;
+			}
+			else
+			{
+				NearestSafeTile( ex, ez, slot, &bot->tx, &bot->tz );
+			}
+		}
 	}
 }
 
