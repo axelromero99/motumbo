@@ -123,7 +123,7 @@ for (let level = 0; level < LEVELS; level++) {
 
   const flags = [];
   if (pieceCount < 8) flags.push(`arena casi vacía (${pieceCount} baldosas)`);
-  if (pieceCount >= 720) flags.push(`truncada en el tope de 720 baldosas`);
+  if (pieceCount >= 1152) flags.push(`truncada en el tope de 1152 baldosas`);
   if (voidSpawns > 0) flags.push(`${voidSpawns} spawn(s) sobre el vacío`);
   if (rampSpawns > 0) flags.push(`${rampSpawns} spawn(s) sobre rampa inclinada`);
   if (isolatedSpawns > 0) flags.push(`${isolatedSpawns} spawn(s) en isla de 1 baldosa`);

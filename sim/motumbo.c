@@ -16,7 +16,12 @@
 #endif
 
 #define MAX_PLAYERS 8
-#define MAX_PIECES 720
+// Raised from 720 for the v8 vertical arenas: multi-storey terraced towers and
+// bigger footprints need more tiles. The shared state buffer, crumble order and
+// spawn scratch arrays are all sized from this, so bumping it is enough (JS
+// derives pieceCount from the sim, it has no hardcoded cap). audit-levels.mjs
+// mirrors this value to detect truncation.
+#define MAX_PIECES 1152
 #define MAX_HAZARDS 4
 
 // 20 hand-crafted arenas + 50 procedurally generated + 5 huge "mega" arenas.
@@ -1420,157 +1425,226 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 {
 	g_genRng = (uint32_t)level * 2654435761u + 977u;
 	int fam = ( level - LEVEL_HANDMADE ) % 6;
-	// Big arenas — the balls stay the same absolute size, so there is lots of
-	// room to move and it plays livelier (raised ~30%; the grid loop below and
-	// MAX_PIECES were widened to match).
-	float R = GenF( 16.0f, 21.5f );
+
+	// v8 — VERTICAL arenas. Every family is now a multi-storey structure: wide
+	// terraced floors climbing 3-4 m, joined by ramps (tilted tiles) and by the
+	// 0.8 m step-risers that read as grand staircases. Footprints are ~2x the
+	// old ones. The ball keeps its absolute size, so the extra space reads as
+	// scale. A ramp tile rises exactly 0.8 m (see AddPieceEx), so a floor step
+	// is 0.8 m and neighbouring floors stay within the double-jump / audit reach.
 	static const float sizes[7] = { 0.45f, 0.5f, 0.55f, 0.6f, 0.6f, 0.75f, 0.9f };
 	g_genBallR = sizes[GenNext() % 7u];
 
-	// Family parameters, all rolled up-front so the RNG stream is stable.
-	int holes = (int)( GenNext() % 4u );
-	float hx[3], hz[3], hr[3];
-	for ( int k = 0; k < 3; ++k )
+	// Bigger, family-tuned footprints (old range was 16-21.5). These land the
+	// extents at ~23-30 m — roughly 2-2.3x the old area — while the densest
+	// (near-solid) families stay clear of the MAX_PIECES cap.
+	static const float famR[6] = { 23.5f, 24.5f, 24.5f, 25.0f, 23.5f, 29.0f };
+	float R = famR[fam] + GenF( -1.5f, 2.0f );
+
+	const float step = 0.8f;						  // one ramp-tile of climb = one floor step
+	int tierEvery = 2 + (int)( GenNext() % 2u );	  // grid-rings per floor (2 or 3)
+	int maxTier = 4 + (int)( GenNext() % 2u );		  // storeys above ground (4 or 5)
+
+	// Family params, all rolled up-front so the RNG stream stays stable.
+	int holes = 2 + (int)( GenNext() % 3u );
+	float hx[4], hz[4], hr[4];
+	for ( int k = 0; k < 4; ++k )
 	{
 		float a = GenF( 0.0f, 6.2831f );
-		float rr = GenF( 0.25f, 0.75f ) * R;
+		float rr = GenF( 0.35f, 0.85f ) * R;
 		hx[k] = cosf( a ) * rr;
 		hz[k] = sinf( a ) * rr;
-		hr[k] = GenF( 1.6f, 3.4f );
+		hr[k] = GenF( 1.8f, 3.2f );
 	}
-	int nIsl = 3 + (int)( GenNext() % 4u );
-	float ix[6], iz[6], ir[6];
-	for ( int k = 0; k < 6; ++k )
-	{
-		float a = 6.2831f * (float)k / (float)( nIsl > 0 ? nIsl : 1 ) + GenF( -0.3f, 0.3f );
-		float rr = GenF( 0.45f, 0.75f ) * R;
-		ix[k] = cosf( a ) * rr;
-		iz[k] = sinf( a ) * rr;
-		ir[k] = GenF( 2.4f, 4.6f );
-	}
-	bool hub = ( GenNext() & 1u ) != 0u;
-	float ringIn = GenF( 0.28f, 0.42f ) * R;
-	float ringMid = GenF( 0.55f, 0.7f ) * R;
-	int pitch = 2 + (int)( GenNext() % 2u );
-	int skipMod = 5 + (int)( GenNext() % 4u );
+	int nIsl = 6 + (int)( GenNext() % 3u );
+	int pitch = 3 + (int)( GenNext() % 2u );
+	int skipMod = 6 + (int)( GenNext() % 4u );
 	bool cheby = ( GenNext() & 1u ) != 0u;
-	int tierEvery = 2 + (int)( GenNext() % 2u );
-	int padSize = 2 + (int)( GenNext() % 2u );
+	int rampCols = 3 + (int)( GenNext() % 3u ); // grandstand ramp lanes
 
-	for ( int gx = -15; gx <= 15; ++gx )
+	const int GX = 21; // grid half-extent (±31.5 m) fits the biggest footprints
+
+	for ( int gx = -GX; gx <= GX; ++gx )
 	{
-		for ( int gz = -15; gz <= 15; ++gz )
+		for ( int gz = -GX; gz <= GX; ++gz )
 		{
 			float cx = gx * PIECE_STEP;
 			float cz = gz * PIECE_STEP;
-			float d2 = cx * cx + cz * cz;
-			float r = sqrtf( d2 );
+			float r = sqrtf( cx * cx + cz * cz );
+			int ax = gx < 0 ? -gx : gx;
+			int az = gz < 0 ? -gz : gz;
+			bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
+			int axisIn = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );  // ramp rises toward centre
+			int axisOut = gz == 0 ? ( gx > 0 ? 0 : 1 ) : ( gz > 0 ? 2 : 3 ); // ramp rises toward the rim
+
 			bool put = false;
 			float h = 0.0f;
 			int prio = 0;
 			int special = SPECIAL_NONE;
+			int ramp = -1;
 
 			if ( fam == 0 )
 			{
-				// Holed disc: big open brawl with deadly potholes.
+				// TORRE — a round stepped tower: concentric terraces climb to a
+				// central plateau, ramps run up the four axes, potholes pit the
+				// flat ground apron.
 				if ( r <= R )
 				{
-					put = true;
-					for ( int k = 0; k < holes; ++k )
+					int ring = (int)( r / PIECE_STEP + 0.5f );
+					int band = ring / tierEvery;
+					int tier = maxTier - band;
+					if ( tier < 0 )
 					{
-						float dx = cx - hx[k];
-						float dz = cz - hz[k];
-						if ( dx * dx + dz * dz < hr[k] * hr[k] )
+						tier = 0;
+					}
+					h = step * (float)tier;
+					prio = tier + 1; // rim (tier 0) crumbles first, plateau last
+					put = true;
+					bool boundary = ( ring % tierEvery ) == ( tierEvery - 1 );
+					if ( onAxis && boundary && tier > 0 )
+					{
+						ramp = axisIn;
+					}
+					if ( tier == 0 )
+					{
+						for ( int k = 0; k < holes; ++k )
 						{
-							put = false;
+							float dx = cx - hx[k];
+							float dz = cz - hz[k];
+							if ( dx * dx + dz * dz < hr[k] * hr[k] )
+							{
+								put = false;
+							}
 						}
 					}
 				}
 			}
 			else if ( fam == 1 )
 			{
-				// Island cluster with a doomed escape corridor.
-				for ( int k = 0; k < nIsl; ++k )
+				// GRADERÍA — a giant grandstand: rows of steps rising along +Z in
+				// 0.8 m increments, with ramp lanes cut up the slope. Shove rivals
+				// down the terraces and off the low front edge.
+				if ( r <= R )
 				{
-					float dx = cx - ix[k];
-					float dz = cz - iz[k];
-					if ( dx * dx + dz * dz <= ir[k] * ir[k] )
+					int row = gz + 14; // 0 near the low front, grows toward the back
+					int band = row / tierEvery;
+					if ( band < 0 )
 					{
-						put = true;
-						prio = 1;
+						band = 0;
 					}
-				}
-				if ( hub && r <= 3.2f )
-				{
+					if ( band > maxTier )
+					{
+						band = maxTier;
+					}
+					h = step * (float)band;
+					prio = maxTier - band + 1; // front rows fall first
 					put = true;
-					prio = 3;
-				}
-				if ( !put && gz == 0 && r <= R * 0.9f )
-				{
-					put = true;
-					prio = 0; // the corridor falls first
+					bool boundary = row >= 0 && ( row % tierEvery ) == ( tierEvery - 1 );
+					int lane = ( ( gx % rampCols ) + rampCols ) % rampCols;
+					if ( lane == 0 && boundary && band < maxTier )
+					{
+						ramp = 2; // rises toward +Z, up the slope
+					}
 				}
 			}
 			else if ( fam == 2 )
 			{
-				// Concentric rings with a jumpable moat.
-				if ( ( r >= ringIn && r <= ringMid ) || ( r >= ringMid + 2.2f && r <= R ) )
+				// CRÁTER — a stepped bowl: concentric terraces descend to a sunken
+				// centre pit, ramps climb back out toward the high rim you get
+				// shoved over.
+				if ( r <= R )
 				{
+					int ring = (int)( r / PIECE_STEP + 0.5f );
+					int band = ring / tierEvery;
+					if ( band > maxTier )
+					{
+						band = maxTier;
+					}
+					h = step * (float)band; // centre low, rim high
+					prio = maxTier - band + 1; // high rim crumbles first
 					put = true;
-					prio = r > ringMid ? 0 : 2;
-				}
-				if ( hub && r <= 2.4f )
-				{
-					put = true;
-					prio = 4;
+					bool boundary = ( ring % tierEvery ) == ( tierEvery - 1 );
+					if ( onAxis && boundary && band < maxTier )
+					{
+						ramp = axisOut;
+					}
 				}
 			}
 			else if ( fam == 3 )
 			{
-				// Street lattice with potholes.
-				int mx = ( ( gx % pitch ) + pitch ) % pitch;
-				int mz = ( ( gz % pitch ) + pitch ) % pitch;
-				if ( ( mx == 0 || mz == 0 ) && r <= R )
+				// PLAZA ESCALONADA — a big plaza of raised blocks at stepped
+				// heights threaded by ground-level streets; hop the kerbs between
+				// tiers. A few potholes in the streets keep it lethal.
+				if ( r <= R )
 				{
-					put = ( ( gx * 31 + gz * 17 + level ) % skipMod ) != 0;
+					int mx = ( ( gx % pitch ) + pitch ) % pitch;
+					int mz = ( ( gz % pitch ) + pitch ) % pitch;
+					bool street = ( mx == 0 || mz == 0 );
+					if ( street )
+					{
+						put = ( ( gx * 31 + gz * 17 + level ) % skipMod ) != 0;
+						h = 0.0f;
+						prio = 1;
+					}
+					else
+					{
+						int cellx = ( gx + 30 ) / pitch;
+						int cellz = ( gz + 30 ) / pitch;
+						uint32_t hh = (uint32_t)( cellx * 73856093 ) ^ (uint32_t)( cellz * 19349663 ) ^ (uint32_t)level;
+						int bt = 1 + (int)( hh % 2u ); // block tier 1 or 2 → 0.8 / 1.6 m
+						h = step * (float)bt;
+						prio = 4 + bt;
+						put = true;
+					}
 				}
 			}
 			else if ( fam == 4 )
 			{
-				// Terraced hill, square or diamond silhouette, with ramps.
-				int ax = gx < 0 ? -gx : gx;
-				int az = gz < 0 ? -gz : gz;
+				// ZIGURAT — a square-or-diamond stepped pyramid rising to a peak,
+				// ramps up the axes and a flat apron around the base.
 				int m = cheby ? ( ax > az ? ax : az ) : ( ax + az + 1 ) / 2;
-				if ( m <= 8 && r <= R )
+				int mCap = maxTier * tierEvery; // outermost terraced ring
+				if ( r <= R )
 				{
-					int tier = ( 8 - m ) / tierEvery;
-					if ( tier > 3 )
+					if ( m <= mCap )
 					{
-						tier = 3;
-					}
-					h = 0.8f * (float)tier;
-					prio = 3 - tier;
-					bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
-					if ( onAxis && ( ( 8 - m ) % tierEvery ) == ( tierEvery - 1 ) && tier < 3 )
-					{
-						int dir = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );
-						AddPieceEx( cx, cz, h, prio, hull, SPECIAL_NONE, 0.0f, 0.0f, dir );
+						int tier = ( mCap - m ) / tierEvery;
+						if ( tier > maxTier )
+						{
+							tier = maxTier;
+						}
+						h = step * (float)tier;
+						prio = tier + 2;
+						put = true;
+						if ( onAxis && ( ( mCap - m ) % tierEvery ) == ( tierEvery - 1 ) && tier < maxTier )
+						{
+							ramp = axisIn;
+						}
 					}
 					else
 					{
+						h = 0.0f; // ground apron widens the arena
+						prio = 1;
 						put = true;
 					}
 				}
 			}
 			else
 			{
-				// Jump-pad archipelago, some pads bouncy.
+				// PARKOUR — a field of 2×2 pads separated by one-tile gaps, their
+				// heights a smooth diagonal gradient (0-2.4 m) so every hop is a
+				// double-jump away. Some pads bounce.
 				int mx = ( ( gx % 3 ) + 3 ) % 3;
 				int mz = ( ( gz % 3 ) + 3 ) % 3;
-				if ( mx < padSize && mz < padSize && r <= R )
+				if ( mx < 2 && mz < 2 && r <= R )
 				{
-					put = ( ( gx * 13 + gz * 7 + level ) % skipMod ) != 0;
-					if ( put && ( ( gx + gz + level ) % 9 ) == 0 )
+					int cellx = ( gx + 30 ) / 3;
+					int cellz = ( gz + 30 ) / 3;
+					int pt = ( ( cellx + cellz ) % 4 + 4 ) % 4; // 0..3 diagonal bands
+					h = step * (float)pt;
+					prio = (int)r;
+					put = true;
+					if ( ( ( gx + gz + level ) % 11 ) == 0 )
 					{
 						special = SPECIAL_BOUNCY;
 					}
@@ -1579,7 +1653,7 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 
 			if ( put )
 			{
-				AddPieceEx( cx, cz, h, prio, hull, special, 0.0f, 0.0f, -1 );
+				AddPieceEx( cx, cz, h, prio, hull, special, 0.0f, 0.0f, ramp );
 			}
 		}
 	}
@@ -1601,19 +1675,8 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 		}
 	}
 
-	// Optional hazard: 30% spinning beam, 20% orbiting hammer.
-	uint32_t roll = GenNext() % 10u;
-	if ( roll < 3u )
-	{
-		float w = GenF( 0.6f, 1.0f ) * ( ( GenNext() & 1u ) ? 1.0f : -1.0f );
-		AddBoxHazard( ( b3Vec3 ){ 0.0f, 0.95f, 0.0f }, ( b3Vec3 ){ R - 0.6f, 0.3f, 0.32f }, HAZARD_BEAM, w, 0.0f, 0.0f );
-	}
-	else if ( roll < 5u )
-	{
-		float orbR = R * 0.72f;
-		AddBoxHazard( ( b3Vec3 ){ orbR, 0.95f, 0.0f }, ( b3Vec3 ){ 1.1f, 0.7f, 1.1f }, HAZARD_ORBITER,
-					  GenF( 0.4f, 0.65f ), 0.0f, orbR );
-	}
+	// No procedural sweeping hazard here: a rotating beam would tunnel through
+	// the raised terraces. Verticality + the crumble carry the challenge.
 
 	SortCrumbleOrder();
 	if ( ( GenNext() % 10u ) < 3u )
@@ -1621,8 +1684,8 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 		ShuffleCrumbleOrder();
 	}
 	g_crumbleStart = 420u + ( GenNext() % 5u ) * 60u;
-	int interval = 2200 / ( g_pieceCount > 0 ? g_pieceCount : 1 );
-	g_crumbleInterval = (uint32_t)( interval < 4 ? 4 : ( interval > 26 ? 26 : interval ) );
+	int interval = 3200 / ( g_pieceCount > 0 ? g_pieceCount : 1 );
+	g_crumbleInterval = (uint32_t)( interval < 4 ? 4 : ( interval > 30 ? 30 : interval ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,7 +1696,7 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 static void BuildMega( int level, const b3BoxHull* hull )
 {
 	int m = level - LEVEL_MEGA;
-	int extent = 13;
+	int extent = 15; // ±22.5 m — the vertical megas (COLOSO, GRAN CRUZ) reach wider
 	for ( int gx = -extent; gx <= extent; ++gx )
 	{
 		for ( int gz = -extent; gz <= extent; ++gz )
@@ -1645,21 +1708,33 @@ static void BuildMega( int level, const b3BoxHull* hull )
 
 			if ( m == 0 )
 			{
-				// COLOSO: giant disc, raised central plateau (king of the
-				// hill), and a counterclockwise boost ring near the rim.
-				if ( r <= 17.5f )
+				// COLOSO: a colossal stepped tower — concentric terraces climb
+				// ~4 m to a king-of-the-hill plateau, ramps run up the four axes,
+				// and a counterclockwise boost ring skirts the wide ground apron.
+				if ( r <= 20.0f )
 				{
-					if ( r <= 4.5f )
+					int ax = gx < 0 ? -gx : gx;
+					int az = gz < 0 ? -gz : gz;
+					bool onAxis = ( gz == 0 && ax > 0 ) || ( gx == 0 && az > 0 );
+					int axisIn = gz == 0 ? ( gx > 0 ? 1 : 0 ) : ( gz > 0 ? 3 : 2 );
+					int ring = (int)( r / PIECE_STEP + 0.5f );
+					int tier = 5 - ring / 2; // 2 rings per storey, centre highest
+					if ( tier < 0 )
 					{
-						AddPiece( cx, cz, 0.8f, 40, hull ); // plateau, falls last
+						tier = 0;
 					}
-					else if ( r >= 12.5f && r <= 15.5f )
+					int ramp = -1;
+					if ( onAxis && ( ring % 2 ) == 1 && tier > 0 )
+					{
+						ramp = axisIn;
+					}
+					if ( tier == 0 && ramp < 0 && r >= 16.0f && r <= 18.5f )
 					{
 						AddPieceEx( cx, cz, 0.0f, (int)( r * 1.2f ), hull, SPECIAL_BOOST, -cz / r, cx / r, -1 );
 					}
 					else
 					{
-						AddPiece( cx, cz, 0.0f, (int)( r * 1.2f ), hull );
+						AddPieceEx( cx, cz, 0.8f * (float)tier, tier + 2, hull, SPECIAL_NONE, 0.0f, 0.0f, ramp );
 					}
 				}
 			}
@@ -1698,14 +1773,34 @@ static void BuildMega( int level, const b3BoxHull* hull )
 			}
 			else if ( m == 2 )
 			{
-				// GRAN CRUZ: a colossal plus. Long arms collapse from the tips
-				// inward, herding everyone to the center for a final clash.
+				// GRAN CRUZ: a colossal plus that RISES to the middle — each arm
+				// is a stepped ramp-way climbing ~4 m to a central summit, so the
+				// fight funnels up and inward. Tips crumble first.
 				int ax = gx < 0 ? -gx : gx;
 				int az = gz < 0 ? -gz : gz;
-				if ( ( az <= 1 && ax <= 13 ) || ( ax <= 1 && az <= 13 ) )
+				if ( ( az <= 1 && ax <= 15 ) || ( ax <= 1 && az <= 15 ) )
 				{
-					int mm = ax > az ? ax : az;
-					AddPiece( cx, cz, 0.0f, mm, hull );
+					int mm = ax > az ? ax : az; // distance from centre along the arm
+					int tier = ( 15 - mm ) / 3; // tips low, summit high (5 storeys)
+					if ( tier > 5 )
+					{
+						tier = 5;
+					}
+					// A ramp runs up the centre-line of each arm at every step.
+					int ramp = -1;
+					bool boundary = ( ( 15 - mm ) % 3 ) == 2;
+					if ( boundary && tier < 5 )
+					{
+						if ( az == 0 && ax > 0 )
+						{
+							ramp = gx > 0 ? 1 : 0; // horizontal arm, rise toward centre
+						}
+						else if ( ax == 0 && az > 0 )
+						{
+							ramp = gz > 0 ? 3 : 2; // vertical arm, rise toward centre
+						}
+					}
+					AddPieceEx( cx, cz, 0.8f * (float)tier, tier + 1, hull, SPECIAL_NONE, 0.0f, 0.0f, ramp );
 				}
 			}
 			else if ( m == 3 )
