@@ -774,10 +774,8 @@ export class GameRenderer {
   private lookTarget = new THREE.Vector3(0, 0, 0);
   // Smoothed follow state for the top-down and third-person cameras.
   private camFocus = new THREE.Vector3();
-  private camHeading = new THREE.Vector3(0, 0, 1);
   private camInit = false;
   private localAlive = false; // follow cams fall back to the crowd once you're out
-  private camTmp = new THREE.Vector3();
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
@@ -1312,10 +1310,10 @@ export class GameRenderer {
           const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, sideHeading));
           face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
         }
-        // Heading AWAY (W) tilts the face firmly UP so it clearly looks that
-        // way — the eyes ride toward the top of the head; toward the camera only
-        // a gentle dip (the down look reads fine from the pupils alone).
-        const targetPitch = -0.18 - (depth > 0 ? depth * 0.6 : depth * 0.12);
+        // The head never tilts up/down — they're EYES: the PUPILS do the up/down
+        // (and left/right) pointing. Just a small constant up-tilt so the eyes
+        // read from the elevated camera.
+        const targetPitch = -0.14;
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
 
@@ -1535,12 +1533,6 @@ export class GameRenderer {
       this.camFocus.set(fx, fy, fz);
       this.camInit = true;
     }
-    // Heading from the focus's own motion (before we overwrite camFocus).
-    this.camTmp.set(fx - this.camFocus.x, 0, fz - this.camFocus.z);
-    if (this.camTmp.lengthSq() > 0.02 * 0.02) {
-      this.camTmp.normalize();
-      this.camHeading.lerp(this.camTmp, Math.min(1, dts * 4)).normalize();
-    }
     // Ease the focus toward the ball so the follow is smooth, not twitchy.
     this.camFocus.x += (fx - this.camFocus.x) * Math.min(1, dts * 6);
     this.camFocus.y += (fy - this.camFocus.y) * Math.min(1, dts * 4);
@@ -1555,20 +1547,16 @@ export class GameRenderer {
       this.camera.position.addScaledVector(shake, 0.3);
       this.camera.lookAt(this.camFocus.x, this.camFocus.y, this.camFocus.z);
     } else {
-      // TERCERA PERSONA: chase cam behind the ball, low, looking ahead — a POV.
-      const back = 6.2;
-      const high = 3.2;
-      this.camera.position.set(
-        this.camFocus.x - this.camHeading.x * back,
-        this.camFocus.y + high,
-        this.camFocus.z - this.camHeading.z * back,
-      );
-      this.camera.position.addScaledVector(shake, 0.5);
-      this.camera.lookAt(
-        this.camFocus.x + this.camHeading.x * 2.2,
-        this.camFocus.y + 0.7,
-        this.camFocus.z + this.camHeading.z * 2.2,
-      );
+      // TERCERA PERSONA: a close chase from a FIXED angle (behind toward the
+      // camera side), following the ball's position. It deliberately does NOT
+      // rotate with the ball's heading — a spinning chase cam changes which way
+      // is "forward" on screen every turn, and with world-relative WASD that
+      // made you drive off the edge. Fixed angle → W is always "away", playable.
+      const back = 7.6;
+      const high = 4.3;
+      this.camera.position.set(this.camFocus.x, this.camFocus.y + high, this.camFocus.z + back);
+      this.camera.position.addScaledVector(shake, 0.4);
+      this.camera.lookAt(this.camFocus.x, this.camFocus.y + 0.6, this.camFocus.z);
     }
     this.renderer.render(this.scene, this.camera);
   }
