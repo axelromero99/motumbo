@@ -2524,6 +2524,21 @@ static int NearestOrb( float x, float z, float* outX, float* outZ )
 	return best;
 }
 
+// Aim a bot at a world point, snapping to safe ground if that point is over a
+// gap or a doomed tile. Dedupes the "solid? go there : nearest safe" pattern.
+static void BotAimAt( Bot* bot, int slot, float x, float z )
+{
+	if ( SupportStateAt( x, z ) >= 1 )
+	{
+		bot->tx = x;
+		bot->tz = z;
+	}
+	else
+	{
+		NearestSafeTile( x, z, slot, &bot->tx, &bot->tz );
+	}
+}
+
 static void BotReplan( int slot )
 {
 	Bot* bot = &g_bots[slot];
@@ -2757,167 +2772,77 @@ static void BotReplan( int slot )
 	}
 
 	b3Pos op = b3Body_GetPosition( g_players[target].body );
-	bot->tx = op.x;
-	bot->tz = op.z;
-
-	// Timid bots (low courage) fight a step toward safety; brave ones commit
-	// squarely to the rim. Replaces the old flat hard-bot pullback.
-	float pull = 0.28f * ( 1.0f - bot->courage );
-	if ( pull > 0.02f )
-	{
-		float sx, sz;
-		NearestSafeTile( pos.x, pos.z, slot, &sx, &sz );
-		bot->tx += ( sx - bot->tx ) * pull;
-		bot->tz += ( sz - bot->tz ) * pull;
-	}
-
 	float dist = sqrtf( bestD2 );
+	// Unit vectors: AWAY from the rival (ux,uz) and TOWARD it (tox,toz).
+	float ux = dist > 0.01f ? ( pos.x - op.x ) / dist : 1.0f;
+	float uz = dist > 0.01f ? ( pos.z - op.z ) / dist : 0.0f;
+	float tox = -ux;
+	float toz = -uz;
 
-	// Read the situation: is there a real OPENING, or should we play neutral?
-	// An opening = the rival is cornered near a ledge, OR just dashed and can't
-	// shove back yet, OR we've been grinding too long. Matones (high aggr) call
-	// an opening on thinner margins; cautious bots wait for a clear one.
-	float rivalExpo = EdgeExposure( op.x, op.z );
-	bool rivalCantCounter = g_players[target].dashCooldown > 12;
-	float openThresh = 0.30f - 0.18f * bot->aggr;
-	bool opening = rivalExpo > openThresh || rivalCantCounter || bot->stuck >= 2;
-
-	// Neutral game: with no opening, circle at poke distance instead of grinding
-	// chest-to-chest. This is the "pensar / alejarse un poco" — bots size each
-	// other up and only commit when it pays, which also stops them barrelling off
-	// the edge chasing a shove that isn't there.
-	if ( !opening && dist > 1.9f && dist < 5.5f )
+	// 0) DEFEND FIRST — answer an incoming dash before anything else, at ANY
+	// range. Skilled bots brace 1v1 for the parry; the rest sidestep out of the
+	// lane (reliability scales with skill). Reading a dash and still walking into
+	// it is exactly the "bobo" behaviour, so this takes the whole tick.
+	if ( dist < 4.0f && g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
 	{
-		float ux = ( pos.x - op.x ) / dist;
-		float uz = ( pos.z - op.z ) / dist;
-		float side = ( ( slot + (int)( g_frame / 150 ) ) & 1 ) ? 1.0f : -1.0f;
-		float cx = op.x + ( ux * 0.5f - uz * side ) * 3.0f;
-		float cz = op.z + ( uz * 0.5f + ux * side ) * 3.0f;
-		if ( SupportStateAt( cx, cz ) >= 1 )
-		{
-			bot->tx = cx;
-			bot->tz = cz;
-		}
-		else
-		{
-			NearestSafeTile( cx, cz, slot, &bot->tx, &bot->tz );
-		}
-	}
-
-	// Dash only when the shove is worth it AND we won't fly off ourselves.
-	// Easy bots skip the self-preservation check now and then — that's their charm.
-	if ( p->dashCooldown == 0 && dist < 2.6f && dist > 0.3f )
-	{
-		float dirx = ( op.x - pos.x ) / dist;
-		float dirz = ( op.z - pos.z ) / dist;
-		bool lethal = SupportStateAt( op.x + dirx * 2.2f, op.z + dirz * 2.2f ) == 0;
-		bool safe = BotDashSafe( pos, dirx, dirz );
-		// Low-difficulty bots occasionally dash off recklessly; their weakness.
-		if ( bot->difficulty == 0 && !safe )
-		{
-			safe = ( BotRng() & 3u ) == 0u;
-		}
-		// A lethal dash (shoves the rival into the void) always fires when safe.
-		// A positioning dash only into an OPENING, its chance scaling with the
-		// bot's AGGRESSION — so they poke and reposition instead of dashing on
-		// cooldown at a rival who's ready to parry.
-		float roll = (float)( BotRng() % 1000u ) / 1000.0f;
-		bool eager = opening && roll < bot->aggr * 0.7f;
-		if ( safe && ( lethal || eager ) )
-		{
-			bot->pulseDash = true;
-		}
-	}
-
-	// Sumo, not wrestling: chest-to-chest without attacking is wasted time
-	// and it's how three bots end up grinding on one tile. Kite out, reset,
-	// come back in swinging.
-	if ( dist < 2.2f && !bot->pulseDash && dist > 0.01f )
-	{
-		float bx = ( pos.x - op.x ) / dist;
-		float bz = ( pos.z - op.z ) / dist;
-		float kx = pos.x + bx * 2.8f;
-		float kz = pos.z + bz * 2.8f;
-		if ( SupportStateAt( kx, kz ) >= 1 )
-		{
-			bot->tx = kx;
-			bot->tz = kz;
-		}
-		else
-		{
-			NearestSafeTile( kx, kz, slot, &bot->tx, &bot->tz );
-		}
-		// A short brace still answers an incoming dash while backing off.
-		if ( bot->difficulty >= 1 && g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
+		if ( bot->difficulty >= 1 && nearby <= 1 && dist < 2.6f )
 		{
 			bot->braceFor = 10;
 		}
-		return;
-	}
-
-	// Scrum breaker: locked in a shoving match, either blast out with a
-	// point-blank dash (only if WE land on solid ground) or flank sideways.
-	if ( bot->stuck >= 3 && dist > 0.01f )
-	{
-		float dirx = ( op.x - pos.x ) / dist;
-		float dirz = ( op.z - pos.z ) / dist;
-		if ( p->dashCooldown == 0 && BotDashSafe( pos, dirx, dirz ) )
+		else if ( (float)( BotRng() % 1000u ) / 1000.0f < 0.35f + 0.3f * (float)bot->difficulty )
 		{
-			bot->pulseDash = true;
-		}
-		else
-		{
-			// Ground flank only: hopping mid-scrum leaves the bot airborne
-			// and helpless right where the shoving is happening.
-			float side = ( ( slot + (int)( g_frame / 90 ) ) & 1 ) ? 1.0f : -1.0f;
-			float fxp = pos.x - dirz * 2.6f * side;
-			float fzp = pos.z + dirx * 2.6f * side;
-			if ( SupportStateAt( fxp, fzp ) >= 1 )
-			{
-				bot->tx = fxp;
-				bot->tz = fzp;
-			}
-			else
-			{
-				NearestSafeTile( fxp, fzp, slot, &bot->tx, &bot->tz );
-			}
-		}
-		return;
-	}
-
-	// Defensive reaction to an incoming dash. Medium+ one-on-one brace for the
-	// parry (holding longer just anchors them — three bots doing that is a
-	// deadlock). Everyone else, and medium+ caught in a crowd where a brace is
-	// risky, SIDESTEPS out of the lane: natural evasion that also makes them
-	// harder to corner and stops easy bots from just tanking dashes.
-	if ( dist < 3.2f && dist > 0.01f &&
-		 g_players[target].dashCooldown > DASH_COOLDOWN_TICKS - DASH_HIT_WINDOW )
-	{
-		if ( bot->difficulty >= 1 && nearby <= 1 )
-		{
-			bot->braceFor = 10;
-			bot->pulseDash = false;
-		}
-		else if ( !bot->pulseDash && (float)( BotRng() % 1000u ) / 1000.0f < 0.28f + 0.32f * (float)bot->difficulty )
-		{
-			// Dodge reliability scales with skill: easy bots mostly eat it
-			// (beatable), hard bots almost always slip the lane.
 			float side = ( ( slot + (int)g_frame ) & 1 ) ? 1.0f : -1.0f;
-			float ux = ( pos.x - op.x ) / dist;
-			float uz = ( pos.z - op.z ) / dist;
-			float ex = pos.x + ( -uz ) * 2.6f * side;
-			float ez = pos.z + ( ux ) * 2.6f * side;
-			if ( SupportStateAt( ex, ez ) >= 1 )
+			BotAimAt( bot, slot, pos.x + ( -toz ) * 3.0f * side, pos.z + tox * 3.0f * side );
+		}
+		return;
+	}
+
+	// 1) RETREAT WHEN VULNERABLE — if our own dash is recharging and the rival is
+	// in shoving range, back off to safe ground and buy time to reload. A human
+	// doesn't stand chest-to-chest with an empty dash; this defensive spacing is
+	// what replaces the old grind-and-get-shoved.
+	if ( p->dashCooldown > 8 && dist < 2.7f )
+	{
+		BotAimAt( bot, slot, pos.x + ux * 3.4f, pos.z + uz * 3.4f );
+		return;
+	}
+
+	// 2) COMMIT ONLY ON A REAL KILL — rival genuinely cornered near a ledge, or
+	// it just whiffed a dash and can't shove back. Matones read the opening on
+	// thinner margins. This is the ONLY branch that closes to contact.
+	float rivalExpo = EdgeExposure( op.x, op.z );
+	bool rivalWhiffed = g_players[target].dashCooldown > 20;
+	float openThresh = 0.42f - 0.16f * bot->aggr;
+	if ( rivalExpo > openThresh || ( rivalWhiffed && rivalExpo > 0.14f ) )
+	{
+		bot->tx = op.x;
+		bot->tz = op.z;
+		if ( p->dashCooldown == 0 && dist < 2.8f && dist > 0.3f )
+		{
+			bool lethal = SupportStateAt( op.x + tox * 2.2f, op.z + toz * 2.2f ) == 0;
+			bool safe = BotDashSafe( pos, tox, toz );
+			if ( bot->difficulty == 0 && !safe )
 			{
-				bot->tx = ex;
-				bot->tz = ez;
+				safe = ( BotRng() & 3u ) == 0u; // easy bots over-commit sometimes
 			}
-			else
+			float roll = (float)( BotRng() % 1000u ) / 1000.0f;
+			if ( safe && ( lethal || roll < 0.4f + 0.5f * bot->aggr ) )
 			{
-				NearestSafeTile( ex, ez, slot, &bot->tx, &bot->tz );
+				bot->pulseDash = true;
 			}
 		}
+		return;
 	}
+
+	// 3) DEFAULT — NEUTRAL SPACING. No kill on offer, so hold at poke distance
+	// and ORBIT, sizing the rival up instead of charging in. Matones hold closer
+	// (~2.6m) and press; cautious bots hold wider (~3.5m). This is what kills the
+	// charge-collide-kite loop: the gap only shortens when (2) fires.
+	float spacing = 3.6f - bot->aggr;
+	float side = ( ( slot + (int)( g_frame / 140 ) ) & 1 ) ? 1.0f : -1.0f;
+	float ax = op.x + ux * spacing + ( -uz ) * side * ( spacing * 0.55f );
+	float az = op.z + uz * spacing + ux * side * ( spacing * 0.55f );
+	BotAimAt( bot, slot, ax, az );
 }
 
 // Edge-aware steering: adjusts a desired move direction so a bot never walks
