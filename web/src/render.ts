@@ -27,6 +27,10 @@ import {
 import { FxSystem } from './fx';
 import { makeSkinMaterial, SKIN_COUNT } from './skins';
 import { loadTune, saveTune, tuneVal } from './tune';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
@@ -555,6 +559,8 @@ export class GameRenderer {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
+  private composer!: EffectComposer; // bloom pipeline (set up in the constructor)
+  private bloom!: UnrealBloomPass;
   private cameraBase = new THREE.Vector3(0, 22, 20.5);
   private cameraMode = 0; // 0 isométrica · 1 desde arriba · 2 tercera persona
   private arenaExt = 10; // arena half-extent from setup, for the camera presets
@@ -649,6 +655,20 @@ export class GameRenderer {
     this.camera.position.copy(this.cameraBase);
     this.camera.lookAt(0, 0, 0);
 
+    // Post-processing: ACES tone mapping + bloom. The threshold is kept high so
+    // only the brightest, emissive things (orbs, power-up auras, neon/slime/lava
+    // skins, hazards, the abyss glow) radiate — lit tiles and plain balls stay
+    // crisp instead of the whole frame washing out.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.22;
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.75, 0.5, 0.72);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
+
     this.hemi = new THREE.HemisphereLight(0x9fb4ff, 0x1a1f33, 0.8);
     this.scene.add(this.hemi);
 
@@ -721,6 +741,7 @@ export class GameRenderer {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.composer.setSize(window.innerWidth, window.innerHeight);
     });
   }
 
@@ -774,6 +795,7 @@ export class GameRenderer {
   setQuality(q: { shadows: boolean; pixelRatioCap: number }): void {
     this.pixelRatioCap = q.pixelRatioCap;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+    this.composer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
     if (this.renderer.shadowMap.enabled !== q.shadows) {
       this.renderer.shadowMap.enabled = q.shadows;
       this.sun.castShadow = q.shadows;
@@ -1393,7 +1415,7 @@ export class GameRenderer {
         .set(0, e * tuneVal(this.tune, 'isoH'), e * tuneVal(this.tune, 'isoD'))
         .add(this.fx.shakeOffset(this.shakeTmp, timeMs));
       this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
-      this.renderer.render(this.scene, this.camera);
+      this.composer.render();
       return;
     }
 
@@ -1433,7 +1455,7 @@ export class GameRenderer {
       this.camera.position.addScaledVector(shake, 0.4);
       this.camera.lookAt(this.camFocus.x + hx * 2.5, this.camFocus.y + 0.7, this.camFocus.z + hz * 2.5);
     }
-    this.renderer.render(this.scene, this.camera);
+    this.composer.render();
   }
 
   private lerpInto(
