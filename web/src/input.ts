@@ -40,7 +40,14 @@ export class LocalInput {
   dualLocal = false;
 
   constructor() {
+    // Let text fields (username, room code) receive every key — otherwise the
+    // gameplay bindings (WASD, Space, R, digits, C…) swallow those letters.
+    const typing = (e: KeyboardEvent): boolean => {
+      const t = e.target as HTMLElement | null;
+      return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    };
     window.addEventListener('keydown', (e) => {
+      if (typing(e)) return;
       if (e.code === 'KeyR') {
         this.onReset?.();
         return;
@@ -61,6 +68,7 @@ export class LocalInput {
       if (this.apply(e.code, true)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => {
+      if (typing(e)) return;
       if (this.apply(e.code, false)) e.preventDefault();
     });
     window.addEventListener('blur', () => this.words.fill(0));
