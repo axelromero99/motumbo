@@ -173,7 +173,18 @@ export function makeSkinMaterial(skinIndex: number, colorHex: number, playerNumb
   tex.colorSpace = THREE.SRGBColorSpace;
   const params = skin.mat(col);
   params.map = tex;
-  return new THREE.MeshStandardMaterial(params);
+  // The canvas already carries every colour (team tint for patterns/materials,
+  // absolute colours for flags). MeshStandardMaterial renders map × color, so
+  // leaving color = the team tint double-multiplies it — flags come out a muddy
+  // team-tinted blob, patterns/materials come out color². Force white so the map
+  // shows exactly as painted.
+  params.color = new THREE.Color(0xffffff);
+  const material = new THREE.MeshStandardMaterial(params);
+  // Remember the baked emissive so the per-frame aura (curse/power/dash) can
+  // restore it instead of zeroing the glow on Slime/Neón/Galaxia/Lava.
+  material.userData.baseEmissive = material.emissive.getHex();
+  material.userData.baseEmissiveIntensity = material.emissiveIntensity;
+  return material;
 }
 
 /** Small round thumbnail (data URL) of a skin for the picker UI. */

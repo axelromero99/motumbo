@@ -1320,7 +1320,10 @@ export class GameRenderer {
         mat.emissive.setHex(PLAYER_COLORS[i % PLAYER_COLORS.length]);
         mat.emissiveIntensity = 0.22;
       } else {
-        mat.emissiveIntensity = 0;
+        // Restore the skin's baked glow (Slime/Neón/Galaxia/Lava) instead of
+        // killing it every frame; plain skins baked 0 so they stay matte.
+        mat.emissive.setHex((mat.userData.baseEmissive as number) ?? 0);
+        mat.emissiveIntensity = (mat.userData.baseEmissiveIntensity as number) ?? 0;
       }
 
       // Face: turns to look where the ball is heading, expression follows mood.
