@@ -35,6 +35,7 @@ import {
   MODE_NAMES,
 } from './sim';
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
+import { SKIN_COUNT } from './skins';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
@@ -310,6 +311,17 @@ async function main(): Promise<void> {
     prevLocalDashReady = true;
   };
 
+  // Local player wears their chosen skin (localStorage); everyone else gets a
+  // spread-out variety so the field looks different every round.
+  const buildSkins = (localSlot: number): number[] => {
+    const chosen = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
+    const skins: number[] = [];
+    for (let i = 0; i < playerCount; i++) {
+      skins[i] = i === localSlot && !botSlots.includes(i) ? chosen : (i * 7 + 3) % SKIN_COUNT;
+    }
+    return skins;
+  };
+
   const initRound = (roundSeed: number, spec: RoundSpec): void => {
     currentLevel = spec.level;
     currentTheme = spec.theme;
@@ -320,6 +332,7 @@ async function main(): Promise<void> {
     // must happen at the same point on every peer.
     if (gameMode !== MODE_SUMO) sim.setMode(gameMode, gameModeParam);
     for (const slot of botSlots) sim.setBot(slot, botDifficulty);
+    renderer.setSkins(buildSkins(localHumanSlot()));
     renderer.setup(sim, spec.theme);
     renderer.setLocalPlayer(localHumanSlot(), ui.username);
     stats.onRoundStart(0);
@@ -338,6 +351,7 @@ async function main(): Promise<void> {
     currentLevelName = LEVEL_NAMES[attractLevel];
     sim.init(randomSeed(), 4, attractLevel);
     for (const slot of botSlots) sim.setBot(slot, 2);
+    renderer.setSkins(buildSkins(-1));
     renderer.setup(sim);
     renderer.setLocalPlayer(-1); // attract mode is all bots — no "VOS" tag
     resetRoundLocals();

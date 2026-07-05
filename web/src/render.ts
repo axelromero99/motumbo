@@ -25,6 +25,7 @@ import {
   SPECIAL_BOUNCY,
 } from './sim';
 import { FxSystem } from './fx';
+import { makeSkinMaterial, SKIN_COUNT } from './skins';
 
 export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
@@ -802,6 +803,7 @@ export class GameRenderer {
   private lastUpdateMs = -1;
 
   private faces: FaceRig[] = [];
+  private playerSkins: number[] = []; // skin index per player (empty → auto variety)
   // Local human's slot (−1 = none, e.g. attract mode) and the "VOS" tag over it.
   private localSlot = -1;
   private youMarker: THREE.Sprite;
@@ -925,6 +927,11 @@ export class GameRenderer {
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
     });
+  }
+
+  /** Skin index per player slot; call before setup(). Empty = auto variety. */
+  setSkins(skins: number[]): void {
+    this.playerSkins = skins;
   }
 
   /**
@@ -1078,7 +1085,9 @@ export class GameRenderer {
     const sphereGeo = new THREE.SphereGeometry(PLAYER_RADIUS, 32, 24);
     for (let i = 0; i < sim.playerCount; i++) {
       const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
-      const mat = makeBallMaterial(color, i, i + 1);
+      // Local player wears their chosen skin; the rest get spread-out variety.
+      const skin = this.playerSkins[i] ?? (i * 7) % SKIN_COUNT;
+      const mat = makeSkinMaterial(skin, color, i + 1);
       const mesh = new THREE.Mesh(sphereGeo, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -1306,24 +1315,22 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
-        // Track the local player's heading (slower than the face) for the
-        // third-person chase cam to sit behind.
-        if (i === this.localSlot && hsp > 1.5) {
-          const t = Math.atan2(vx, vz);
-          let dd = t - this.chaseYaw;
-          dd = Math.atan2(Math.sin(dd), Math.cos(dd));
-          this.chaseYaw += dd * Math.min(1, dts * 2.5);
-        }
-        // The whole HEAD turns to face the travel direction, like a creature
-        // looking where it walks: move away (into the screen) and you see the
-        // back of its head; move toward the camera and it faces you. Full range,
-        // eased along the shortest angle so it never spins the long way round.
+        // The head faces where it's going (move away → you see the back of its
+        // head; toward → it faces you). When idle, everyone turns to look at the
+        // arena CENTRE, so the crowd isn't all staring the same way. The player
+        // you follow in third person keeps its heading when idle, so the chase
+        // cam stays put behind it (always the nape).
+        let targetYaw = face.yaw;
         if (hsp > 1.5) {
-          const targetYaw = Math.atan2(vx, vz);
-          let d = targetYaw - face.yaw;
-          d = Math.atan2(Math.sin(d), Math.cos(d));
-          face.yaw += d * Math.min(1, dts * 8);
+          targetYaw = Math.atan2(vx, vz);
+        } else if (i !== this.localSlot) {
+          targetYaw = Math.atan2(-root.position.x, -root.position.z);
         }
+        let d = targetYaw - face.yaw;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        face.yaw += d * Math.min(1, dts * (hsp > 1.5 ? 8 : 1.6));
+        // The chase cam sits exactly behind the local player's facing.
+        if (i === this.localSlot) this.chaseYaw = face.yaw;
         // A small fixed tilt (a stopped, camera-facing head reads better); the
         // head itself does the looking, so the pupils just sit forward.
         const targetPitch = -0.1;
