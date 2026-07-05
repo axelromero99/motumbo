@@ -120,6 +120,7 @@
 import { deleteMap, listMaps } from './editor';
 import type { SavedMap } from './editor';
 import { MODE_COSECHA, MODE_KOTH, MODE_MALDITO, MODE_SUMO } from './sim';
+import { SKIN_COUNT, skinThumbnail } from './skins';
 
 /** Presets del toggle de partículas (valor = multiplicador de densidad). */
 export const PARTICLE_PRESETS: Record<string, number> = { alta: 1, media: 0.5, baja: 0.2 };
@@ -322,6 +323,7 @@ export class UiShell {
     }
 
     this.wireUsername();
+    this.wireSkinPicker();
     this.wireTitle();
     this.wireSetup();
     this.wireOnline();
@@ -662,6 +664,33 @@ export class UiShell {
   /** Nombre del jugador local (slither.io style), persistido en localStorage. */
   get username(): string {
     return this.usernameValue;
+  }
+
+  private wireSkinPicker(): void {
+    const host = document.getElementById('skin-picker');
+    if (!host) return;
+    let sel = 0;
+    try {
+      sel = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
+    } catch {
+      sel = 0;
+    }
+    const thumbs: HTMLButtonElement[] = [];
+    for (let i = 0; i < SKIN_COUNT; i++) {
+      const btn = document.createElement('button');
+      btn.className = 'skin-thumb' + (i === sel ? ' sel' : '');
+      btn.style.backgroundImage = `url(${skinThumbnail(i, 0xff5964)})`;
+      btn.addEventListener('click', () => {
+        try {
+          localStorage.setItem('motumbo.skin', String(i));
+        } catch {
+          // ignore storage errors
+        }
+        thumbs.forEach((t, k) => t.classList.toggle('sel', k === i));
+      });
+      host.appendChild(btn);
+      thumbs.push(btn);
+    }
   }
 
   private wireUsername(): void {
