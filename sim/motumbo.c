@@ -2892,51 +2892,68 @@ static void BotReplan( int slot )
 		return;
 	}
 
-	// 1) RETREAT WHEN VULNERABLE — if our own dash is recharging and the rival is
-	// in shoving range, back off to safe ground and buy time to reload. A human
-	// doesn't stand chest-to-chest with an empty dash; this defensive spacing is
-	// what replaces the old grind-and-get-shoved.
-	if ( p->dashCooldown > 8 && dist < 2.7f )
-	{
-		BotAimAt( bot, slot, pos.x + ux * 3.4f, pos.z + uz * 3.4f );
-		return;
-	}
+	// Rim direction of the rival (from arena centre): we shove them THAT way, so
+	// we line up on the centre side and drive through them toward the edge.
+	float rlen = sqrtf( op.x * op.x + op.z * op.z );
+	float shoveX = rlen > 0.5f ? op.x / rlen : tox;
+	float shoveZ = rlen > 0.5f ? op.z / rlen : toz;
 
-	// 2) COMMIT ONLY ON A REAL KILL — rival genuinely cornered near a ledge, or
-	// it just whiffed a dash and can't shove back. Matones read the opening on
-	// thinner margins. This is the ONLY branch that closes to contact.
-	float rivalExpo = EdgeExposure( op.x, op.z );
-	bool rivalWhiffed = g_players[target].dashCooldown > 20;
-	float openThresh = 0.42f - 0.16f * bot->aggr;
-	if ( rivalExpo > openThresh || ( rivalWhiffed && rivalExpo > 0.14f ) )
+	// 1) STRIKE — the main game. With a loaded dash we HUNT: take a RUN-UP at the
+	// rival to build speed (a real charge makes the shove land hard) and dash
+	// THROUGH them toward the nearest edge. Bots that only orbit feel dead — this
+	// is what makes them actually attack, use the dash, and threaten.
+	if ( p->dashCooldown == 0 )
 	{
-		bot->tx = op.x;
-		bot->tz = op.z;
-		if ( p->dashCooldown == 0 && dist < 2.8f && dist > 0.3f )
+		if ( dist < 2.7f && dist > 0.25f )
 		{
-			bool lethal = SupportStateAt( op.x + tox * 2.2f, op.z + toz * 2.2f ) == 0;
+			// In shoving range: fire. Aggression + skill scale how readily; a
+			// lethal shove (rival flies off) always fires when we stay on solid
+			// ground. Keep barreling through them either way.
+			bool lethal = SupportStateAt( op.x + tox * 2.4f, op.z + toz * 2.4f ) == 0;
 			bool safe = BotDashSafe( pos, tox, toz );
 			if ( bot->difficulty == 0 && !safe )
 			{
 				safe = ( BotRng() & 3u ) == 0u; // easy bots over-commit sometimes
 			}
 			float roll = (float)( BotRng() % 1000u ) / 1000.0f;
-			if ( safe && ( lethal || roll < 0.4f + 0.5f * bot->aggr ) )
+			// In range with a loaded dash, ALMOST always fire — sitting in
+			// contact without dashing is the "bobo" grind. Cautious bots still
+			// pick their moments a bit; aggressive/hard bots always shove.
+			float eager = 0.7f + 0.24f * bot->aggr + 0.08f * (float)bot->difficulty;
+			if ( safe && ( lethal || roll < eager ) )
 			{
 				bot->pulseDash = true;
 			}
+			bot->tx = op.x;
+			bot->tz = op.z;
+			return;
+		}
+		// Out of range with a loaded dash: line up on the centre side and CHARGE,
+		// arriving with momentum. Close enough → just commit straight at them.
+		if ( dist < 4.8f )
+		{
+			bot->tx = op.x;
+			bot->tz = op.z;
+		}
+		else
+		{
+			BotAimAt( bot, slot, op.x - shoveX * 1.5f, op.z - shoveZ * 1.5f );
 		}
 		return;
 	}
 
-	// 3) DEFAULT — NEUTRAL SPACING. No kill on offer, so hold at poke distance
-	// and ORBIT, sizing the rival up instead of charging in. Matones hold closer
-	// (~2.6m) and press; cautious bots hold wider (~3.5m). This is what kills the
-	// charge-collide-kite loop: the gap only shortens when (2) fires.
-	float spacing = 3.6f - bot->aggr;
-	float side = ( ( slot + (int)( g_frame / 140 ) ) & 1 ) ? 1.0f : -1.0f;
-	float ax = op.x + ux * spacing + ( -uz ) * side * ( spacing * 0.55f );
-	float az = op.z + uz * spacing + ux * side * ( spacing * 0.55f );
+	// 2) RELOADING — dash on cooldown. Don't stand in range getting shoved: if
+	// we're close, peel back to safe ground to reload; otherwise circle at poke
+	// distance, ready to pounce the instant the dash returns. No mindless grind.
+	if ( dist < 2.3f )
+	{
+		BotAimAt( bot, slot, pos.x + ux * 3.0f, pos.z + uz * 3.0f );
+		return;
+	}
+	float spacing = 3.0f - bot->aggr; // aggressive bots hover close, ready to strike
+	float side = ( ( slot + (int)( g_frame / 130 ) ) & 1 ) ? 1.0f : -1.0f;
+	float ax = op.x + ux * spacing + ( -uz ) * side * ( spacing * 0.5f );
+	float az = op.z + uz * spacing + ux * side * ( spacing * 0.5f );
 	BotAimAt( bot, slot, ax, az );
 }
 
