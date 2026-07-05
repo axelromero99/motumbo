@@ -489,9 +489,6 @@ const FACE_DARK_MAT = new THREE.MeshBasicMaterial({ color: 0x181c26 });
 const EX = 0.32;
 const EY = 0.4;
 const EZ = 0.76;
-// The face turns toward travel but never past this (eyes would hide behind the
-// ball silhouette from the elevated camera).
-const FACE_YAW_MAX = 0.85;
 
 interface FaceRig {
   group: THREE.Group;
@@ -1299,28 +1296,23 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
-        const moving = hsp > 1.8;
-        // Split the look into two axes read from the elevated camera:
-        //  · left/right  → yaw the face (using |vz| so heading straight away
-        //    keeps it facing forward instead of snapping sideways),
-        //  · toward/away → pitch it (down toward the camera, up when fleeing).
-        const sideHeading = moving ? Math.atan2(vx, Math.abs(vz) + 1e-4) : face.yaw;
-        const depth = moving ? -vz / hsp : 0; // +1 heading away, −1 toward camera
-        if (moving) {
-          const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, sideHeading));
-          face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
+        // The whole HEAD turns to face the travel direction, like a creature
+        // looking where it walks: move away (into the screen) and you see the
+        // back of its head; move toward the camera and it faces you. Full range,
+        // eased along the shortest angle so it never spins the long way round.
+        if (hsp > 1.5) {
+          const targetYaw = Math.atan2(vx, vz);
+          let d = targetYaw - face.yaw;
+          d = Math.atan2(Math.sin(d), Math.cos(d));
+          face.yaw += d * Math.min(1, dts * 8);
         }
-        // The head never tilts up/down — they're EYES: the PUPILS do the up/down
-        // (and left/right) pointing. Just a small constant up-tilt so the eyes
-        // read from the elevated camera.
-        const targetPitch = -0.14;
+        // A small fixed tilt (a stopped, camera-facing head reads better); the
+        // head itself does the looking, so the pupils just sit forward.
+        const targetPitch = -0.1;
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
-
-        // Pupils dart to finish the look: horizontal residual the yaw clamp left
-        // over, plus vertical from the toward/away component.
-        const lx = moving ? Math.max(-1, Math.min(1, Math.sin(sideHeading - face.yaw) * 1.6)) : 0;
-        const ly = depth; // +1 away → look up, −1 toward → look down
+        const lx = 0;
+        const ly = 0;
 
         const braced = (flags & FLAG_BRACED) !== 0;
         const hasPower = (flags & FLAG_HAS_POWER) !== 0;
