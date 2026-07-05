@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsc --noEmit && node ../scripts/test-sim.mjs && node ../scripts/test-lockstep.mjs && node ../scripts/audit-levels.mjs && node ../scripts/audit-reach.mjs && node ../scripts/test-modes.mjs",
+    "smoke": "node ../scripts/smoke-render.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

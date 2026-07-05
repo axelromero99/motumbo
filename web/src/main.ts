@@ -1062,6 +1062,32 @@ async function main(): Promise<void> {
     void joinRoom(roomLink[1]);
   }
 
+  // Dev deep-link: #dev=level=76&cam=2&mode=cosecha&bots=2 drops straight into a
+  // solo match on that scenario — no menu clicking while iterating.
+  const devLink = location.hash.match(/^#dev=?(.*)/i);
+  if (devLink) {
+    const q = new URLSearchParams(devLink[1].replace(/,/g, '&'));
+    const lvl = q.get('level');
+    let level: number | 'random' = 0;
+    if (lvl === 'random') level = 'random';
+    else if (lvl !== null) {
+      const n = Number(lvl);
+      level = Number.isFinite(n) ? n : Math.max(0, LEVEL_NAMES.findIndex((nm) => nm.toUpperCase().includes(lvl.toUpperCase())));
+    }
+    const modeMap: Record<string, number> = { sumo: MODE_SUMO, koth: MODE_KOTH, rey: MODE_KOTH, cosecha: MODE_COSECHA, maldito: MODE_MALDITO };
+    const m = modeMap[(q.get('mode') || 'sumo').toLowerCase()] ?? MODE_SUMO;
+    levelChoice = level;
+    gameMode = m;
+    gameModeParam = m === MODE_SUMO ? 0 : Number(q.get('mparam')) || (m === MODE_KOTH ? 15 : m === MODE_COSECHA ? 5 : 12);
+    winTarget = 5;
+    const bots = Number(q.get('bots'));
+    botDifficulty = bots >= 0 && bots <= 2 ? bots : 1;
+    intent = 'solo';
+    startMatch();
+    const cam = Number(q.get('cam')) | 0;
+    for (let c = 0; c < cam && c < 2; c++) renderer.cycleCamera();
+  }
+
   let last = performance.now();
 
   const frame = (now: number): void => {

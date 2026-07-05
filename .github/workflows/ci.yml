@@ -44,12 +44,11 @@ jobs:
         run: npm ci
         working-directory: web
 
-      - name: Determinism tests (20 levels, modes, bots, custom maps, lockstep)
-        run: |
-          node scripts/test-sim.mjs
-          node scripts/test-lockstep.mjs
+      - name: Tests (typecheck + determinism + level & reachability audits + modes)
+        run: npm test
+        working-directory: web
 
-      - name: Typecheck + build site
+      - name: Build site
         run: npm run build
         working-directory: web
 

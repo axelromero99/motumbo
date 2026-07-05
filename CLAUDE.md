@@ -41,7 +41,23 @@ fuera de una plataforma que se desmorona; el último en pie gana la ronda.
 - `scripts\build-sim.ps1` — compila el sim a WASM y copia `motumbo.js`/`motumbo.wasm` a `web/src/gen/`.
 - `cd web; npm run dev` — dev server.
 - `scripts\setup.ps1` — clona `vendor/box3d` e instala npm deps en un clon fresco.
-- `.github/workflows/build-wasm.yml` compila el WASM en CI (plan B sin toolchain local).
+- `.github/workflows/ci.yml` compila el WASM, corre `npm test` y deploya a Pages.
+
+## Dev tools (loop de iteración)
+
+- **`npm test`** (en `web/`) — gate único: tsc + determinismo (`test-sim`,
+  `test-lockstep`) + auditorías (`audit-levels` spawns, `audit-reach`
+  reachability) + `test-modes`. Es lo que corre CI.
+- **Deep-link de dev** — `#dev=level=76&cam=2&mode=cosecha&bots=2` cae directo a
+  un match solo en ese escenario (sin menú). level = índice o nombre; mode =
+  sumo/koth/cosecha/maldito; cam = 0/1/2; bots = dificultad 0-2.
+- **Panel de tuning** — tecla `` ` `` abre sliders del FEEL de cámara/cara en
+  vivo (persisten en localStorage `motumbo.tune`, leídos por `tune.ts`). Solo
+  presentación: no toca el sim.
+- **`scripts/shot.mjs`** — screenshot QA parametrizado por el deep-link, con GPU
+  real (headless SwiftShader renderiza negro). Necesita `npm i -D playwright`.
+- **`scripts/smoke-render.mjs`** (`npm run smoke`) — bootea con GPU y falla si la
+  arena sale negra (la clase de bug del pieceCount). Local; CI no tiene GPU.
 
 ## Entorno Windows (importante)
 
