@@ -34,7 +34,7 @@ import {
   MODE_MALDITO,
   MODE_NAMES,
 } from './sim';
-import { LocalInput } from './input';
+import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
@@ -55,6 +55,30 @@ type Intent = 'solo' | 'local' | 'net-host';
 
 function randomSeed(): number {
   return (Math.random() * 0xffffffff) >>> 0;
+}
+
+// Third-person chase cam: remap WASD from camera space (W = into the screen,
+// along the heading `yaw`) to the world-relative direction bits the sim eats.
+// Only the local player's word is remapped, and the result is still a world
+// direction, so lockstep determinism is untouched.
+function camRelativeWord(word: number, yaw: number): number {
+  const actions = word & (IN_DASH | IN_JUMP | IN_BRACE);
+  const fwd = (word & IN_UP ? 1 : 0) - (word & IN_DOWN ? 1 : 0); // W − S
+  const rgt = (word & IN_RIGHT ? 1 : 0) - (word & IN_LEFT ? 1 : 0); // D − A
+  if (fwd === 0 && rgt === 0) return actions;
+  const hx = Math.sin(yaw);
+  const hz = Math.cos(yaw);
+  const wx = fwd * hx + rgt * hz; // world X
+  const wz = fwd * hz - rgt * hx; // world Z
+  const len = Math.hypot(wx, wz) || 1;
+  const nx = wx / len;
+  const nz = wz / len;
+  let bits = actions;
+  if (nz < -0.4) bits |= IN_UP; // IN_UP = −Z
+  if (nz > 0.4) bits |= IN_DOWN;
+  if (nx < -0.4) bits |= IN_LEFT; // IN_LEFT = −X
+  if (nx > 0.4) bits |= IN_RIGHT;
+  return bits;
 }
 
 async function main(): Promise<void> {
@@ -120,6 +144,7 @@ async function main(): Promise<void> {
   let restartAt = 0;
   let lastCountShown = -1;
   let acc = 0;
+  const stepWords = new Uint32Array(8); // scratch for camera-relative remap
   let crumbleToastShown = false;
   let lastScoreKey = '';
   let prevLocalDashReady = true;
@@ -990,18 +1015,29 @@ async function main(): Promise<void> {
     // Cap catch-up work after a background tab pause.
     if (acc > 250) acc = 250;
 
+    // Third-person makes the local player's controls camera-relative.
+    const camYaw = renderer.chaseControlYaw();
+    const remap = camYaw !== null && !input.dualLocal;
+    const localWord = remap ? camRelativeWord(input.words[0], camYaw as number) : input.words[0];
+
     if (paused) {
       acc = 0;
     } else if (mode === 'local' || mode === 'menu') {
+      let words = input.words;
+      if (remap) {
+        stepWords.set(input.words);
+        stepWords[0] = localWord;
+        words = stepWords;
+      }
       while (acc >= TICK_MS) {
-        const events = sim.step(input.words);
+        const events = sim.step(words);
         acc -= TICK_MS;
         handleEvents(events);
       }
     } else if (mode === 'net' && lockstep) {
       let blocked = false;
       while (acc >= TICK_MS) {
-        lockstep.scheduleLocal(input.words[0]);
+        lockstep.scheduleLocal(localWord);
         if (!lockstep.canStep()) {
           blocked = true;
           acc = Math.min(acc, TICK_MS * 2);

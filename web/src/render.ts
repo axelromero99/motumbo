@@ -773,6 +773,7 @@ export class GameRenderer {
   private camFocus = new THREE.Vector3();
   private camInit = false;
   private localAlive = false; // follow cams fall back to the crowd once you're out
+  private chaseYaw = 0; // heading the third-person cam sits behind (world yaw)
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
@@ -942,6 +943,15 @@ export class GameRenderer {
     // Only the isométrica view uses this fixed base (it frames the whole arena);
     // the follow cams compute their position per frame in render().
     this.cameraBase.set(0, this.arenaExt * 1.78, this.arenaExt * 1.66);
+  }
+
+  /**
+   * Heading (world yaw) the third-person chase cam sits behind, so movement
+   * input can be made camera-relative (W = into the screen). Returns null in
+   * the other camera modes, where WASD stays world-relative.
+   */
+  chaseControlYaw(): number | null {
+    return this.cameraMode === 2 ? this.chaseYaw : null;
   }
 
   /** Cycle isométrica → desde arriba → tercera persona. Returns the label. */
@@ -1296,6 +1306,14 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
+        // Track the local player's heading (slower than the face) for the
+        // third-person chase cam to sit behind.
+        if (i === this.localSlot && hsp > 1.5) {
+          const t = Math.atan2(vx, vz);
+          let dd = t - this.chaseYaw;
+          dd = Math.atan2(Math.sin(dd), Math.cos(dd));
+          this.chaseYaw += dd * Math.min(1, dts * 2.5);
+        }
         // The whole HEAD turns to face the travel direction, like a creature
         // looking where it walks: move away (into the screen) and you see the
         // back of its head; move toward the camera and it faces you. Full range,
@@ -1539,16 +1557,16 @@ export class GameRenderer {
       this.camera.position.addScaledVector(shake, 0.3);
       this.camera.lookAt(this.camFocus.x, this.camFocus.y, this.camFocus.z);
     } else {
-      // TERCERA PERSONA: a close chase from a FIXED angle (behind toward the
-      // camera side), following the ball's position. It deliberately does NOT
-      // rotate with the ball's heading — a spinning chase cam changes which way
-      // is "forward" on screen every turn, and with world-relative WASD that
-      // made you drive off the edge. Fixed angle → W is always "away", playable.
-      const back = 7.6;
-      const high = 4.3;
-      this.camera.position.set(this.camFocus.x, this.camFocus.y + high, this.camFocus.z + back);
+      // TERCERA PERSONA: chase cam locked BEHIND the ball's heading, so you
+      // always see its back and W drives it into the screen. Controls turn
+      // camera-relative in main.ts (via chaseControlYaw) so W/A/S/D match.
+      const hx = Math.sin(this.chaseYaw);
+      const hz = Math.cos(this.chaseYaw);
+      const back = 6.6;
+      const high = 3.7;
+      this.camera.position.set(this.camFocus.x - hx * back, this.camFocus.y + high, this.camFocus.z - hz * back);
       this.camera.position.addScaledVector(shake, 0.4);
-      this.camera.lookAt(this.camFocus.x, this.camFocus.y + 0.6, this.camFocus.z);
+      this.camera.lookAt(this.camFocus.x + hx * 2.5, this.camFocus.y + 0.7, this.camFocus.z + hz * 2.5);
     }
     this.renderer.render(this.scene, this.camera);
   }
