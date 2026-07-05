@@ -17,7 +17,6 @@ export const TUNE_PARAMS: TuneParam[] = [
   { key: 'tpBack', label: '3ra pers. · atrás', min: 3, max: 12, step: 0.2, def: 6.6 },
   { key: 'tpHigh', label: '3ra pers. · altura', min: 1, max: 8, step: 0.2, def: 3.7 },
   { key: 'facePitch', label: 'Cara · inclinación', min: -0.5, max: 0.25, step: 0.02, def: -0.1 },
-  { key: 'pupV', label: 'Pupila · vertical', min: 0, max: 0.2, step: 0.01, def: 0.14 },
   { key: 'eyeSz', label: 'Ojos · tamaño', min: 0.16, max: 0.4, step: 0.01, def: 0.26 },
 ];
 

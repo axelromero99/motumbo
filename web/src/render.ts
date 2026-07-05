@@ -1028,8 +1028,9 @@ export class GameRenderer {
     for (let i = 0; i < this.playerRoots.length; i++) {
       this.scene.remove(this.playerRoots[i]);
       this.playerMeshes[i].geometry.dispose();
+      // Only the canvas map is per-material; bumpMap is the shared skins.ts cache
+      // (lives for the app) — disposing it per round would break reuse.
       this.playerMats[i].map?.dispose();
-      this.playerMats[i].bumpMap?.dispose();
       this.playerMats[i].dispose();
     }
     for (let i = 0; i < this.cdRings.length; i++) {
@@ -1102,7 +1103,7 @@ export class GameRenderer {
     for (let i = 0; i < sim.playerCount; i++) {
       const color = PLAYER_COLORS[i % PLAYER_COLORS.length];
       // Local player wears their chosen skin; the rest get spread-out variety.
-      const skin = this.playerSkins[i] ?? (i * 7) % SKIN_COUNT;
+      const skin = this.playerSkins[i] ?? (i * 7 + 3) % SKIN_COUNT;
       const mat = makeSkinMaterial(skin, color, i + 1);
       const mesh = new THREE.Mesh(sphereGeo, mat);
       mesh.castShadow = true;
@@ -1366,8 +1367,6 @@ export class GameRenderer {
         const targetPitch = tuneVal(this.tune, 'facePitch');
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
-        const lx = 0;
-        const ly = 0;
 
         const braced = (flags & FLAG_BRACED) !== 0;
         const hasPower = (flags & FLAG_HAS_POWER) !== 0;
@@ -1407,11 +1406,10 @@ export class GameRenderer {
 
         const jit = cursed ? (Math.random() - 0.5) * 0.05 : 0;
         const pupilScale = 0.14 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
-        // Strong vertical pupil travel so "looking up" (heading away) actually
-        // reads — the ball's eyes are foreshortened from the high camera.
-        const pv = tuneVal(this.tune, 'pupV');
-        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * pv, EZ + 0.08);
-        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * pv, EZ + 0.08);
+        // The whole head turns to face travel, so the pupils just sit centred
+        // (plus a nervous jitter while cursed).
+        face.pupilL.position.set(-EX + jit, EY, EZ + 0.08);
+        face.pupilR.position.set(EX + jit, EY, EZ + 0.08);
         face.pupilL.scale.setScalar(pupilScale);
         face.pupilR.scale.setScalar(pupilScale);
         face.browL.position.set(-EX, EY + 0.3 + face.browY, EZ);
