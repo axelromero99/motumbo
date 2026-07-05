@@ -107,6 +107,18 @@ export const THEMES: Theme[] = [
   { bg: 0x0a0d0b, tileA: 0x2e3236, tileB: 0x24272b, warn: 0xffb300, beam: 0x39ff6e, ground: 0x101312, sky: 0xa8ffc2, skyTop: 0x05080a, skyBottom: 0x14522e },
 ];
 
+// Sky style per theme index: 0 space · 1 day · 2 sunset · 3 toon. Gives varied
+// backgrounds — bright day skies, warm sunsets and silly candy skies, not only
+// the dark abyss. Mixed so consecutive levels feel different.
+export const SKY_STYLE: number[] = [0, 2, 1, 3, 0, 2, 1, 0, 3, 0, 3, 2, 1, 0, 2, 0, 1, 3, 2, 0];
+// Fog colour by sky style so distant tiles fade into the matching horizon
+// (−1 keeps the theme's dark bg, for space).
+const FOG_BY_STYLE = [-1, 0xbfe0ff, 0xd98a5a, 0xdf8fc8];
+// The pit-below (abyss) also follows the style so day/sunset/toon don't fall
+// into a black hole under a bright sky. −1 = keep the theme's colours (space).
+const ABYSS_BG_BY_STYLE = [-1, 0x9ecbf2, 0x241040, 0x5ab0e0];
+const ABYSS_BEAM_BY_STYLE = [-1, 0xffffff, 0xff7a2f, 0xffe14d];
+
 // Ball skins (patterns, flags, materials) now live in skins.ts.
 
 // Crisp white pictogram per orb type, drawn once and billboarded above the orb
@@ -340,6 +352,7 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
       uSkyBottom: { value: new THREE.Color(0x1c2750) },
       uAccent: { value: new THREE.Color(0x9fb4ff) },
       uTime: { value: 0 },
+      uStyle: { value: 0 }, // 0 space · 1 day · 2 sunset · 3 toon
     },
     vertexShader: `
       varying vec3 vDir;
@@ -353,6 +366,7 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
       uniform vec3 uSkyBottom;
       uniform vec3 uAccent;
       uniform float uTime;
+      uniform float uStyle;
       varying vec3 vDir;
 
       float hash21(vec2 p) {
@@ -382,32 +396,65 @@ function makeSkyMaterial(): THREE.ShaderMaterial {
       void main() {
         vec3 d = normalize(vDir);
         float h = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
-        vec3 col = mix(uSkyBottom, uSkyTop, pow(h, 1.35));
-
-        // Aurora curtains: domain-warped noise sampled on a circle (periodic
-        // in azimuth — no seam), drifting slowly with height and time.
         float az = atan(d.z, d.x);
-        vec2 circ = vec2(cos(az), sin(az)) * 1.8;
-        vec2 ap = circ + vec2(0.0, d.y * 2.4 - uTime * 0.045);
-        float n = fbm(ap + fbm(ap + uTime * 0.05) * 1.5);
-        float band = smoothstep(0.5, 0.85, n);
-        band *= smoothstep(-0.12, 0.3, d.y) * (1.0 - smoothstep(0.55, 0.95, d.y));
-        col += uAccent * band * 0.32;
+        vec3 col;
 
-        // Soft moon with a wide halo.
-        vec3 moonDir = normalize(vec3(0.55, 0.38, -0.6));
-        float md = max(dot(d, moonDir), 0.0);
-        col += uAccent * smoothstep(0.9982, 0.99965, md) * 0.85;
-        col += uAccent * pow(md, 48.0) * 0.10;
-
-        // Sparse, slow stars: 3D direction cells, seamless everywhere.
-        vec3 g3 = d * 26.0;
-        vec3 cell3 = floor(g3);
-        float rnd = fract(sin(dot(cell3, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-        if (rnd > 0.972 && d.y > 0.02) {
-          float dist = length(fract(g3) - 0.5);
-          float tw = 0.6 + 0.4 * sin(uTime * (0.6 + rnd * 1.6) + rnd * 100.0);
-          col += vec3(1.0) * smoothstep(0.3, 0.0, dist) * tw * 0.5;
+        if (uStyle < 0.5) {
+          // ---- SPACE: dark gradient + aurora + moon + stars ----
+          col = mix(uSkyBottom, uSkyTop, pow(h, 1.35));
+          vec2 circ = vec2(cos(az), sin(az)) * 1.8;
+          vec2 ap = circ + vec2(0.0, d.y * 2.4 - uTime * 0.045);
+          float n = fbm(ap + fbm(ap + uTime * 0.05) * 1.5);
+          float band = smoothstep(0.5, 0.85, n);
+          band *= smoothstep(-0.12, 0.3, d.y) * (1.0 - smoothstep(0.55, 0.95, d.y));
+          col += uAccent * band * 0.32;
+          vec3 moonDir = normalize(vec3(0.55, 0.38, -0.6));
+          float md = max(dot(d, moonDir), 0.0);
+          col += uAccent * smoothstep(0.9982, 0.99965, md) * 0.85;
+          col += uAccent * pow(md, 48.0) * 0.10;
+          vec3 g3 = d * 26.0;
+          float rnd = fract(sin(dot(floor(g3), vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          if (rnd > 0.972 && d.y > 0.02) {
+            float dist = length(fract(g3) - 0.5);
+            float tw = 0.6 + 0.4 * sin(uTime * (0.6 + rnd * 1.6) + rnd * 100.0);
+            col += vec3(1.0) * smoothstep(0.3, 0.0, dist) * tw * 0.5;
+          }
+        } else if (uStyle < 1.5) {
+          // ---- DAY: bright blue sky, warm sun, drifting puffy clouds ----
+          col = mix(vec3(0.82, 0.91, 1.0), vec3(0.29, 0.55, 0.95), pow(h, 0.9));
+          col = mix(col, uAccent, 0.1);
+          vec3 sunDir = normalize(vec3(0.5, 0.42, -0.55));
+          float sd = max(dot(d, sunDir), 0.0);
+          col += vec3(1.0, 0.97, 0.86) * smoothstep(0.9975, 0.9997, sd) * 1.5;
+          col += vec3(1.0, 0.93, 0.72) * pow(sd, 24.0) * 0.35;
+          vec2 cp = vec2(cos(az), sin(az)) * 1.6 + vec2(0.0, d.y * 2.0 - uTime * 0.012);
+          float cl = smoothstep(0.5, 0.82, fbm(cp * 1.6 + fbm(cp) * 0.8));
+          cl *= smoothstep(0.02, 0.4, d.y);
+          col = mix(col, vec3(1.0), cl * 0.85);
+        } else if (uStyle < 2.5) {
+          // ---- SUNSET: warm gradient, big low sun, cloud silhouettes ----
+          col = mix(vec3(1.0, 0.55, 0.28), vec3(0.24, 0.16, 0.44), pow(h, 0.85));
+          col = mix(col, uAccent, 0.08);
+          vec3 sunDir = normalize(vec3(0.32, 0.05, -0.94));
+          float sd = max(dot(d, sunDir), 0.0);
+          col += vec3(1.0, 0.6, 0.32) * smoothstep(0.982, 0.9992, sd) * 1.4;
+          col += vec3(1.0, 0.5, 0.28) * pow(sd, 9.0) * 0.5;
+          vec2 cp = vec2(cos(az), sin(az)) * 1.5 + vec2(0.0, d.y * 2.2 - uTime * 0.01);
+          float cl = smoothstep(0.6, 0.85, fbm(cp * 1.5));
+          cl *= smoothstep(0.02, 0.32, d.y);
+          col = mix(col, vec3(0.15, 0.08, 0.2), cl * 0.55);
+        } else {
+          // ---- TOON / FIESTA: playful candy bands + big polka dots ----
+          float band = floor(h * 5.0) / 5.0;
+          col = mix(vec3(0.46, 0.76, 0.98), vec3(0.96, 0.46, 0.75), band);
+          col = mix(col, uAccent, 0.12);
+          vec3 g3 = d * 5.0;
+          float rnd = fract(sin(dot(floor(g3), vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          if (rnd > 0.55) {
+            float dist = length(fract(g3) - 0.5);
+            vec3 dotCol = mix(vec3(1.0, 0.9, 0.35), uAccent, rnd);
+            col = mix(col, dotCol, smoothstep(0.34, 0.22, dist));
+          }
         }
         gl_FragColor = vec4(col, 1.0);
       }
@@ -575,6 +622,7 @@ export class GameRenderer {
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
   private skyMat: THREE.ShaderMaterial;
+  private skyStyleIdx = 0; // 0 space · 1 day · 2 sunset · 3 toon (drives fog colour)
   private abyssMat: THREE.ShaderMaterial;
   private pieces: THREE.InstancedMesh | null = null;
 
@@ -665,10 +713,9 @@ export class GameRenderer {
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
     this.composer.setSize(window.innerWidth, window.innerHeight);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    // Subtle: strength down and threshold up so only genuinely bright things
-    // (orbs, active power auras, the abyss glow) get a soft halo — the balls read
-    // as solid spheres, not glowing blobs.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.42, 0.55, 0.82);
+    // Restrained: only genuinely bright things (orbs, active power auras) get a
+    // soft halo. Everything else — balls, tiles — reads solid, not glowing.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.5, 0.85);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
@@ -826,16 +873,21 @@ export class GameRenderer {
   /** (Re)build meshes for a fresh round from the sim's initial snapshot. */
   setup(sim: Sim, themeOverride?: number): void {
     this.theme = THEMES[themeOverride ?? sim.level] ?? THEMES[0];
+    this.skyStyleIdx = SKY_STYLE[(themeOverride ?? sim.level) % 20] ?? 0;
+    this.skyMat.uniforms.uStyle.value = this.skyStyleIdx;
+    const fogHex = FOG_BY_STYLE[this.skyStyleIdx] >= 0 ? FOG_BY_STYLE[this.skyStyleIdx] : this.theme.bg;
     this.scene.background = null;
-    this.renderer.setClearColor(this.theme.bg, 1);
-    this.scene.fog = new THREE.Fog(this.theme.bg, 36, 80);
+    this.renderer.setClearColor(fogHex, 1);
+    this.scene.fog = new THREE.Fog(fogHex, 36, 80);
     this.hemi.color.set(this.theme.sky);
     this.hemi.groundColor.set(this.theme.ground);
     (this.skyMat.uniforms.uSkyTop.value as THREE.Color).setHex(this.theme.skyTop);
     (this.skyMat.uniforms.uSkyBottom.value as THREE.Color).setHex(this.theme.skyBottom);
     (this.skyMat.uniforms.uAccent.value as THREE.Color).setHex(this.theme.sky);
-    (this.abyssMat.uniforms.uBeam.value as THREE.Color).setHex(this.theme.beam);
-    (this.abyssMat.uniforms.uBg.value as THREE.Color).setHex(this.theme.bg);
+    const abBeam = ABYSS_BEAM_BY_STYLE[this.skyStyleIdx];
+    const abBg = ABYSS_BG_BY_STYLE[this.skyStyleIdx];
+    (this.abyssMat.uniforms.uBeam.value as THREE.Color).setHex(abBeam >= 0 ? abBeam : this.theme.beam);
+    (this.abyssMat.uniforms.uBg.value as THREE.Color).setHex(abBg >= 0 ? abBg : this.theme.bg);
 
     if (this.pieces) {
       this.scene.remove(this.pieces);
@@ -909,7 +961,7 @@ export class GameRenderer {
     ext += 1.5;
     this.arenaExt = ext;
     this.applyCameraMode();
-    this.scene.fog = new THREE.Fog(this.theme.bg, ext * 3.3, ext * 7.3);
+    this.scene.fog = new THREE.Fog(FOG_BY_STYLE[this.skyStyleIdx] >= 0 ? FOG_BY_STYLE[this.skyStyleIdx] : this.theme.bg, ext * 3.3, ext * 7.3);
     this.sun.shadow.camera.left = -(ext + 4);
     this.sun.shadow.camera.right = ext + 4;
     this.sun.shadow.camera.top = ext + 4;
