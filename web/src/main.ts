@@ -902,8 +902,13 @@ async function main(): Promise<void> {
   const updateScorebar = (force: boolean): void => {
     const alive = sim.aliveMask;
     let scoreKey = '';
-    if (gameMode === MODE_KOTH || gameMode === MODE_COSECHA) {
+    if (gameMode === MODE_KOTH) {
+      // KOTH score is in ticks; the HUD shows whole seconds, so key on seconds.
       for (let i = 0; i < playerCount; i++) scoreKey += `${Math.floor(sim.score(i) / 60)},`;
+    } else if (gameMode === MODE_COSECHA) {
+      // COSECHA score is a raw orb count — key on it directly (÷60 kept it at 0
+      // forever, so the scorebar never refreshed as players collected orbs).
+      for (let i = 0; i < playerCount; i++) scoreKey += `${sim.score(i)},`;
     } else if (gameMode === MODE_MALDITO) {
       scoreKey = String(sim.curr[sim.modeBase() + 1]);
     }

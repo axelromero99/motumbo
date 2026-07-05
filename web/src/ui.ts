@@ -137,7 +137,7 @@ const MODE_PARAM_CFG: Record<number, { label: string; suffix: string; options: n
 /** Descripción de una línea por modo (clave = MODE_* de sim.ts). */
 const MODE_DESC: Record<number, string> = {
   [MODE_SUMO]: 'El último en pie gana la ronda.',
-  [MODE_KOTH]: 'Sumá segundos estando solo en la zona.',
+  [MODE_KOTH]: 'Controlá la zona (empujá a los demás afuera) y sumá segundos.',
   [MODE_COSECHA]: 'Juntá los orbes antes que nadie.',
   [MODE_MALDITO]: 'Pasale la maldición a otro antes de que explote.',
 };

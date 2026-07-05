@@ -2168,6 +2168,20 @@ MOTUMBO_EXPORT void motumbo_set_mode( int mode, int param )
 		// Orbs matter from the first second.
 		g_orbSpawnAt = COUNTDOWN_TICKS;
 	}
+	if ( g_mode == MODE_KOTH || g_mode == MODE_COSECHA )
+	{
+		// Objective modes are decided by the OBJECTIVE, not by survival. Inheriting
+		// SUMO's crumble made players fall while chasing the zone/orbs, so the
+		// round always ended by elimination and the mode played like sumo with a
+		// scoreboard. Keep the arena intact long enough to actually reach the
+		// objective, then let it shrink gently as a backstop against a stalemate.
+		g_crumbleStart += 1800u; // ~30 s of solid floor first
+		g_crumbleInterval *= 3u; // then crumble slowly
+		if ( g_crumbleInterval > 60u )
+		{
+			g_crumbleInterval = 60u;
+		}
+	}
 	WriteState();
 }
 
@@ -3427,10 +3441,14 @@ static void StepMode( void )
 		{
 			return;
 		}
-		// Only an UNCONTESTED player scores.
+		// Whoever CONTROLS the zone scores — the player nearest its centre among
+		// those standing inside it. Solo you trivially control; contested, you
+		// have to shove rivals off the centre to keep scoring. (The old "only an
+		// uncontested player scores" never triggered: everyone piles onto the
+		// hill, so nobody was ever alone and the round only ended by elimination.)
 		int inside = -1;
-		int count = 0;
-		for ( int i = 0; i < g_playerCount && count < 2; ++i )
+		float bestD2 = ZONE_RADIUS * ZONE_RADIUS;
+		for ( int i = 0; i < g_playerCount; ++i )
 		{
 			if ( !g_players[i].alive )
 			{
@@ -3439,13 +3457,14 @@ static void StepMode( void )
 			b3Pos pos = b3Body_GetPosition( g_players[i].body );
 			float dx = pos.x - g_zoneX;
 			float dz = pos.z - g_zoneZ;
-			if ( dx * dx + dz * dz < ZONE_RADIUS * ZONE_RADIUS && pos.y < 3.5f )
+			float d2 = dx * dx + dz * dz;
+			if ( d2 < bestD2 && pos.y < 3.5f )
 			{
-				count += 1;
+				bestD2 = d2;
 				inside = i;
 			}
 		}
-		if ( count == 1 )
+		if ( inside >= 0 )
 		{
 			g_scores[inside] += 1;
 			if ( g_scores[inside] % 60 == 0 )
@@ -3687,7 +3706,10 @@ static void StepPowerup( void )
 		for ( int i = 0; i < g_playerCount; ++i )
 		{
 			Player* p = &g_players[i];
-			if ( !p->alive || p->hasPower || p->hasShield )
+			// You carry one power at a time — but in COSECHA the orb IS the
+			// objective, so you always pick it up (holding a SÚPER/ESCUDO must
+			// not lock you out of collecting the next one).
+			if ( !p->alive || ( g_mode != MODE_COSECHA && ( p->hasPower || p->hasShield ) ) )
 			{
 				continue;
 			}
