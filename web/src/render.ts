@@ -26,6 +26,7 @@ import {
 } from './sim';
 import { FxSystem } from './fx';
 import { makeSkinMaterial, SKIN_COUNT } from './skins';
+import { loadTune, saveTune, tuneVal } from './tune';
 
 export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
@@ -775,6 +776,7 @@ export class GameRenderer {
   private camInit = false;
   private localAlive = false; // follow cams fall back to the crowd once you're out
   private chaseYaw = 0; // heading the third-person cam sits behind (world yaw)
+  private tune = loadTune(); // live feel knobs (dev panel writes, we read)
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
@@ -934,6 +936,12 @@ export class GameRenderer {
   /** Skin index per player slot; call before setup(). Empty = auto variety. */
   setSkins(skins: number[]): void {
     this.playerSkins = skins;
+  }
+
+  /** Live feel knob (dev tuning panel). Persists immediately. */
+  setTune(key: string, value: number): void {
+    this.tune[key] = value;
+    saveTune(this.tune);
   }
 
   /**
@@ -1339,7 +1347,7 @@ export class GameRenderer {
         if (i === this.localSlot) this.chaseYaw = face.yaw;
         // A small fixed tilt (a stopped, camera-facing head reads better); the
         // head itself does the looking, so the pupils just sit forward.
-        const targetPitch = -0.1;
+        const targetPitch = tuneVal(this.tune, 'facePitch');
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
         const lx = 0;
@@ -1377,15 +1385,17 @@ export class GameRenderer {
         }
         face.closing = Math.max(0, face.closing - dts * 9);
         const lidY = face.eyeSY * (1 - 0.9 * face.closing);
-        face.eyeL.scale.set(0.26, 0.3 * lidY, 0.14);
-        face.eyeR.scale.set(0.26, 0.3 * lidY, 0.14);
+        const esz = tuneVal(this.tune, 'eyeSz');
+        face.eyeL.scale.set(esz, esz * 1.15 * lidY, esz * 0.54);
+        face.eyeR.scale.set(esz, esz * 1.15 * lidY, esz * 0.54);
 
         const jit = cursed ? (Math.random() - 0.5) * 0.05 : 0;
         const pupilScale = 0.14 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
         // Strong vertical pupil travel so "looking up" (heading away) actually
         // reads — the ball's eyes are foreshortened from the high camera.
-        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * 0.14, EZ + 0.08);
-        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * 0.14, EZ + 0.08);
+        const pv = tuneVal(this.tune, 'pupV');
+        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * pv, EZ + 0.08);
+        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * pv, EZ + 0.08);
         face.pupilL.scale.setScalar(pupilScale);
         face.pupilR.scale.setScalar(pupilScale);
         face.browL.position.set(-EX, EY + 0.3 + face.browY, EZ);
@@ -1545,8 +1555,11 @@ export class GameRenderer {
     this.abyssMat.uniforms.uTime.value = timeMs * 0.001;
 
     if (this.cameraMode === 0) {
-      // ISOMÉTRICA: fixed base framing the whole arena, gentle look at the crowd.
-      this.camera.position.copy(this.cameraBase).add(this.fx.shakeOffset(this.shakeTmp, timeMs));
+      // ISOMÉTRICA: framing the whole arena, gentle look at the crowd.
+      const e = this.arenaExt;
+      this.camera.position
+        .set(0, e * tuneVal(this.tune, 'isoH'), e * tuneVal(this.tune, 'isoD'))
+        .add(this.fx.shakeOffset(this.shakeTmp, timeMs));
       this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
       this.renderer.render(this.scene, this.camera);
       return;
@@ -1572,7 +1585,7 @@ export class GameRenderer {
     if (this.cameraMode === 1) {
       // DESDE ARRIBA: high and looking down, but tilted ~15° off vertical (a pure
       // top-down view whips around from the sensitive lookAt — that was the jitter).
-      const h = Math.max(12, this.arenaExt * 0.95);
+      const h = Math.max(12, this.arenaExt * tuneVal(this.tune, 'topH'));
       this.camera.position.set(this.camFocus.x, this.camFocus.y + h, this.camFocus.z + h * 0.26);
       this.camera.position.addScaledVector(shake, 0.3);
       this.camera.lookAt(this.camFocus.x, this.camFocus.y, this.camFocus.z);
@@ -1582,8 +1595,8 @@ export class GameRenderer {
       // camera-relative in main.ts (via chaseControlYaw) so W/A/S/D match.
       const hx = Math.sin(this.chaseYaw);
       const hz = Math.cos(this.chaseYaw);
-      const back = 6.6;
-      const high = 3.7;
+      const back = tuneVal(this.tune, 'tpBack');
+      const high = tuneVal(this.tune, 'tpHigh');
       this.camera.position.set(this.camFocus.x - hx * back, this.camFocus.y + high, this.camFocus.z - hz * back);
       this.camera.position.addScaledVector(shake, 0.4);
       this.camera.lookAt(this.camFocus.x + hx * 2.5, this.camFocus.y + 0.7, this.camFocus.z + hz * 2.5);

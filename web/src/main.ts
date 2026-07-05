@@ -37,6 +37,7 @@ import {
 } from './sim';
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
 import { SKIN_COUNT } from './skins';
+import { TUNE_PARAMS, loadTune, tuneVal } from './tune';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
@@ -712,6 +713,54 @@ async function main(): Promise<void> {
 
   input.onCamera = () => {
     ui.toast(`📷 cámara: ${renderer.cycleCamera()}`);
+  };
+
+  // Dev tuning panel (backtick): live sliders for camera + face feel, persisted.
+  let devPanel: HTMLElement | null = null;
+  input.onDevPanel = () => {
+    if (devPanel) {
+      devPanel.remove();
+      devPanel = null;
+      return;
+    }
+    const t = loadTune();
+    const el = document.createElement('div');
+    el.style.cssText =
+      'position:fixed;top:12px;right:12px;z-index:9999;background:rgba(10,14,26,0.94);border:1px solid #2a3550;border-radius:10px;padding:12px 14px;font:12px system-ui,sans-serif;color:#cdd6f0;width:268px;box-shadow:0 10px 34px rgba(0,0,0,0.55)';
+    el.innerHTML = '<div style="font-weight:800;margin-bottom:8px;letter-spacing:1px">🎛 TUNING <span style="opacity:.45;font-weight:400">— ` para cerrar</span></div>';
+    for (const p of TUNE_PARAMS) {
+      const v = tuneVal(t, p.key);
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0';
+      row.innerHTML =
+        `<span style="flex:1.2">${p.label}</span>` +
+        `<input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}" style="flex:1">` +
+        `<span class="tv" style="width:40px;text-align:right;opacity:.7">${v.toFixed(2)}</span>`;
+      const slider = row.querySelector('input') as HTMLInputElement;
+      const disp = row.querySelector('.tv') as HTMLElement;
+      slider.addEventListener('input', () => {
+        const nv = Number(slider.value);
+        disp.textContent = nv.toFixed(2);
+        renderer.setTune(p.key, nv);
+      });
+      el.appendChild(row);
+    }
+    const reset = document.createElement('button');
+    reset.textContent = 'Reset';
+    reset.style.cssText =
+      'margin-top:10px;width:100%;padding:7px;border-radius:6px;border:1px solid #2a3550;background:#1a2338;color:#cdd6f0;cursor:pointer;font-weight:700';
+    reset.addEventListener('click', () => {
+      TUNE_PARAMS.forEach((p, i) => {
+        renderer.setTune(p.key, p.def);
+        const s = el.querySelectorAll('input[type=range]')[i] as HTMLInputElement;
+        const d = el.querySelectorAll('.tv')[i] as HTMLElement;
+        s.value = String(p.def);
+        d.textContent = p.def.toFixed(2);
+      });
+    });
+    el.appendChild(reset);
+    document.body.appendChild(el);
+    devPanel = el;
   };
 
   function helpText(): string {
