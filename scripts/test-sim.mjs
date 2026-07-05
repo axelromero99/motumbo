@@ -9,7 +9,7 @@ const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
 const PLAYERS = 4;
 const TICKS = 1500;
-const LEVELS = 76; // 20 a mano + 50 generados + 6 mega
+const LEVELS = 81; // 20 a mano + 50 generados + 6 mega
 
 // Deterministic scripted inputs: phase-shifted direction changes, periodic
 // dashes, jumps and braces.
@@ -89,7 +89,7 @@ for (let level = 0; level < LEVELS; level++) {
 console.log(`generados+mega 20-75: ${quietOk}/56 deterministas y sanos`);
 
 // Mega arenas: report piece counts so we can eyeball sizes and the budget.
-for (let level = 70; level < 76; level++) {
+for (let level = 70; level < 81; level++) {
   const M = await createMotumbo();
   M._motumbo_init(1, 2, level);
   const S = M.HEAPF32;
@@ -199,7 +199,7 @@ async function runCustom(label) {
   const bytes = buildTestMap();
   M.HEAPU8.set(bytes, M._motumbo_custom_ptr());
   M._motumbo_set_custom(bytes.length);
-  M._motumbo_init(99, PLAYERS, 76);
+  M._motumbo_init(99, PLAYERS, 81);
   const inputsBase = M._motumbo_inputs_ptr() >> 2;
   const stateBase = M._motumbo_state_ptr() >> 2;
   const hashes = [];
@@ -211,7 +211,7 @@ async function runCustom(label) {
   const S = M.HEAPF32;
   console.log(
     `[custom ${label}] pieces=${S[stateBase + 3]} hazards=${S[stateBase + 6]} ` +
-      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]} (esperado level=76)`,
+      `level=${S[stateBase + 5]} alive=${S[stateBase + 1]} winner=${S[stateBase + 4]} (esperado level=81)`,
   );
   return { hashes, pieces: S[stateBase + 3], hazards: S[stateBase + 6] };
 }

@@ -9,7 +9,7 @@ const HEADER = 8;
 const STRIDE = 8;
 const FLAG_ALIVE = 1;
 const SEEDS = [1, 7, 42, 12345];
-const LEVELS = 76; // 0..75
+const LEVELS = 81; // 0..75
 
 function ballR(flags) {
   const r = ((flags >>> 11) & 31) / 20;

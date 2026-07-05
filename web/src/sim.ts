@@ -68,8 +68,11 @@ const GEN_PREFIX = ['NOVA', 'CRÁTER', 'ARRECIFE', 'FALLA', 'TÚNEL', 'BASTIÓN'
 for (let i = 20; i < 70; i++) {
   LEVEL_NAMES.push(`${GEN_PREFIX[i % 10]} ${i - 19}`);
 }
-// Levels 70-75: the oversized hand-designed mega arenas.
-for (const n of ['⊕ COLOSO', '⊕ ARCHIPIÉLAGO', '⊕ GRAN CRUZ', '⊕ DOBLE ANILLO', '⊕ ESTADIO', '⊕ TORRE']) {
+// Levels 70-80: the oversized hand-designed mega arenas.
+for (const n of [
+  '⊕ COLOSO', '⊕ ARCHIPIÉLAGO', '⊕ GRAN CRUZ', '⊕ DOBLE ANILLO', '⊕ ESTADIO', '⊕ TORRE',
+  '⊕ SALTOS', '⊕ CRÁTER', '⊕ PUENTES ALTOS', '⊕ ISLOTES', '⊕ TORRE ALTA',
+]) {
   LEVEL_NAMES.push(n);
 }
 

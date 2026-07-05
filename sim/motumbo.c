@@ -23,13 +23,13 @@
 // Generated levels derive ONLY from their id (own PCG stream), so every peer
 // builds the exact same arena for level N regardless of round seed.
 #define LEVEL_HANDMADE 20
-#define LEVEL_MEGA 70	 // levels 70..75 are the oversized mega arenas
-#define LEVEL_COUNT 76
+#define LEVEL_MEGA 70	 // levels 70..80 are the oversized mega arenas
+#define LEVEL_COUNT 81
 
 // Custom maps: JS writes a compact byte blob (see BuildCustomLevel for the
 // format) and initializes with level == LEVEL_CUSTOM. The blob is part of the
 // deterministic setup, so lockstep peers must load identical bytes.
-#define LEVEL_CUSTOM 76
+#define LEVEL_CUSTOM 81
 #define CUSTOM_DATA_MAX 1024
 
 // Bomberman-style pickups: the orb now has one of 5 types.
@@ -1725,7 +1725,7 @@ static void BuildMega( int level, const b3BoxHull* hull )
 					}
 				}
 			}
-			else
+			else if ( m == 5 )
 			{
 				// TORRE: an 11-tier stepped pyramid rising ~6m. You fight your
 				// way UP and shove rivals down the steps and off — the double
@@ -1737,6 +1737,106 @@ static void BuildMega( int level, const b3BoxHull* hull )
 				if ( d <= 10 )
 				{
 					AddPiece( cx, cz, (float)( 10 - d ) * 0.55f, 10 - d, hull );
+				}
+			}
+			else if ( m == 6 )
+			{
+				// SALTOS: a field of little 2×2 islands at scattered heights with
+				// one-tile gaps everywhere — pure parkour, hop island to island.
+				int cellx = ( gx + 30 ) / 3;
+				int cellz = ( gz + 30 ) / 3;
+				int mx = ( gx + 30 ) % 3;
+				int mz = ( gz + 30 ) % 3;
+				if ( mx < 2 && mz < 2 && r <= 18.5f )
+				{
+					uint32_t hh = (uint32_t)( cellx * 73856093 ) ^ (uint32_t)( cellz * 19349663 );
+					float hgt = (float)( hh % 6u ) * 0.55f; // 0 .. 2.75 m
+					AddPiece( cx, cz, hgt, (int)r, hull );
+				}
+			}
+			else if ( m == 7 )
+			{
+				// CRÁTER: a big stepped bowl — concentric terraces, each ring a
+				// little lower going out. Climb to the middle, shove off the rim.
+				if ( r <= 18.0f )
+				{
+					int ring = (int)( r / 3.0f ); // 0 centre .. 6 rim
+					float hgt = (float)( 6 - ring ) * 0.5f;
+					AddPiece( cx, cz, hgt, ring, hull );
+				}
+			}
+			else if ( m == 8 )
+			{
+				// PUENTES ALTOS: four raised platforms on the axes joined by narrow
+				// one-tile bridges over the void — miss a step and you're gone.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				bool placed = false;
+				static const float qx8[4] = { -11.0f, 11.0f, 0.0f, 0.0f };
+				static const float qz8[4] = { 0.0f, 0.0f, -11.0f, 11.0f };
+				for ( int k = 0; k < 4; ++k )
+				{
+					float dx = cx - qx8[k];
+					float dz = cz - qz8[k];
+					if ( dx * dx + dz * dz <= 3.4f * 3.4f )
+					{
+						AddPiece( cx, cz, 1.3f, 4, hull );
+						placed = true;
+						break;
+					}
+				}
+				if ( !placed && r <= 3.2f )
+				{
+					AddPiece( cx, cz, 0.0f, 12, hull );
+					placed = true;
+				}
+				if ( !placed && ( ( az == 0 && ax <= 11 ) || ( ax == 0 && az <= 11 ) ) )
+				{
+					AddPiece( cx, cz, 0.65f, 2, hull ); // the connecting catwalks
+				}
+			}
+			else if ( m == 9 )
+			{
+				// ISLOTES: a big archipelago — a central island, a ring of eight
+				// islands at alternating heights, and stepping stones between.
+				bool placed = false;
+				if ( r <= 3.5f )
+				{
+					AddPiece( cx, cz, 0.0f, 20, hull );
+					placed = true;
+				}
+				for ( int k = 0; k < 8 && !placed; ++k )
+				{
+					float a = 6.2831853f * (float)k / 8.0f;
+					float ixx = cosf( a ) * 12.5f;
+					float izz = sinf( a ) * 12.5f;
+					if ( ( cx - ixx ) * ( cx - ixx ) + ( cz - izz ) * ( cz - izz ) <= 3.0f * 3.0f )
+					{
+						AddPiece( cx, cz, ( k & 1 ) ? 1.3f : 0.0f, 5, hull );
+						placed = true;
+					}
+				}
+				for ( int k = 0; k < 8 && !placed; ++k )
+				{
+					float a = 6.2831853f * (float)k / 8.0f + 0.3927f;
+					float ixx = cosf( a ) * 7.2f;
+					float izz = sinf( a ) * 7.2f;
+					if ( ( cx - ixx ) * ( cx - ixx ) + ( cz - izz ) * ( cz - izz ) <= 1.5f * 1.5f )
+					{
+						AddPiece( cx, cz, 0.7f, 2, hull ); // stepping stones
+					}
+				}
+			}
+			else
+			{
+				// TORRE ALTA: a taller 13-tier ziggurat rising ~7 m — the most
+				// vertical arena. Climb the steps, shove rivals down and off.
+				int ax = gx < 0 ? -gx : gx;
+				int az = gz < 0 ? -gz : gz;
+				int d = ax > az ? ax : az;
+				if ( d <= 12 )
+				{
+					AddPiece( cx, cz, (float)( 12 - d ) * 0.6f, 12 - d, hull );
 				}
 			}
 		}
@@ -1772,8 +1872,33 @@ static void BuildMega( int level, const b3BoxHull* hull )
 			g_crumbleStart = 660;
 			g_crumbleInterval = 8;
 			break;
-		default: // TORRE: rim-first collapse that steadily squeezes everyone
+		case 5: // TORRE: rim-first collapse that steadily squeezes everyone
 			// up toward the shrinking peak, forcing the fight to a finish.
+			SortCrumbleOrder();
+			g_crumbleStart = 480;
+			g_crumbleInterval = 5;
+			break;
+		case 6: // SALTOS: gentle, the gaps already do the work.
+			SortCrumbleOrder();
+			g_crumbleStart = 660;
+			g_crumbleInterval = 12;
+			break;
+		case 7: // CRÁTER: rim-first, herd toward the raised centre.
+			SortCrumbleOrder();
+			g_crumbleStart = 600;
+			g_crumbleInterval = 7;
+			break;
+		case 8: // PUENTES ALTOS: slow — the catwalks are lethal enough.
+			ShuffleCrumbleOrder();
+			g_crumbleStart = 720;
+			g_crumbleInterval = 11;
+			break;
+		case 9: // ISLOTES: gentle; the water between islands is the hazard.
+			SortCrumbleOrder();
+			g_crumbleStart = 660;
+			g_crumbleInterval = 12;
+			break;
+		default: // TORRE ALTA: rim-first, squeeze up the tall steps.
 			SortCrumbleOrder();
 			g_crumbleStart = 480;
 			g_crumbleInterval = 5;
@@ -2089,7 +2214,8 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 													  0.8f, 0.45f, 0.55f, 0.75f, 0.6f, 0.7f, 0.55f, 0.6f,  0.9f,  0.5f };
 	// Mega arenas use bigger, weightier balls so the vast floors feel epic
 	// (TORRE gets a nimbler ball for climbing the tiers).
-	static const float megaBallR[6] = { 0.85f, 0.7f, 0.8f, 0.75f, 0.85f, 0.62f };
+	static const float megaBallR[11] = { 0.85f, 0.7f, 0.8f,	 0.75f, 0.85f, 0.62f,
+										 0.58f, 0.68f, 0.6f, 0.6f,	0.66f };
 	float ballR = PLAYER_RADIUS;
 	if ( g_level < LEVEL_HANDMADE )
 	{

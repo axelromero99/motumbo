@@ -8,7 +8,7 @@ let sum = 0;
 let overflow = 0;
 let maxLevel = 0;
 let extentMax = 0;
-for (let level = 20; level < 70; level++) {
+for (let level = 20; level < 81; level++) {
   const M = await createMotumbo();
   M._motumbo_init(1, 4, level);
   const S = M.HEAPF32;
