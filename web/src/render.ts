@@ -1305,9 +1305,10 @@ export class GameRenderer {
           const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, sideHeading));
           face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
         }
-        // A gentle tilt for depth (kept small so a strong pitch doesn't shrink
-        // the visible eye); the pupils do the heavy lifting of the up/down look.
-        const targetPitch = -0.18 - (depth > 0 ? depth * 0.08 : depth * 0.12);
+        // Heading AWAY (W) tilts the face firmly UP so it clearly looks that
+        // way — the eyes ride toward the top of the head; toward the camera only
+        // a gentle dip (the down look reads fine from the pupils alone).
+        const targetPitch = -0.18 - (depth > 0 ? depth * 0.6 : depth * 0.12);
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
 
