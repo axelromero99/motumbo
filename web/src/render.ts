@@ -433,27 +433,37 @@ function makeHazardTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-// Floating "VOS" tag that hovers over the local player's ball so you always
-// know which one is you (white with a dark outline → reads on any arena).
-function makeYouMarkerTexture(): THREE.CanvasTexture {
+// Floating tag hovering over the local player's ball so you always know which
+// one is you — shows your username (or "VOS" if unset), white with a dark
+// outline so it reads on any arena. Font shrinks to fit longer names.
+function makeYouMarkerTexture(label: string): THREE.CanvasTexture {
+  const text = (label || 'VOS').toUpperCase().slice(0, 12);
+  const W = 256;
+  const H = 128;
   const c = document.createElement('canvas');
-  c.width = 128;
-  c.height = 128;
+  c.width = W;
+  c.height = H;
   const g = c.getContext('2d')!;
-  g.clearRect(0, 0, 128, 128);
+  g.clearRect(0, 0, W, H);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.font = '900 42px system-ui, sans-serif';
-  g.lineWidth = 9;
+  // Fit the font to the label width.
+  let fs = 46;
+  do {
+    g.font = `900 ${fs}px system-ui, sans-serif`;
+    if (g.measureText(text).width <= W - 24) break;
+    fs -= 2;
+  } while (fs > 18);
+  g.lineWidth = Math.max(6, fs * 0.2);
   g.strokeStyle = 'rgba(0,0,0,0.85)';
-  g.strokeText('VOS', 64, 30);
+  g.strokeText(text, W / 2, 40);
   g.fillStyle = '#ffffff';
-  g.fillText('VOS', 64, 30);
+  g.fillText(text, W / 2, 40);
   // Downward pointer.
   g.beginPath();
-  g.moveTo(42, 62);
-  g.lineTo(86, 62);
-  g.lineTo(64, 106);
+  g.moveTo(W / 2 - 22, 78);
+  g.lineTo(W / 2 + 22, 78);
+  g.lineTo(W / 2, 116);
   g.closePath();
   g.lineWidth = 9;
   g.stroke();
@@ -899,9 +909,9 @@ export class GameRenderer {
 
     // "VOS" tag over the local player (drawn on top so it's never occluded).
     this.youMarker = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: makeYouMarkerTexture(), transparent: true, depthTest: false, depthWrite: false }),
+      new THREE.SpriteMaterial({ map: makeYouMarkerTexture('VOS'), transparent: true, depthTest: false, depthWrite: false }),
     );
-    this.youMarker.scale.set(1.15, 1.15, 1.15);
+    this.youMarker.scale.set(1.9, 0.95, 1);
     this.youMarker.renderOrder = 10;
     this.youMarker.visible = false;
     this.scene.add(this.youMarker);
@@ -913,9 +923,16 @@ export class GameRenderer {
     });
   }
 
-  /** Which slot the local human controls (−1 to hide the "VOS" tag). */
-  setLocalPlayer(slot: number): void {
+  /**
+   * Which slot the local human controls (−1 to hide the tag) and the label to
+   * float over it — the player's username, or "VOS" when unset.
+   */
+  setLocalPlayer(slot: number, name = ''): void {
     this.localSlot = slot;
+    const mat = this.youMarker.material as THREE.SpriteMaterial;
+    mat.map?.dispose();
+    mat.map = makeYouMarkerTexture(name);
+    mat.needsUpdate = true;
   }
 
   /** Runtime quality knobs: shadow map toggle and device pixel ratio cap. */
@@ -1271,8 +1288,9 @@ export class GameRenderer {
           const targetYaw = Math.max(-FACE_YAW_MAX, Math.min(FACE_YAW_MAX, sideHeading));
           face.yaw += (targetYaw - face.yaw) * Math.min(1, dts * 9);
         }
-        // Away tilts the eyes up firmly; toward the camera only a gentle dip.
-        const targetPitch = -0.18 - (depth > 0 ? depth * 0.34 : depth * 0.18);
+        // A gentle tilt for depth (kept small so a strong pitch doesn't shrink
+        // the visible eye); the pupils do the heavy lifting of the up/down look.
+        const targetPitch = -0.18 - (depth > 0 ? depth * 0.08 : depth * 0.12);
         face.pitch += (targetPitch - face.pitch) * Math.min(1, dts * 8);
         face.group.rotation.set(face.pitch, face.yaw, 0);
 
@@ -1318,8 +1336,10 @@ export class GameRenderer {
 
         const jit = cursed ? (Math.random() - 0.5) * 0.05 : 0;
         const pupilScale = 0.14 * face.pupilS * (face.closing > 0.5 ? 0.2 : 1);
-        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * 0.06, EZ + 0.08);
-        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * 0.06, EZ + 0.08);
+        // Strong vertical pupil travel so "looking up" (heading away) actually
+        // reads — the ball's eyes are foreshortened from the high camera.
+        face.pupilL.position.set(-EX + lx * 0.11 + jit, EY + ly * 0.14, EZ + 0.08);
+        face.pupilR.position.set(EX + lx * 0.11 + jit, EY + ly * 0.14, EZ + 0.08);
         face.pupilL.scale.setScalar(pupilScale);
         face.pupilR.scale.setScalar(pupilScale);
         face.browL.position.set(-EX, EY + 0.3 + face.browY, EZ);

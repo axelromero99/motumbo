@@ -295,7 +295,7 @@ async function main(): Promise<void> {
     if (gameMode !== MODE_SUMO) sim.setMode(gameMode, gameModeParam);
     for (const slot of botSlots) sim.setBot(slot, botDifficulty);
     renderer.setup(sim, spec.theme);
-    renderer.setLocalPlayer(localHumanSlot());
+    renderer.setLocalPlayer(localHumanSlot(), ui.username);
     stats.onRoundStart(0);
     resetRoundLocals();
   };
