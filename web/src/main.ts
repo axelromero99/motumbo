@@ -855,7 +855,7 @@ async function main(): Promise<void> {
         case EVT_HIT:
           if (!attract) audio.hit(a);
           renderer.fx.burst(x, y, z, 0xffffff, { count: Math.min(24, Math.floor(a * 2.5)), speed: a * 0.5, life: 450 });
-          if (a > 5 && !attract) trauma(Math.min(0.45, a * 0.035));
+          if (a > 5 && !attract) trauma(Math.min(0.26, a * 0.02));
           // Very fast collisions get a little hitstop of their own.
           if (a > 8 && !attract) {
             hitstop(45);
@@ -913,7 +913,7 @@ async function main(): Promise<void> {
           if (!attract) {
             hitstop(70);
             audio.impact();
-            trauma(0.26);
+            trauma(0.14);
             renderer.fx.addPunch(x * 0.06, z * 0.06);
             const local = localHumanSlot();
             if ((a === local || b === local) && !matchOver) {
@@ -956,6 +956,7 @@ async function main(): Promise<void> {
         case EVT_ORB_PICKUP: {
           if (!attract) audio.orbPickup();
           const info = ORB_INFO[a];
+          renderer.fx.ring(x, y + 0.1, z, info?.color ?? ORB_GOLD, 2.4);
           renderer.fx.burst(x, y, z, info?.color ?? ORB_GOLD, { count: 28, speed: 3, up: 2, gravity: 3, life: 650 });
           if (!attract && b >= 0 && info) {
             // The local player gets the full "what it does"; rivals get a tag.
@@ -975,7 +976,7 @@ async function main(): Promise<void> {
         case EVT_SHOCK:
           if (!attract) {
             audio.dash(true);
-            renderer.fx.addTrauma(0.3);
+            renderer.fx.addTrauma(0.16);
             renderer.fx.addPunch(0, 0);
           }
           renderer.fx.ring(x, y, z, 0xff8a3d, 6);

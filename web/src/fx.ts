@@ -238,7 +238,7 @@ export class FxSystem {
       this.ringMats[i].opacity = 0.9 * (1 - t);
     }
 
-    this.trauma = Math.max(0, this.trauma - dt / 700);
+    this.trauma = Math.max(0, this.trauma - dt / 520);
     const decay = Math.exp(-dt / PUNCH_DECAY_MS);
     this.punchX *= decay;
     this.punchZ *= decay;
@@ -246,7 +246,10 @@ export class FxSystem {
 
   /** Camera offset for the current shake level plus directional punch. */
   shakeOffset(out: THREE.Vector3, timeMs: number): THREE.Vector3 {
-    const s = this.trauma * this.trauma * 0.55;
+    // Kept deliberately gentle: a big high-frequency amplitude reads as the whole
+    // map "vibrating" rather than a punchy kick. The directional punch does the
+    // impact feel; this is just seasoning.
+    const s = this.trauma * this.trauma * 0.26;
     out.set(
       Math.sin(timeMs * 0.061) * s,
       Math.sin(timeMs * 0.083 + 2) * s,

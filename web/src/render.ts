@@ -604,6 +604,7 @@ export class GameRenderer {
   private orbLights: THREE.PointLight[] = [];
   private orbGlyphs: THREE.Sprite[] = [];
   private orbSpawn = new Float32Array(MAX_ORBS).fill(1); // 1 = settled; <1 = popping in
+  private orbCollect = new Float32Array(MAX_ORBS).fill(1); // 1 = idle; <1 = being collected
   private prevOrbActive = new Uint8Array(MAX_ORBS);
   private orbGlyphTex = ORB_INFO.map((_, i) => makeOrbGlyphTexture(i));
 
@@ -1286,8 +1287,9 @@ export class GameRenderer {
       const b = orbsBase + k * 4;
       const active = curr[b + 3] > 0.5;
       const orb = this.orbs[k];
-      orb.visible = active;
       if (active) {
+        orb.visible = true;
+        this.orbCollect[k] = 1;
         // Spawn pop: it just went active → scale up with an elastic overshoot,
         // drop in from above and spin fast, settling over ~0.5s. No more
         // appearing out of nowhere.
@@ -1317,8 +1319,21 @@ export class GameRenderer {
           gm.needsUpdate = true;
         }
         glyph.position.y = 0.66 + 0.05 * Math.sin(timeMs * 0.004 + k);
+      } else if (this.prevOrbActive[k] || this.orbCollect[k] < 1) {
+        // Just picked up (or mid-collect): shrink away, get sucked upward and
+        // spin out while the glow fades — a satisfying "collected" beat instead
+        // of a silent pop-out. Rides on the last position it held.
+        if (this.prevOrbActive[k]) this.orbCollect[k] = 0;
+        this.prevOrbActive[k] = 0;
+        this.orbCollect[k] = Math.min(1, this.orbCollect[k] + dts / 0.28);
+        const cp = this.orbCollect[k];
+        orb.visible = cp < 1;
+        orb.scale.setScalar(Math.max(0.001, 1 - cp * cp));
+        orb.position.y += dts * 2.6;
+        orb.rotation.y += dts * 22;
+        this.orbLights[k].intensity = 8 * (1 - cp);
       } else {
-        this.prevOrbActive[k] = 0; // reset so it pops again next time it spawns
+        orb.visible = false;
       }
     }
 
