@@ -815,6 +815,8 @@ export class GameRenderer {
   private orbs: THREE.Mesh[] = [];
   private orbLights: THREE.PointLight[] = [];
   private orbGlyphs: THREE.Sprite[] = [];
+  private orbSpawn = new Float32Array(MAX_ORBS).fill(1); // 1 = settled; <1 = popping in
+  private prevOrbActive = new Uint8Array(MAX_ORBS);
   private orbGlyphTex = ORB_INFO.map((_, i) => makeOrbGlyphTexture(i));
 
   // Rey de la colina zone marker (cosmetic; position mirrors the sim's mode section).
@@ -1497,14 +1499,27 @@ export class GameRenderer {
       const orb = this.orbs[k];
       orb.visible = active;
       if (active) {
+        // Spawn pop: it just went active → scale up with an elastic overshoot,
+        // drop in from above and spin fast, settling over ~0.5s. No more
+        // appearing out of nowhere.
+        if (!this.prevOrbActive[k]) this.orbSpawn[k] = 0;
+        this.prevOrbActive[k] = 1;
+        if (this.orbSpawn[k] < 1) this.orbSpawn[k] = Math.min(1, this.orbSpawn[k] + dts / 0.5);
+        const sp = this.orbSpawn[k];
+        const back = 2.4; // easeOutBack overshoot
+        const eb = sp >= 1 ? 1 : 1 + (back + 1) * (sp - 1) ** 3 + back * (sp - 1) ** 2;
+        orb.scale.setScalar(Math.max(0.001, eb));
+        const dropIn = (1 - sp) ** 2 * 2.2; // falls the last bit into place
+        const spinUp = (1 - sp) * 11; // whirl that decelerates as it lands
         const orbType = ((Math.round(curr[b + 3]) - 1) % ORB_INFO.length + ORB_INFO.length) % ORB_INFO.length;
         const orbColor = ORB_INFO[orbType]?.color ?? 0xffc93c;
         const om = orb.material as THREE.MeshStandardMaterial;
         om.color.setHex(orbColor);
         om.emissive.setHex(orbColor);
         this.orbLights[k].color.setHex(orbColor);
-        orb.position.set(curr[b], curr[b + 1] + 0.15 * Math.sin(timeMs * 0.004 + k), curr[b + 2]);
-        orb.rotation.y = timeMs * 0.002 + k;
+        this.orbLights[k].intensity = 8 + (1 - sp) * 9; // bright flash on arrival, settles to 8
+        orb.position.set(curr[b], curr[b + 1] + 0.15 * Math.sin(timeMs * 0.004 + k) + dropIn, curr[b + 2]);
+        orb.rotation.y = timeMs * 0.002 + k + spinUp;
         // Point the type glyph at this orb; a gentle bob keeps it lively.
         const glyph = this.orbGlyphs[k];
         const gm = glyph.material as THREE.SpriteMaterial;
@@ -1513,6 +1528,8 @@ export class GameRenderer {
           gm.needsUpdate = true;
         }
         glyph.position.y = 0.66 + 0.05 * Math.sin(timeMs * 0.004 + k);
+      } else {
+        this.prevOrbActive[k] = 0; // reset so it pops again next time it spawns
       }
     }
 

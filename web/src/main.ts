@@ -946,7 +946,11 @@ async function main(): Promise<void> {
           // `a` is the orb type; `b >= 0` means it was knocked out of a carrier.
           if (!attract) (b >= 0 ? audio.orbLoose() : audio.orbSpawn());
           const spawnColor = ORB_INFO[a]?.color ?? ORB_GOLD;
-          renderer.fx.burst(x, y, z, spawnColor, { count: 12, speed: 1.4, up: 0.8, gravity: 1, life: 500 });
+          // Materialize with a double ring + a rising shower of sparks; the orb
+          // mesh itself pops/drops in (render.ts). No more silent appearing.
+          renderer.fx.ring(x, y + 0.05, z, spawnColor, 2.6);
+          renderer.fx.ring(x, y + 0.05, z, 0xffffff, 1.3);
+          renderer.fx.burst(x, y, z, spawnColor, { count: 20, speed: 2.2, up: 1.8, gravity: 2, life: 620 });
           break;
         }
         case EVT_ORB_PICKUP: {
