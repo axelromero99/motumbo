@@ -3896,7 +3896,28 @@ MOTUMBO_EXPORT void motumbo_step( void )
 		}
 		if ( g_playerCount > 1 && aliveCount <= 1 )
 		{
-			g_winner = aliveCount == 1 ? lastAlive : -2;
+			int decided = aliveCount == 1 ? lastAlive : -2;
+			if ( g_mode == MODE_KOTH || g_mode == MODE_COSECHA )
+			{
+				// Objective modes: if the round is cut short by elimination (bots
+				// shove each other off long before anyone reaches the target), the
+				// winner is whoever controlled the OBJECTIVE most — zone seconds or
+				// orbs — not the last ball standing. Draw (-2) if nobody scored.
+				// Deterministic: g_scores is identical on every peer; '>' breaks
+				// ties toward the lower index.
+				int best = -1;
+				int bestScore = 0;
+				for ( int i = 0; i < g_playerCount; ++i )
+				{
+					if ( g_scores[i] > bestScore )
+					{
+						bestScore = g_scores[i];
+						best = i;
+					}
+				}
+				decided = best >= 0 ? best : -2;
+			}
+			g_winner = decided;
 			PushEvent( EVT_ROUND_END, 0.0f, 0.0f, 0.0f, (float)g_winner, -1.0f );
 		}
 	}
