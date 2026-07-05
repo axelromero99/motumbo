@@ -135,6 +135,7 @@ export const EVT_ZONE = 12;
 export const EVT_MODE_POINT = 13;
 export const EVT_SHIELD = 14;
 export const EVT_SHOCK = 15;
+export const EVT_TILE_RISE = 16;
 export const EVENT_FLOATS = 6;
 
 interface MotumboModule {

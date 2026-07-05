@@ -197,6 +197,7 @@ enum
 	EVT_MODE_POINT = 13, // a = player, b = new score (zone seconds / orbs)
 	EVT_SHIELD = 14,	 // a = attacker whose shove was blocked, b = shielded
 	EVT_SHOCK = 15,		 // b = player who set off a SHOCK pickup
+	EVT_TILE_RISE = 16,	 // a tile rose into place from below
 };
 
 #define MAX_EVENTS 32
@@ -242,6 +243,7 @@ typedef struct Piece
 	int priority;  // crumble group, lower falls first
 	int special;
 	float dirX, dirZ; // boost direction (unit, XZ)
+	int riseAt;		  // frame this tile rises in from below (0 = present from the start)
 } Piece;
 
 typedef struct Hazard
@@ -633,12 +635,24 @@ static void AddPieceEx( float cx, float cz, float topY, int priority, const b3Bo
 	g_pieces[g_pieceCount].special = special;
 	g_pieces[g_pieceCount].dirX = dirX;
 	g_pieces[g_pieceCount].dirZ = dirZ;
+	g_pieces[g_pieceCount].riseAt = 0;
 	g_pieceCount += 1;
 }
 
 static void AddPiece( float cx, float cz, float topY, int priority, const b3BoxHull* hull )
 {
 	AddPieceEx( cx, cz, topY, priority, hull, SPECIAL_NONE, 0.0f, 0.0f, -1 );
+}
+
+// A tile that starts hidden (GONE, body disabled) and rises into place at frame
+// `riseAt`, becoming solid — the opposite of the crumble. Lets arenas GROW.
+static void AddRisingPiece( float cx, float cz, float topY, int priority, const b3BoxHull* hull, int riseAt )
+{
+	AddPieceEx( cx, cz, topY, priority, hull, SPECIAL_NONE, 0.0f, 0.0f, -1 );
+	int idx = g_pieceCount - 1;
+	g_pieces[idx].state = PIECE_GONE;
+	g_pieces[idx].riseAt = riseAt;
+	b3Body_Disable( g_pieces[idx].body );
 }
 
 // Crumble order: ascending priority group, then farthest-from-origin first,
@@ -1792,7 +1806,11 @@ static void BuildMega( int level, const b3BoxHull* hull )
 				}
 				if ( !placed && ( ( az == 0 && ax <= 11 ) || ( ax == 0 && az <= 11 ) ) )
 				{
-					AddPiece( cx, cz, 0.65f, 2, hull ); // the connecting catwalks
+					// The catwalks RISE into place from the centre outward, so the
+					// bridges build themselves — reach a platform before its span
+					// arrives and you can leap early.
+					int seg = ax > az ? ax : az;
+					AddRisingPiece( cx, cz, 0.65f, 2, hull, COUNTDOWN_TICKS + 120 + seg * 40 );
 				}
 			}
 			else if ( m == 9 )
@@ -1823,7 +1841,8 @@ static void BuildMega( int level, const b3BoxHull* hull )
 					float izz = sinf( a ) * 7.2f;
 					if ( ( cx - ixx ) * ( cx - ixx ) + ( cz - izz ) * ( cz - izz ) <= 1.5f * 1.5f )
 					{
-						AddPiece( cx, cz, 0.7f, 2, hull ); // stepping stones
+						// Stepping stones surface one by one over the round.
+						AddRisingPiece( cx, cz, 0.7f, 2, hull, COUNTDOWN_TICKS + 150 + k * 110 );
 					}
 				}
 			}
@@ -2201,7 +2220,14 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 	{
 		BuildLevel( g_level, &tileHull );
 	}
-	g_standingPieces = g_pieceCount;
+	g_standingPieces = 0;
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		if ( g_pieces[i].state == PIECE_STATIC )
+		{
+			g_standingPieces += 1; // rising tiles start GONE and don't count yet
+		}
+	}
 	// One orb per ~45 tiles: small arenas get 1, the big megas get up to 6.
 	g_orbTarget = g_pieceCount / 45 + 1;
 	if ( g_orbTarget > MAX_ORBS )
@@ -3409,6 +3435,21 @@ static void ProcessHits( void )
 
 static void StepCrumble( void )
 {
+	// Rising tiles: pop up from below into solid ground at their scheduled frame.
+	for ( int i = 0; i < g_pieceCount; ++i )
+	{
+		Piece* piece = &g_pieces[i];
+		if ( piece->riseAt > 0 && piece->state == PIECE_GONE && (int)g_frame >= piece->riseAt )
+		{
+			b3Body_Enable( piece->body );
+			piece->state = PIECE_STATIC;
+			piece->riseAt = 0;
+			g_standingPieces += 1;
+			b3Pos pos = b3Body_GetPosition( piece->body );
+			PushEvent( EVT_TILE_RISE, pos.x, pos.y + PIECE_HY, pos.z, 0.0f, -1.0f );
+		}
+	}
+
 	// Promote WARNING tiles whose timer expired.
 	for ( int i = 0; i < g_pieceCount; ++i )
 	{

@@ -829,6 +829,8 @@ export class GameRenderer {
 
   private theme: Theme = THEMES[0];
   private tileColors: THREE.Color[] = [];
+  private pieceRise = new Float32Array(0); // 1 = settled; <1 = rising in animation
+  private prevPieceState = new Uint8Array(0);
   private pixelRatioCap = 2;
   private dummy = new THREE.Object3D();
   private qa = new THREE.Quaternion();
@@ -1065,6 +1067,10 @@ export class GameRenderer {
     }
     this.pieces.instanceColor!.needsUpdate = true;
     this.scene.add(this.pieces);
+    // Rise-in animation state: seed prev states so existing tiles don't animate.
+    this.pieceRise = new Float32Array(sim.pieceCount).fill(1);
+    this.prevPieceState = new Uint8Array(sim.pieceCount);
+    for (let i = 0; i < sim.pieceCount; i++) this.prevPieceState[i] = pieceStateOf(state[sim.pieceBase(i) + 7]);
 
     // Auto-fit the camera to the arena: levels now span very different sizes.
     let ext = 8;
@@ -1419,13 +1425,20 @@ export class GameRenderer {
           this.dummy.position.set(0, -1000, 0);
           this.dummy.quaternion.identity();
         } else {
+          // A tile that just went GONE→solid rose in — animate it up from below.
+          if (this.prevPieceState[i] === PIECE_GONE) this.pieceRise[i] = 0;
           this.lerpInto(this.dummy.position, this.dummy.quaternion, prev, curr, base, alpha);
-          if (state === PIECE_WARNING) {
+          if (this.pieceRise[i] < 1) {
+            this.pieceRise[i] = Math.min(1, this.pieceRise[i] + dts / 0.45);
+            const e = 1 - (1 - this.pieceRise[i]) ** 2; // ease-out
+            this.dummy.position.y -= (1 - e) * 2.4;
+          } else if (state === PIECE_WARNING) {
             // Shake and flash before dropping (render-only, sim is untouched).
             this.dummy.position.x += Math.sin(timeMs * 0.09 + i) * 0.05;
             this.dummy.position.z += Math.cos(timeMs * 0.11 + i * 2) * 0.05;
           }
         }
+        this.prevPieceState[i] = state;
         this.dummy.updateMatrix();
         this.pieces.setMatrixAt(i, this.dummy.matrix);
 

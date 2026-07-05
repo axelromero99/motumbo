@@ -13,6 +13,7 @@ import {
   EVT_JUMP,
   EVT_TILE_DROP,
   EVT_TILE_WARN,
+  EVT_TILE_RISE,
   EVT_FALL,
   EVT_ORB_SPAWN,
   EVT_ORB_PICKUP,
@@ -828,6 +829,11 @@ async function main(): Promise<void> {
           renderer.fx.burst(x, y + 0.4, z, TILE_DUST, { count: 14, speed: 1.6, up: 1, life: 550 });
           renderer.fx.ring(x, y + 0.4, z, TILE_DUST, 2);
           if (!attract) trauma(0.08);
+          break;
+        case EVT_TILE_RISE:
+          // A tile surfaced from below — a little upward dust puff.
+          if (!attract) audio.jump();
+          renderer.fx.burst(x, y, z, TILE_DUST, { count: 10, speed: 1.2, up: 1.6, gravity: 5, life: 480 });
           break;
         case EVT_DASH_HIT: {
           renderer.fx.ring(x, y, z, 0xffffff, 2.5);
