@@ -1329,22 +1329,33 @@ export class GameRenderer {
         face.group.scale.setScalar(ballR);
 
         const hsp = Math.sqrt(vx * vx + vz * vz);
-        // The head faces where it's going (move away → you see the back of its
-        // head; toward → it faces you). When idle, everyone turns to look at the
-        // arena CENTRE, so the crowd isn't all staring the same way. The player
-        // you follow in third person keeps its heading when idle, so the chase
-        // cam stays put behind it (always the nape).
+        const cxw = root.position.x;
+        const czw = root.position.z;
+        const offCentre = cxw * cxw + czw * czw > 1; // avoid noise near the middle
+        // Every ball — you included — faces where it's going; standing still it
+        // turns to look at the arena CENTRE, so nobody (not even you) ends up
+        // staring off the map.
         let targetYaw = face.yaw;
-        if (hsp > 1.5) {
-          targetYaw = Math.atan2(vx, vz);
-        } else if (i !== this.localSlot) {
-          targetYaw = Math.atan2(-root.position.x, -root.position.z);
-        }
-        let d = targetYaw - face.yaw;
-        d = Math.atan2(Math.sin(d), Math.cos(d));
+        if (hsp > 1.5) targetYaw = Math.atan2(vx, vz);
+        else if (offCentre) targetYaw = Math.atan2(-cxw, -czw);
+        const d = Math.atan2(Math.sin(targetYaw - face.yaw), Math.cos(targetYaw - face.yaw));
         face.yaw += d * Math.min(1, dts * (hsp > 1.5 ? 8 : 1.6));
-        // The chase cam sits exactly behind the local player's facing.
-        if (i === this.localSlot) this.chaseYaw = face.yaw;
+
+        // Third-person chase heading (local only). It EASES (never snaps), and
+        // it refuses to whip 180° when you back up — that reversal was the
+        // "everything rotates" feeling. Idle → look toward centre.
+        if (i === this.localSlot) {
+          let ct = this.chaseYaw;
+          if (hsp > 1.5) {
+            ct = Math.atan2(vx, vz);
+            const off = Math.atan2(Math.sin(ct - this.chaseYaw), Math.cos(ct - this.chaseYaw));
+            if (Math.abs(off) > 1.9) ct = this.chaseYaw; // reversing → hold, don't spin
+          } else if (offCentre) {
+            ct = Math.atan2(-cxw, -czw);
+          }
+          const cd = Math.atan2(Math.sin(ct - this.chaseYaw), Math.cos(ct - this.chaseYaw));
+          this.chaseYaw += cd * Math.min(1, dts * 2.5);
+        }
         // A small fixed tilt (a stopped, camera-facing head reads better); the
         // head itself does the looking, so the pupils just sit forward.
         const targetPitch = tuneVal(this.tune, 'facePitch');

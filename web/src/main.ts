@@ -72,8 +72,10 @@ function camRelativeWord(word: number, yaw: number): number {
   if (fwd === 0 && rgt === 0) return actions;
   const hx = Math.sin(yaw);
   const hz = Math.cos(yaw);
-  const wx = fwd * hx + rgt * hz; // world X
-  const wz = fwd * hz - rgt * hx; // world Z
+  // Camera-right (Three's lookAt basis) is (−hz, hx), not (hz, −hx) — using the
+  // wrong one swapped A/D in the chase cam.
+  const wx = fwd * hx - rgt * hz; // world X
+  const wz = fwd * hz + rgt * hx; // world Z
   const len = Math.hypot(wx, wz) || 1;
   const nx = wx / len;
   const nz = wz / len;
