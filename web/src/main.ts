@@ -38,6 +38,7 @@ import {
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
 import { SKIN_COUNT } from './skins';
 import { TUNE_PARAMS, loadTune, tuneVal } from './tune';
+import { setupTouch } from './touch';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
@@ -110,6 +111,7 @@ async function main(): Promise<void> {
   const sim = await Sim.create();
   const renderer = new GameRenderer(app);
   const input = new LocalInput();
+  const touch = setupTouch(input);
   const audio = new AudioEngine();
   const music = new MusicEngine();
   const stats = new MatchStats();
@@ -1128,6 +1130,7 @@ async function main(): Promise<void> {
       else if (mode === 'net' && isHost) hostNextRound(false);
     }
     if (mode === 'menu' && now >= attractTimer) startAttract();
+    touch.show((mode === 'local' || mode === 'net') && !paused);
 
     const dt = now - last;
     last = now;
