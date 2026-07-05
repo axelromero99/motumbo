@@ -769,6 +769,8 @@ export class GameRenderer {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private cameraBase = new THREE.Vector3(0, 22, 20.5);
+  private cameraMode = 0; // 0 isométrica · 1 desde arriba · 2 cerca (persigue)
+  private arenaExt = 10; // arena half-extent from setup, for the camera presets
   private lookTarget = new THREE.Vector3(0, 0, 0);
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
@@ -935,6 +937,20 @@ export class GameRenderer {
     mat.needsUpdate = true;
   }
 
+  private applyCameraMode(): void {
+    const e = this.arenaExt;
+    if (this.cameraMode === 1) this.cameraBase.set(0, e * 2.55, e * 0.03); // desde arriba
+    else if (this.cameraMode === 2) this.cameraBase.set(0, e * 1.12, e * 2.05); // cerca (persigue)
+    else this.cameraBase.set(0, e * 1.78, e * 1.66); // isométrica (default)
+  }
+
+  /** Cycle isométrica → desde arriba → cerca. Returns the new mode's label. */
+  cycleCamera(): string {
+    this.cameraMode = (this.cameraMode + 1) % 3;
+    this.applyCameraMode();
+    return ['ISOMÉTRICA', 'DESDE ARRIBA', 'CERCA'][this.cameraMode];
+  }
+
   /** Runtime quality knobs: shadow map toggle and device pixel ratio cap. */
   setQuality(q: { shadows: boolean; pixelRatioCap: number }): void {
     this.pixelRatioCap = q.pixelRatioCap;
@@ -1039,9 +1055,8 @@ export class GameRenderer {
       ext = Math.max(ext, Math.abs(state[pb]), Math.abs(state[pb + 2]));
     }
     ext += 1.5;
-    // Pull the camera in a touch so arenas fill more of the screen — they were
-    // reading as small even when the play area was fine.
-    this.cameraBase.set(0, ext * 1.78, ext * 1.66);
+    this.arenaExt = ext;
+    this.applyCameraMode();
     this.scene.fog = new THREE.Fog(this.theme.bg, ext * 3.3, ext * 7.3);
     this.sun.shadow.camera.left = -(ext + 4);
     this.sun.shadow.camera.right = ext + 4;
@@ -1492,6 +1507,11 @@ export class GameRenderer {
     this.skyMat.uniforms.uTime.value = timeMs * 0.001;
     this.abyssMat.uniforms.uTime.value = timeMs * 0.001;
     this.camera.position.copy(this.cameraBase).add(this.fx.shakeOffset(this.shakeTmp, timeMs));
+    // The follow modes hover over the action; isométrica frames the whole arena.
+    if (this.cameraMode !== 0) {
+      this.camera.position.x += this.lookTarget.x;
+      this.camera.position.z += this.lookTarget.z;
+    }
     this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
     this.renderer.render(this.scene, this.camera);
   }

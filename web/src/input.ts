@@ -34,6 +34,7 @@ export class LocalInput {
   onReset: (() => void) | null = null;
   onSelectLevel: ((level: number) => void) | null = null;
   onPause: (() => void) | null = null;
+  onCamera: (() => void) | null = null;
   /** LOCAL 2-player: arrows drive P2. Single human (SOLO/online): arrows also
    *  drive the one player (words[0]), so WASD and arrows both work. */
   dualLocal = false;
@@ -51,6 +52,10 @@ export class LocalInput {
       }
       if (e.code === 'Escape') {
         this.onPause?.();
+        return;
+      }
+      if (e.code === 'KeyC') {
+        this.onCamera?.();
         return;
       }
       if (this.apply(e.code, true)) e.preventDefault();

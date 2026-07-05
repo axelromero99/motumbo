@@ -670,14 +670,19 @@ async function main(): Promise<void> {
     setPaused(!paused);
   };
 
+  input.onCamera = () => {
+    ui.toast(`📷 cámara: ${renderer.cycleCamera()}`);
+  };
+
   function helpText(): string {
     const p1 =
       'P1 <kbd>WASD</kbd> · dash <kbd>Shift</kbd> · salto <kbd>Espacio</kbd> · anclarse <kbd>Ctrl</kbd>';
-    if (mode === 'net') return `${p1} &nbsp;|&nbsp; <kbd>Esc</kbd> pausa`;
-    if (intent === 'solo') return `${p1} &nbsp;|&nbsp; <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha`;
+    const cam = '<kbd>C</kbd> cámara';
+    if (mode === 'net') return `${p1} &nbsp;|&nbsp; ${cam} · <kbd>Esc</kbd> pausa`;
+    if (intent === 'solo') return `${p1} &nbsp;|&nbsp; ${cam} · <kbd>Esc</kbd> pausa · <kbd>R</kbd> revancha`;
     return (
       `${p1} &nbsp;|&nbsp; P2 <kbd>Flechas</kbd> · <kbd>Shift der.</kbd> · <kbd>Ctrl der.</kbd> · <kbd>.</kbd>` +
-      ' &nbsp;|&nbsp; <kbd>Esc</kbd> pausa'
+      ` &nbsp;|&nbsp; ${cam} · <kbd>Esc</kbd> pausa`
     );
   }
 
