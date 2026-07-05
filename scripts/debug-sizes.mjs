@@ -20,7 +20,7 @@ for (let level = 20; level < 70; level++) {
     maxLevel = level;
   }
   sum += pieces;
-  if (pieces >= 512) overflow++;
+  if (pieces >= 720) overflow++;
   // Farthest tile from center → arena extent (meters).
   for (let i = 0; i < pieces; i++) {
     const pb = b + 8 + 8 * (4 + i);
@@ -29,4 +29,4 @@ for (let level = 20; level < 70; level++) {
   }
 }
 console.log(`generados: baldosas min ${min}, max ${max} (nivel ${maxLevel}), prom ${(sum / 50).toFixed(0)}`);
-console.log(`extent maximo: ${extentMax.toFixed(1)}m · niveles en el tope de 512: ${overflow}`);
+console.log(`extent maximo: ${extentMax.toFixed(1)}m · niveles en el tope de 720: ${overflow}`);

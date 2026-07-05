@@ -1039,7 +1039,9 @@ export class GameRenderer {
       ext = Math.max(ext, Math.abs(state[pb]), Math.abs(state[pb + 2]));
     }
     ext += 1.5;
-    this.cameraBase.set(0, ext * 2.02, ext * 1.88);
+    // Pull the camera in a touch so arenas fill more of the screen — they were
+    // reading as small even when the play area was fine.
+    this.cameraBase.set(0, ext * 1.78, ext * 1.66);
     this.scene.fog = new THREE.Fog(this.theme.bg, ext * 3.3, ext * 7.3);
     this.sun.shadow.camera.left = -(ext + 4);
     this.sun.shadow.camera.right = ext + 4;

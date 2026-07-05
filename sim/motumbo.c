@@ -16,7 +16,7 @@
 #endif
 
 #define MAX_PLAYERS 8
-#define MAX_PIECES 512
+#define MAX_PIECES 720
 #define MAX_HAZARDS 4
 
 // 20 hand-crafted arenas + 50 procedurally generated + 5 huge "mega" arenas.
@@ -1330,9 +1330,10 @@ static void PickGeneratedSpawns( void )
 		}
 	}
 
-	// Prefer solidly-connected tiles (≥3 neighbours). Relax the bar only if the
-	// arena is too sparse to seat everyone, so we never seat fewer than before.
-	int minNeigh = 3;
+	// Prefer well-interior tiles (≥5 of 8 neighbours): a corner tile (3) sits on
+	// a hole/rim edge and a big ball tips off it during the settle. Relax only if
+	// the arena is too sparse to seat everyone, so we never seat fewer.
+	int minNeigh = 5;
 	while ( minNeigh > 0 )
 	{
 		int eligible = 0;
@@ -1405,9 +1406,10 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 {
 	g_genRng = (uint32_t)level * 2654435761u + 977u;
 	int fam = ( level - LEVEL_HANDMADE ) % 6;
-	// Bigger arenas (~60% more area than before) — the balls stay the same
-	// absolute size, so there is more room to move and it plays livelier.
-	float R = GenF( 12.5f, 17.0f );
+	// Big arenas — the balls stay the same absolute size, so there is lots of
+	// room to move and it plays livelier (raised ~30%; the grid loop below and
+	// MAX_PIECES were widened to match).
+	float R = GenF( 16.0f, 21.5f );
 	static const float sizes[7] = { 0.45f, 0.5f, 0.55f, 0.6f, 0.6f, 0.75f, 0.9f };
 	g_genBallR = sizes[GenNext() % 7u];
 
@@ -1441,9 +1443,9 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 	int tierEvery = 2 + (int)( GenNext() % 2u );
 	int padSize = 2 + (int)( GenNext() % 2u );
 
-	for ( int gx = -12; gx <= 12; ++gx )
+	for ( int gx = -15; gx <= 15; ++gx )
 	{
-		for ( int gz = -12; gz <= 12; ++gz )
+		for ( int gz = -15; gz <= 15; ++gz )
 		{
 			float cx = gx * PIECE_STEP;
 			float cz = gz * PIECE_STEP;
