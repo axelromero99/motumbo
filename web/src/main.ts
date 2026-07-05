@@ -36,7 +36,7 @@ import {
   MODE_NAMES,
 } from './sim';
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
-import { SKIN_COUNT } from './skins';
+import { SKIN_COUNT, SKINS } from './skins';
 import { TUNE_PARAMS, loadTune, tuneVal } from './tune';
 import { setupTouch } from './touch';
 import { GameRenderer, PLAYER_COLORS } from './render';
@@ -323,9 +323,19 @@ async function main(): Promise<void> {
   // spread-out variety so the field looks different every round.
   const buildSkins = (localSlot: number): number[] => {
     const chosen = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
+    // Group skins by category so bots get a real MIX — not all flags. Rotate
+    // through patrón → material → bandera (flags as the accent, not the default).
+    const byCat: Record<string, number[]> = { bandera: [], 'patrón': [], material: [] };
+    SKINS.forEach((s, i) => byCat[s.cat].push(i));
+    const order = ['patrón', 'material', 'bandera'];
     const skins: number[] = [];
     for (let i = 0; i < playerCount; i++) {
-      skins[i] = i === localSlot && !botSlots.includes(i) ? chosen : (i * 7 + 3) % SKIN_COUNT;
+      if (i === localSlot && !botSlots.includes(i)) {
+        skins[i] = chosen;
+        continue;
+      }
+      const list = byCat[order[i % order.length]];
+      skins[i] = list.length ? list[(i * 3 + 1) % list.length] : i % SKIN_COUNT;
     }
     return skins;
   };

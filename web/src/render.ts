@@ -660,12 +660,15 @@ export class GameRenderer {
     // skins, hazards, the abyss glow) radiate — lit tiles and plain balls stay
     // crisp instead of the whole frame washing out.
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.22;
+    this.renderer.toneMappingExposure = 1.15;
     this.composer = new EffectComposer(this.renderer);
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioCap));
     this.composer.setSize(window.innerWidth, window.innerHeight);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.75, 0.5, 0.72);
+    // Subtle: strength down and threshold up so only genuinely bright things
+    // (orbs, active power auras, the abyss glow) get a soft halo — the balls read
+    // as solid spheres, not glowing blobs.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.42, 0.55, 0.82);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
 
