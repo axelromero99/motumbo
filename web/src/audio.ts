@@ -99,6 +99,13 @@ export class AudioEngine {
     this.noise(0.1, 900, 1.2, v * 0.6, 300);
   }
 
+  /** Meaty dash-landing impact: a low body thump under a sharp crack. */
+  impact(): void {
+    this.tone(96, 34, 0.22, 'sine', 0.6);
+    this.tone(58, 30, 0.14, 'triangle', 0.4);
+    this.noise(0.13, 520, 1.6, 0.5, 240);
+  }
+
   dash(powered: boolean): void {
     this.noise(0.22, powered ? 2400 : 1500, 2.5, powered ? 0.5 : 0.3, 250);
     if (powered) this.tone(500, 900, 0.18, 'square', 0.12);

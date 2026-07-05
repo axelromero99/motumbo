@@ -144,6 +144,7 @@ async function main(): Promise<void> {
   let paused = false;
   let timeScale = 1;
   let slowmoUntil = 0;
+  let hitstopUntil = 0; // brief near-freeze on big impacts, for punch
   let restartAt = 0;
   let lastCountShown = -1;
   let acc = 0;
@@ -304,6 +305,7 @@ async function main(): Promise<void> {
     banner.style.display = 'none';
     timeScale = 1;
     slowmoUntil = 0;
+    hitstopUntil = 0;
     restartAt = 0;
     lastCountShown = -1;
     acc = 0;
@@ -783,6 +785,13 @@ async function main(): Promise<void> {
     renderer.fx.addTrauma(reducedMotion ? Math.min(amount, 0.1) : amount);
   };
 
+  // Hitstop: a brief near-freeze that makes an impact land harder. Driven by
+  // sim events (same tick on every peer), so it stays lockstep-safe.
+  const hitstop = (ms: number): void => {
+    if (reducedMotion) return;
+    hitstopUntil = Math.max(hitstopUntil, performance.now() + ms);
+  };
+
   // Full-screen color wash for win/lose beats.
   const flashEl = $('flash');
   let flashTimer = 0;
@@ -843,6 +852,11 @@ async function main(): Promise<void> {
           if (!attract) audio.hit(a);
           renderer.fx.burst(x, y, z, 0xffffff, { count: Math.min(24, Math.floor(a * 2.5)), speed: a * 0.5, life: 450 });
           if (a > 5 && !attract) trauma(Math.min(0.45, a * 0.035));
+          // Very fast collisions get a little hitstop of their own.
+          if (a > 8 && !attract) {
+            hitstop(45);
+            renderer.fx.ring(x, y, z, 0xffffff, 2 + a * 0.1);
+          }
           if (b >= 0) renderer.squash(b, Math.min(0.5, a * 0.05));
           break;
         case EVT_DASH:
@@ -885,11 +899,22 @@ async function main(): Promise<void> {
           renderer.fx.burst(x, y, z, TILE_DUST, { count: 10, speed: 1.2, up: 1.6, gravity: 5, life: 480 });
           break;
         case EVT_DASH_HIT: {
+          // The money shot of sumo: hitstop + double shockwave + camera punch +
+          // meaty thump + a quick white flash, so a landed dash really lands.
           renderer.fx.ring(x, y, z, 0xffffff, 2.5);
-          if (b >= 0) renderer.squash(b, 0.55);
+          renderer.fx.ring(x, y, z, 0xffffff, 4.6);
+          renderer.fx.burst(x, y, z, 0xffffff, { count: 18, speed: 4.5, life: 420 });
+          if (b >= 0) renderer.squash(b, 0.62);
+          if (a >= 0) renderer.squash(a, 0.3);
           if (!attract) {
-            trauma(0.12);
-            renderer.fx.addPunch(x * 0.04, z * 0.04);
+            hitstop(70);
+            audio.impact();
+            trauma(0.26);
+            renderer.fx.addPunch(x * 0.06, z * 0.06);
+            const local = localHumanSlot();
+            if ((a === local || b === local) && !matchOver) {
+              flash('radial-gradient(circle at 50% 46%, rgba(255,255,255,0) 55%, rgba(255,255,255,0.22) 100%)');
+            }
           }
           break;
         }
@@ -1106,7 +1131,9 @@ async function main(): Promise<void> {
 
     const dt = now - last;
     last = now;
-    if (!paused) acc += dt * timeScale;
+    // Hitstop overrides the sim clock briefly on top of any round-end slow-mo.
+    const effScale = now < hitstopUntil ? 0.04 : timeScale;
+    if (!paused) acc += dt * effScale;
     // Cap catch-up work after a background tab pause.
     if (acc > 250) acc = 250;
 
