@@ -796,6 +796,9 @@ export class GameRenderer {
     this.pixelRatioCap = q.pixelRatioCap;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio, q.pixelRatioCap));
+    // Bloom rides the same quality tier as shadows: low-end / battery-saver users
+    // (shadows off) skip the extra composer passes and render straight.
+    this.bloom.enabled = q.shadows;
     if (this.renderer.shadowMap.enabled !== q.shadows) {
       this.renderer.shadowMap.enabled = q.shadows;
       this.sun.castShadow = q.shadows;
