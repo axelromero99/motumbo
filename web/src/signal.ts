@@ -296,10 +296,14 @@ export class RoomSignal {
       onError(message: string): void;
       onNoPeer(): void;
     },
-    timeoutMs = 8000,
+    timeoutMs = 22000,
   ): Promise<void> {
     await this.mqtt.connect();
-    const me = Math.random().toString(36).slice(2, 10);
+    // FIXED 8-char id. `Math.random().toString(36).slice(2,10)` could yield
+    // FEWER than 8 chars (small/short randoms), and the lobby guard below drops
+    // any peer whose id length differs from ours — so two searchers with
+    // mismatched-length ids never paired. Pad to guarantee 8.
+    const me = (Math.random().toString(36).slice(2) + '00000000').slice(0, 8);
     const lobby = 'motumbo1/lobby';
     let announceTimer = 0;
     let noPeerTimer = 0;
