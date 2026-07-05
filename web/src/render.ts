@@ -769,9 +769,15 @@ export class GameRenderer {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private cameraBase = new THREE.Vector3(0, 22, 20.5);
-  private cameraMode = 0; // 0 isométrica · 1 desde arriba · 2 cerca (persigue)
+  private cameraMode = 0; // 0 isométrica · 1 desde arriba · 2 tercera persona
   private arenaExt = 10; // arena half-extent from setup, for the camera presets
   private lookTarget = new THREE.Vector3(0, 0, 0);
+  // Smoothed follow state for the top-down and third-person cameras.
+  private camFocus = new THREE.Vector3();
+  private camHeading = new THREE.Vector3(0, 0, 1);
+  private camInit = false;
+  private localAlive = false; // follow cams fall back to the crowd once you're out
+  private camTmp = new THREE.Vector3();
   private shakeTmp = new THREE.Vector3();
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
@@ -938,17 +944,17 @@ export class GameRenderer {
   }
 
   private applyCameraMode(): void {
-    const e = this.arenaExt;
-    if (this.cameraMode === 1) this.cameraBase.set(0, e * 2.55, e * 0.03); // desde arriba
-    else if (this.cameraMode === 2) this.cameraBase.set(0, e * 1.12, e * 2.05); // cerca (persigue)
-    else this.cameraBase.set(0, e * 1.78, e * 1.66); // isométrica (default)
+    // Only the isométrica view uses this fixed base (it frames the whole arena);
+    // the follow cams compute their position per frame in render().
+    this.cameraBase.set(0, this.arenaExt * 1.78, this.arenaExt * 1.66);
   }
 
-  /** Cycle isométrica → desde arriba → cerca. Returns the new mode's label. */
+  /** Cycle isométrica → desde arriba → tercera persona. Returns the label. */
   cycleCamera(): string {
     this.cameraMode = (this.cameraMode + 1) % 3;
     this.applyCameraMode();
-    return ['ISOMÉTRICA', 'DESDE ARRIBA', 'CERCA'][this.cameraMode];
+    this.camInit = false; // re-seat the follow smoothing for the new mode
+    return ['ISOMÉTRICA', 'DESDE ARRIBA', 'TERCERA PERSONA'][this.cameraMode];
   }
 
   /** Runtime quality knobs: shadow map toggle and device pixel ratio cap. */
@@ -1139,6 +1145,7 @@ export class GameRenderer {
     }
 
     this.lookTarget.set(0, 0, 0);
+    this.camInit = false; // re-seat the follow cams on the new arena
   }
 
   /** Interpolate between the two most recent sim snapshots and draw. */
@@ -1366,6 +1373,7 @@ export class GameRenderer {
         face.browR.rotation.z = -face.browAngle;
       }
 
+      if (i === this.localSlot) this.localAlive = alive;
       // "VOS" tag floats over the local player's ball.
       if (i === this.localSlot && alive) {
         this.youMarker.visible = true;
@@ -1507,13 +1515,61 @@ export class GameRenderer {
     this.fx.update(dtMs);
     this.skyMat.uniforms.uTime.value = timeMs * 0.001;
     this.abyssMat.uniforms.uTime.value = timeMs * 0.001;
-    this.camera.position.copy(this.cameraBase).add(this.fx.shakeOffset(this.shakeTmp, timeMs));
-    // The follow modes hover over the action; isométrica frames the whole arena.
-    if (this.cameraMode !== 0) {
-      this.camera.position.x += this.lookTarget.x;
-      this.camera.position.z += this.lookTarget.z;
+
+    if (this.cameraMode === 0) {
+      // ISOMÉTRICA: fixed base framing the whole arena, gentle look at the crowd.
+      this.camera.position.copy(this.cameraBase).add(this.fx.shakeOffset(this.shakeTmp, timeMs));
+      this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
+      this.renderer.render(this.scene, this.camera);
+      return;
     }
-    this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
+
+    // Follow cams track the local player (or the crowd's centre in attract).
+    const dts = Math.min(0.05, Math.max(1 / 240, dtMs / 1000));
+    // Follow your ball while you're in; once you're out, drift to the crowd.
+    const local = this.localSlot >= 0 && this.localAlive ? this.playerRoots[this.localSlot] : undefined;
+    const fx = local ? local.position.x : this.lookTarget.x;
+    const fy = local ? Math.max(0, local.position.y) : 0;
+    const fz = local ? local.position.z : this.lookTarget.z;
+    if (!this.camInit) {
+      this.camFocus.set(fx, fy, fz);
+      this.camInit = true;
+    }
+    // Heading from the focus's own motion (before we overwrite camFocus).
+    this.camTmp.set(fx - this.camFocus.x, 0, fz - this.camFocus.z);
+    if (this.camTmp.lengthSq() > 0.02 * 0.02) {
+      this.camTmp.normalize();
+      this.camHeading.lerp(this.camTmp, Math.min(1, dts * 4)).normalize();
+    }
+    // Ease the focus toward the ball so the follow is smooth, not twitchy.
+    this.camFocus.x += (fx - this.camFocus.x) * Math.min(1, dts * 6);
+    this.camFocus.y += (fy - this.camFocus.y) * Math.min(1, dts * 4);
+    this.camFocus.z += (fz - this.camFocus.z) * Math.min(1, dts * 6);
+    const shake = this.fx.shakeOffset(this.shakeTmp, timeMs);
+
+    if (this.cameraMode === 1) {
+      // DESDE ARRIBA: high and looking down, but tilted ~15° off vertical (a pure
+      // top-down view whips around from the sensitive lookAt — that was the jitter).
+      const h = Math.max(12, this.arenaExt * 0.95);
+      this.camera.position.set(this.camFocus.x, this.camFocus.y + h, this.camFocus.z + h * 0.26);
+      this.camera.position.addScaledVector(shake, 0.3);
+      this.camera.lookAt(this.camFocus.x, this.camFocus.y, this.camFocus.z);
+    } else {
+      // TERCERA PERSONA: chase cam behind the ball, low, looking ahead — a POV.
+      const back = 6.2;
+      const high = 3.2;
+      this.camera.position.set(
+        this.camFocus.x - this.camHeading.x * back,
+        this.camFocus.y + high,
+        this.camFocus.z - this.camHeading.z * back,
+      );
+      this.camera.position.addScaledVector(shake, 0.5);
+      this.camera.lookAt(
+        this.camFocus.x + this.camHeading.x * 2.2,
+        this.camFocus.y + 0.7,
+        this.camFocus.z + this.camHeading.z * 2.2,
+      );
+    }
     this.renderer.render(this.scene, this.camera);
   }
 
