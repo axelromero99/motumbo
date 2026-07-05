@@ -108,7 +108,8 @@ async function main(): Promise<void> {
   let netBotCount = 0; // extra bots in an online room (host-chosen, 0-2)
   let remoteName = ''; // the online opponent's chosen name
   let quickMatching = false; // in the slither-style auto-matchmaking flow
-  let quickMatchFellBack = false; // guards the single bot-fallback transition
+  let quickMatchFellBack = false; // a human connected → stop the bot/search flow
+  let quickBotsRunning = false; // playing bots while STILL searching the lobby
   let playerCount = 2;
   let botSlots: number[] = [];
   let wins: number[] = [];
@@ -408,7 +409,9 @@ async function main(): Promise<void> {
       if (mode === 'net') {
         ui.toast('❌ se cortó la conexión');
         quitToTitle();
-      } else {
+      } else if (!quickMatching) {
+        // During quick-match we may be playing bots while still searching — a
+        // dropped handshake there isn't an error to surface.
         ui.setRoomState('error', 'Se cortó la conexión. Volvé a intentar.');
       }
     };
@@ -422,6 +425,7 @@ async function main(): Promise<void> {
     session = null;
     lockstep = null;
     quickMatching = false;
+    quickBotsRunning = false;
     window.clearTimeout(connectTimeout);
   }
 
@@ -432,6 +436,7 @@ async function main(): Promise<void> {
     audio.uiClick();
     quickMatching = true;
     quickMatchFellBack = false;
+    quickBotsRunning = false;
     intent = 'net-host';
     levelChoice = 'random';
     gameMode = MODE_SUMO;
@@ -442,38 +447,51 @@ async function main(): Promise<void> {
     roomSignal = rs;
     const armTimeout = (): void => {
       window.clearTimeout(connectTimeout);
-      connectTimeout = window.setTimeout(() => quickMatchToBots('la conexión falló — jugás contra bots'), 15000);
+      // If the WebRTC handshake stalls (NAT), don't hang — fall to bots while
+      // the lobby search keeps running for another rival.
+      connectTimeout = window.setTimeout(() => startQuickBots(), 12000);
     };
+    // Play NOW: after a short grace with no rival, drop into a bot game — but
+    // keep searching the lobby, so a rival who shows up later still swaps us in.
+    window.setTimeout(() => startQuickBots(), 3500);
     try {
-      await rs.quickMatch({
-        onRole: (host) => {
-          isHost = host;
-          mySlot = host ? 0 : 1;
-          ui.setRoomState('connecting', '¡rival encontrado! conectando…');
+      await rs.quickMatch(
+        {
+          onRole: (host) => {
+            isHost = host;
+            mySlot = host ? 0 : 1;
+            ui.setRoomState('connecting', '¡rival encontrado! conectando…');
+          },
+          makeOffer: async () => {
+            armTimeout();
+            return await session!.createOfferCode();
+          },
+          onAnswer: (answer) => void session!.acceptAnswerCode(answer),
+          makeAnswer: async (offer) => {
+            armTimeout();
+            return await session!.acceptOfferCode(offer);
+          },
+          onError: () => startQuickBots(),
+          onNoPeer: () => {
+            // Searched the pool a long time with nobody — settle into bots.
+            roomSignal?.close();
+            roomSignal = null;
+            startQuickBots();
+          },
         },
-        makeOffer: async () => {
-          armTimeout();
-          return await session!.createOfferCode();
-        },
-        onAnswer: (answer) => void session!.acceptAnswerCode(answer),
-        makeAnswer: async (offer) => {
-          armTimeout();
-          return await session!.acceptOfferCode(offer);
-        },
-        onError: () => quickMatchToBots('sin rivales por ahora — jugás contra bots'),
-        onNoPeer: () => quickMatchToBots('sin rivales por ahora — jugás contra bots'),
-      });
+        90000, // keep the pool open ~90 s (slither-style: rivals can join anytime)
+      );
     } catch {
-      quickMatchToBots('sin rivales por ahora — jugás contra bots');
+      startQuickBots();
     }
   }
 
-  // Idempotent: whichever fallback path fires first wins; the rest no-op.
-  const quickMatchToBots = (msg: string): void => {
-    if (quickMatchFellBack) return;
-    quickMatchFellBack = true;
-    quickMatching = false;
-    teardownOnline();
+  // Play a bot game immediately WITHOUT tearing down the lobby search: a rival
+  // who shows up later still connects and swaps us into the online match via
+  // onChannelOpen (quickMatching stays true so that path stays armed).
+  const startQuickBots = (): void => {
+    if (quickBotsRunning || quickMatchFellBack) return;
+    quickBotsRunning = true;
     intent = 'solo';
     levelChoice = 'random';
     gameMode = MODE_SUMO;
@@ -481,7 +499,7 @@ async function main(): Promise<void> {
     winTarget = 5;
     botDifficulty = 1;
     startMatch();
-    ui.toast(msg);
+    ui.toast('sin rival aún — jugás con bots (seguimos buscando)');
   };
 
   async function createRoom(): Promise<void> {
@@ -542,6 +560,7 @@ async function main(): Promise<void> {
     roomSignal?.close();
     roomSignal = null;
     quickMatchFellBack = true; // a human connected; cancel the bot fallback
+    quickBotsRunning = false;
     window.clearTimeout(connectTimeout);
     // Exchange chosen names so both sides show real nicknames.
     remoteName = '';
