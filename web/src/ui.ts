@@ -213,6 +213,8 @@ export interface UiCallbacks {
     rivals: Rivals,
     /** Online only: extra bots to add to the room (0-2). 0 otherwise. */
     onlineBots: number,
+    /** Normal (bots) match: total balls incl. you (4-12). Ignored online. */
+    botCount: number,
   ): void;
   onResume(): void;
   onQuitToTitle(): void;
@@ -294,6 +296,7 @@ export class UiShell {
     [MODE_MALDITO]: MODE_PARAM_CFG[MODE_MALDITO].def,
   };
   private botDiff = 1;
+  private botCount = 8; // total balls in a normal (bots) match: you + bots, 4-12
   private onlineBots = 0;
   private onlineBotDiff = 1;
   private lastStart: {
@@ -304,7 +307,8 @@ export class UiShell {
     botDifficulty: number;
     rivals: Rivals;
     onlineBots: number;
-  } = { level: 'random', winTarget: 5, mode: MODE_SUMO, modeParam: 0, botDifficulty: 1, rivals: 'bots', onlineBots: 0 };
+    botCount: number;
+  } = { level: 'random', winTarget: 5, mode: MODE_SUMO, modeParam: 0, botDifficulty: 1, rivals: 'bots', onlineBots: 0, botCount: 8 };
 
   // Estado online.
   private roomCode = '';
@@ -766,6 +770,13 @@ export class UiShell {
         for (const b of $('seg-botdiff').querySelectorAll('button')) b.classList.toggle('active', b === btn);
       });
     }
+    // Cuántas bolas en la arena (vos + bots): 4 a 12.
+    for (const btn of $('seg-botcount').querySelectorAll('button')) {
+      btn.addEventListener('click', () => {
+        this.botCount = Number(btn.dataset.count) || 8;
+        for (const b of $('seg-botcount').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+      });
+    }
     // Bots para la sala online (2 humanos + N bots).
     for (const btn of $('seg-online-bots').querySelectorAll('button')) {
       btn.addEventListener('click', () => {
@@ -813,9 +824,10 @@ export class UiShell {
         botDifficulty,
         rivals,
         onlineBots,
+        botCount: this.botCount,
       };
       this.showAny('none');
-      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, botDifficulty, rivals, onlineBots);
+      this.cb.onStartMatch(this.selLevel, this.winTarget, this.selMode, modeParam, botDifficulty, rivals, onlineBots, this.botCount);
     });
     $('btn-setup-back').addEventListener('click', () => {
       this.showAny(this.roomConnected ? 'online' : 'title');
@@ -971,7 +983,7 @@ export class UiShell {
     $('btn-rematch').addEventListener('click', () => {
       this.showAny('none');
       const s = this.lastStart;
-      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty, s.rivals, s.onlineBots);
+      this.cb.onStartMatch(s.level, s.winTarget, s.mode, s.modeParam, s.botDifficulty, s.rivals, s.onlineBots, s.botCount);
     });
     $('btn-results-menu').addEventListener('click', () => {
       this.setRoomState('idle');

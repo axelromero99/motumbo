@@ -137,6 +137,7 @@ async function main(): Promise<void> {
   let gameMode = MODE_SUMO;
   let gameModeParam = 0;
   let botDifficulty = 1;
+  let desiredPlayers = 8; // chosen total balls for a normal bots match (4-12)
   let netBotCount = 0; // extra bots in an online room (host-chosen, 0-2)
   let remoteName = ''; // the online opponent's chosen name
   let quickMatching = false; // in the slither-style auto-matchmaking flow
@@ -235,6 +236,7 @@ async function main(): Promise<void> {
       botDiff = 1,
       rivals: 'bots' | 'humano' = 'bots',
       onlineBots = 0,
+      botCount = 8,
     ) => {
       audio.uiClick();
       levelChoice = level;
@@ -242,6 +244,7 @@ async function main(): Promise<void> {
       gameMode = m;
       gameModeParam = mParam;
       botDifficulty = botDiff;
+      desiredPlayers = Math.max(2, Math.min(MAX_PLAYERS, botCount || 8));
       // With a live session the match is online; otherwise RIVALES decides.
       if (session) {
         if (isHost) {
@@ -384,7 +387,10 @@ async function main(): Promise<void> {
     const spec = resolveRound();
     const customSpawns = spec.bytes ? spec.bytes[5] : 0;
     const humans = intent === 'local' ? 2 : 1; // couch splits the keyboard
-    playerCount = customSpawns >= 2 ? Math.min(customSpawns, MAX_PLAYERS) : intent === 'solo' ? 4 : 2;
+    // SOLO honours the chosen crowd size (4-12); couch stays 2. Custom maps cap
+    // at their own spawn count either way so nobody spawns on the void.
+    const want = intent === 'solo' ? desiredPlayers : 2;
+    playerCount = customSpawns >= 2 ? Math.min(customSpawns, Math.max(want, humans)) : Math.max(want, humans);
     botSlots = [];
     for (let i = humans; i < playerCount; i++) botSlots.push(i);
     // Only couch 2-player splits the keyboard; SOLO gets WASD + arrows both.
@@ -1128,6 +1134,7 @@ async function main(): Promise<void> {
     winTarget = 5;
     const bots = Number(q.get('bots'));
     botDifficulty = bots >= 0 && bots <= 2 ? bots : 1;
+    desiredPlayers = Math.max(2, Math.min(MAX_PLAYERS, Number(q.get('players')) || 4));
     intent = 'solo';
     startMatch();
     const cam = Number(q.get('cam')) | 0;

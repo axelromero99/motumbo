@@ -2023,7 +2023,7 @@ static void BuildMega( int level, const b3BoxHull* hull )
 	}
 }
 
-static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
+static void SpawnPointBase( int level, int index, float* outX, float* outY, float* outZ )
 {
 	static const float dirs[MAX_PLAYERS][2] = {
 		{ 1.0f, 0.0f },	  { -1.0f, 0.0f },		{ 0.0f, 1.0f },		  { 0.0f, -1.0f },
@@ -2215,7 +2215,9 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	// Circular spawns; beam levels start on the diagonals so the arms
 	// (along ±X at tick 0) miss everyone.
 	bool diag = level == LEVEL_RULETA || level == LEVEL_RULETA2 || level == LEVEL_MARTILLO;
-	int slot = diag ? ( index + 4 ) % MAX_PLAYERS : index;
+	// dirs has 8 entries; the diagonal rotation must wrap on 8, not MAX_PLAYERS
+	// (which is now 12 — %MAX_PLAYERS would land on the empty {0,0} slots).
+	int slot = diag ? ( index + 4 ) % 8 : index;
 	float radius = 4.9f;
 	if ( level == LEVEL_CLASICA )
 	{
@@ -2248,6 +2250,24 @@ static void SpawnPoint( int level, int index, float* outX, float* outY, float* o
 	}
 	*outX = radius * dirs[slot][0];
 	*outZ = radius * dirs[slot][1];
+}
+
+// Hand-made arenas (0-19) use fixed 8-slot spawn tables. In a big brawl (up to
+// MAX_PLAYERS) the 9th+ player would read an empty {0,0} table slot and stack at
+// the centre, so wrap it onto a real slot and pull it slightly toward the middle
+// (onto solid floor) so it separates from the base player. Generated (20-80) and
+// custom (81) levels already wrap on their own spawn count, so they pass through.
+static void SpawnPoint( int level, int index, float* outX, float* outY, float* outZ )
+{
+	if ( level < LEVEL_HANDMADE && index >= 8 )
+	{
+		SpawnPointBase( level, index % 8, outX, outY, outZ );
+		float pull = 0.14f * (float)( index / 8 );
+		*outX *= 1.0f - pull;
+		*outZ *= 1.0f - pull;
+		return;
+	}
+	SpawnPointBase( level, index, outX, outY, outZ );
 }
 
 MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
