@@ -32,7 +32,11 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-export const PLAYER_COLORS = [0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585];
+// 12 distinct team colours (one per slot up to MAX_PLAYERS); render() indexes
+// with % so it never overflows even if the slot count grows again.
+export const PLAYER_COLORS = [
+  0xff5964, 0x35a7ff, 0xffe74c, 0x6bf178, 0xb388ff, 0xff9f1c, 0x2ec4b6, 0xf72585, 0xff8fab, 0x22d3ee, 0xa3e635, 0x818cf8,
+];
 const PIECE_SIZE = { x: 1.48, y: 0.8, z: 1.48 };
 const PLAYER_RADIUS = 0.6;
 // Rey de la colina: mirror of ZONE_RADIUS in motumbo.c (presentation only).

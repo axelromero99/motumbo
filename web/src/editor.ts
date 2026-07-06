@@ -25,6 +25,7 @@ import {
   GRID_EXTENT,
   MAX_TILES,
   MAX_SPAWNS,
+  MAX_FLOOR,
   encodeMap,
   decodeMap,
   validateMap,
@@ -49,8 +50,10 @@ const CELLS = GRID_EXTENT * 2 + 1; // 15
 /** Separación entre baldosas en el mundo (PIECE_STEP del sim), solo para el preview de la barra. */
 const TILE_STEP = 1.5;
 
-type Tool = 'floor' | 'mid' | 'high' | 'erase' | 'spawn';
-const TOOL_HEIGHT: Record<string, number> = { floor: 0, mid: 1, high: 2 };
+// PISO drops a ground tile; SUBIR/BAJAR raise or lower a tile one 0.8m floor per
+// click (drag or mouse-wheel to sculpt fast) up to MAX_FLOOR — that's how tall
+// terraced towers get built without a fiddly numeric height picker.
+type Tool = 'floor' | 'raise' | 'lower' | 'erase' | 'spawn';
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -124,9 +127,10 @@ function rgba(n: number, a: number): string {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-/** Aclara un color hacia blanco según la altura (0, 1, 2). */
+/** Aclara un color hacia blanco según el piso; se satura para que las torres
+ *  altas no queden todas blancas (el número de piso las distingue). */
 function shade(n: number, height: number): string {
-  const f = height * 0.22;
+  const f = Math.min(0.82, height * 0.13);
   const ch = (c: number): number => Math.round(c + (255 - c) * f);
   return `rgb(${ch((n >> 16) & 255)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
 }
@@ -173,7 +177,7 @@ export class MapEditor {
   private btnSave: HTMLButtonElement;
 
   // Estado del mapa en edición
-  private tiles = new Map<string, number>(); // "gx,gz" -> altura 0..2
+  private tiles = new Map<string, number>(); // "gx,gz" -> piso 0..MAX_FLOOR
   private spawns: { gx: number; gz: number }[] = [];
   private theme = 0;
   private crumbleStartSec = 15;
@@ -295,7 +299,7 @@ export class MapEditor {
     this.tiles.clear();
     for (const t of dec.tiles) {
       if (Math.abs(t.gx) > GRID_EXTENT || Math.abs(t.gz) > GRID_EXTENT) continue;
-      this.tiles.set(`${t.gx},${t.gz}`, clamp(t.height, 0, 2));
+      this.tiles.set(`${t.gx},${t.gz}`, clamp(t.height, 0, MAX_FLOOR));
     }
     this.spawns = dec.spawns
       .filter((s) => Math.abs(s.gx) <= GRID_EXTENT && Math.abs(s.gz) <= GRID_EXTENT)
@@ -383,6 +387,20 @@ export class MapEditor {
         this.draw();
       }
     });
+    // Mouse wheel over a tile raises/lowers its floor — fast way to sculpt towers.
+    c.addEventListener(
+      'wheel',
+      (e) => {
+        const cell = this.cellAt(e);
+        if (!cell) return;
+        e.preventDefault();
+        this.hover = cell;
+        this.hoverKey = `${cell.gx},${cell.gz}`;
+        this.stepFloor(this.hoverKey, e.deltaY < 0 ? 1 : -1);
+        this.refresh();
+      },
+      { passive: false },
+    );
   }
 
   private wirePanel(): void {
@@ -476,7 +494,7 @@ export class MapEditor {
   // Edición
   // -------------------------------------------------------------------
 
-  private cellAt(e: PointerEvent): { gx: number; gz: number } | null {
+  private cellAt(e: MouseEvent): { gx: number; gz: number } | null {
     const rect = this.canvas.getBoundingClientRect();
     const fx = (e.clientX - rect.left) / rect.width;
     const fz = (e.clientY - rect.top) / rect.height;
@@ -511,14 +529,38 @@ export class MapEditor {
         this.spawns.push({ gx: cell.gx, gz: cell.gz });
         this.dirty = true;
       }
-    } else {
-      const h = TOOL_HEIGHT[this.tool] ?? 0;
-      if (this.tiles.get(key) !== h) {
-        this.tiles.set(key, h);
+    } else if (this.tool === 'floor') {
+      if (this.tiles.get(key) !== 0) {
+        this.tiles.set(key, 0);
         this.dirty = true;
       }
+    } else {
+      this.stepFloor(key, this.tool === 'raise' ? 1 : -1);
     }
     this.refresh();
+  }
+
+  /** Raise (+1) or lower (−1) a tile's floor. Raising empty ground makes a
+   *  platform one floor up; lowering below the ground removes the tile (and any
+   *  spawn on it, so it never leaves a spawn floating over the void). */
+  private stepFloor(key: string, delta: number): void {
+    const cur = this.tiles.get(key);
+    if (delta > 0) {
+      const next = cur === undefined ? 1 : Math.min(cur + 1, MAX_FLOOR);
+      if (this.tiles.get(key) !== next) {
+        this.tiles.set(key, next);
+        this.dirty = true;
+      }
+    } else if (cur !== undefined) {
+      if (cur <= 0) {
+        this.tiles.delete(key);
+        const [gx, gz] = key.split(',').map(Number);
+        this.spawns = this.spawns.filter((s) => s.gx !== gx || s.gz !== gz);
+      } else {
+        this.tiles.set(key, cur - 1);
+      }
+      this.dirty = true;
+    }
   }
 
   // -------------------------------------------------------------------
@@ -623,6 +665,13 @@ export class MapEditor {
           const base = ((gx + gz) & 1) === 0 ? t.tileA : t.tileB;
           ctx.fillStyle = shade(base, h);
           ctx.fillRect(x + gap * 0.5, y + gap * 0.5, cell - gap, cell - gap);
+          if (h >= 1 && cell >= 15) {
+            ctx.fillStyle = 'rgba(9,12,26,0.7)';
+            ctx.font = `700 ${Math.round(cell * 0.34)}px system-ui, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(h), x + cell / 2, y + cell / 2);
+          }
         }
       }
     }

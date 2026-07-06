@@ -7,6 +7,7 @@ import createMotumbo from '../web/src/gen/motumbo.js';
 
 const STATE_HEADER = 8;
 const STATE_STRIDE = 8;
+const MODE_FLOATS = 16; // 4 + MAX_PLAYERS(12); mirrors motumbo.c / sim.ts
 const PLAYERS = 4;
 const TICKS = 1500;
 const LEVELS = 81; // 20 a mano + 50 generados + 6 mega
@@ -129,7 +130,7 @@ async function runMode(mode, param, label) {
   }
   const S = M.HEAPF32;
   const floats = M._motumbo_state_floats();
-  const modeBase = stateBase + floats - 12;
+  const modeBase = stateBase + floats - MODE_FLOATS; // [mode,m0,m1,m2] + MAX_PLAYERS scores
   const scores = [];
   for (let i = 0; i < PLAYERS; i++) scores.push(S[modeBase + 4 + i]);
   console.log(

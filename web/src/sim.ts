@@ -2,7 +2,7 @@
 // of truth for gameplay; this class only moves bytes across the boundary.
 import createMotumbo from './gen/motumbo.js';
 
-export const MAX_PLAYERS = 8;
+export const MAX_PLAYERS = 12;
 export const MAX_ORBS = 6;
 export const STATE_HEADER = 8;
 export const STATE_STRIDE = 8;
@@ -116,7 +116,7 @@ export const FLAG_CURSED = 1024;
 // Mode section appended after the powerup floats: [mode, m0, m1, m2] then 8
 // per-player scores. KOTH: m0/m1 = zone x/z. MALDITO: m0 = cursed index,
 // m1 = ticks left. m2 = target param.
-export const MODE_FLOATS = 12;
+export const MODE_FLOATS = 4 + MAX_PLAYERS; // [mode,m0,m1,m2] + one score per slot
 
 // Gameplay events emitted by the sim each tick: [type, x, y, z, a, b] × count.
 export const EVT_HIT = 0;

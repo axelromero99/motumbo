@@ -34,6 +34,7 @@ import {
   MODE_COSECHA,
   MODE_MALDITO,
   MODE_NAMES,
+  MAX_PLAYERS,
 } from './sim';
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
 import { SKIN_COUNT, SKINS } from './skins';
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
   let restartAt = 0;
   let lastCountShown = -1;
   let acc = 0;
-  const stepWords = new Uint32Array(8); // scratch for camera-relative remap
+  const stepWords = new Uint32Array(MAX_PLAYERS); // scratch for camera-relative remap
   let crumbleToastShown = false;
   let lastScoreKey = '';
   let prevLocalDashReady = true;
@@ -378,19 +379,20 @@ async function main(): Promise<void> {
 
   const startMatch = (): void => {
     mode = 'local';
-    if (intent === 'solo') {
-      playerCount = 4;
-      botSlots = [1, 2, 3];
-    } else {
-      playerCount = 2;
-      botSlots = [];
-    }
+    // Resolve the round once so custom maps can size the crowd to their spawns:
+    // a 12-spawn arena becomes a 12-way brawl (you + bots) instead of you + 3.
+    const spec = resolveRound();
+    const customSpawns = spec.bytes ? spec.bytes[5] : 0;
+    const humans = intent === 'local' ? 2 : 1; // couch splits the keyboard
+    playerCount = customSpawns >= 2 ? Math.min(customSpawns, MAX_PLAYERS) : intent === 'solo' ? 4 : 2;
+    botSlots = [];
+    for (let i = humans; i < playerCount; i++) botSlots.push(i);
     // Only couch 2-player splits the keyboard; SOLO gets WASD + arrows both.
     input.dualLocal = intent === 'local';
     wins = new Array(playerCount).fill(0);
     matchOver = false;
     stats.reset(playerCount);
-    initRound(seed++, resolveRound());
+    initRound(seed++, spec);
     ui.show('none');
     help.innerHTML = helpText();
     updateScorebar(true);

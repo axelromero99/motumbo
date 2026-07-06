@@ -15,7 +15,7 @@
 #define MOTUMBO_EXPORT
 #endif
 
-#define MAX_PLAYERS 8
+#define MAX_PLAYERS 12
 // Raised from 720 for the v8 vertical arenas: multi-storey terraced towers and
 // bigger footprints need more tiles. The shared state buffer, crumble order and
 // spawn scratch arrays are all sized from this, so bumping it is enough (JS
@@ -139,8 +139,9 @@ enum
 #define FLAG_CURSED 1024
 #define FLAG_SHIELD 65536 // bit16 (bits 11-15 hold the ball radius)
 
-// Mode section appended to the state buffer: [mode, m0, m1, m2] + 8 scores.
-#define MODE_FLOATS 12
+// Mode section appended to the state buffer: [mode, m0, m1, m2] + one score per
+// player slot. Sized off MAX_PLAYERS so big brawls still get a score each.
+#define MODE_FLOATS ( 4 + MAX_PLAYERS )
 
 enum
 {
@@ -1241,13 +1242,15 @@ static void BuildCustomLevel( const b3BoxHull* hull )
 		return;
 	}
 
-	static const float heights[4] = { 0.0f, 0.8f, 1.6f, 1.6f };
+	// Height code -> Y as 0.8m "floors" (t[2] low 5 bits, 0..31), so the editor
+	// can stack real towers. Old maps stored 0/1/2 -> 0/0.8/1.6m, identical to the
+	// previous {0,0.8,1.6} lookup, so they keep loading exactly the same.
 	for ( int i = 0; i < tileCount && g_pieceCount < MAX_PIECES; ++i )
 	{
 		const uint8_t* t = d + 8 + i * 3;
 		float cx = ( (int)t[0] - 16 ) * PIECE_STEP;
 		float cz = ( (int)t[1] - 16 ) * PIECE_STEP;
-		AddPiece( cx, cz, heights[t[2] & 3], ( t[2] >> 4 ) & 15, hull );
+		AddPiece( cx, cz, (float)( t[2] & 31 ) * 0.8f, 0, hull );
 	}
 
 	for ( int i = 0; i < spawnCount && i < MAX_PLAYERS; ++i )

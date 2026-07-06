@@ -1,5 +1,6 @@
 // Local keyboard input for up to two players (used until netcode lands).
 // Produces the same packed uint32 per player that the sim consumes.
+import { MAX_PLAYERS } from './sim';
 
 export const IN_UP = 1;
 export const IN_DOWN = 2;
@@ -30,7 +31,9 @@ const P2_KEYS: Record<string, number> = {
 };
 
 export class LocalInput {
-  readonly words = new Uint32Array(8);
+  // One slot per player; the sim reads playerCount of them, so it must cover a
+  // full custom-map brawl (up to MAX_PLAYERS), not just the 2 keyboard humans.
+  readonly words = new Uint32Array(MAX_PLAYERS);
   onReset: (() => void) | null = null;
   onSelectLevel: ((level: number) => void) | null = null;
   onPause: (() => void) | null = null;

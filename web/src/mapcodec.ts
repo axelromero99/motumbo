@@ -4,15 +4,16 @@
 //
 //   [0] version (1)             [1] theme id (0..7, presentation only)
 //   [2] crumble start, 10-tick units   [3] crumble interval, ticks
-//   [4] tile count              [5] spawn count (max 8)
+//   [4] tile count              [5] spawn count (max 12)
 //   [6] beam half-length, 0.1m units (0 = none)   [7] reserved
-//   tiles: 3 bytes each  (gx+16, gz+16, heightCode | prio << 4)
+//   tiles: 3 bytes each  (gx+16, gz+16, floorCode 0..31)  ← floor = 0.8m step
 //   spawns: 2 bytes each (gx+16, gz+16)
 
 export const MAP_VERSION = 1;
 export const GRID_EXTENT = 7; // tiles live in gx,gz ∈ [-7, 7]
 export const MAX_TILES = 225; // 15×15 grid
-export const MAX_SPAWNS = 8;
+export const MAX_SPAWNS = 12; // matches MAX_PLAYERS in the sim — big brawls
+export const MAX_FLOOR = 15; // tallest tile: 15 × 0.8m ≈ 12m (byte holds 0..31)
 // Must match LEVEL_CUSTOM in sim/motumbo.c (20 handmade + 50 generated + 11 mega
 // = 81 levels at ids 0..80, so the custom sentinel is 81). This was 76 — a REAL
 // mega arena (⊕ SALTOS) — so every custom/editor map silently loaded SALTOS
@@ -22,7 +23,7 @@ export const LEVEL_CUSTOM = 81;
 export interface MapTile {
   gx: number;
   gz: number;
-  /** 0 = floor, 1 = +0.8m, 2 = +1.6m */
+  /** Floor index: 0 = ground, each step +0.8m. 0..MAX_FLOOR in the editor. */
   height: number;
 }
 
@@ -55,7 +56,7 @@ export function encodeMap(map: CustomMap): Uint8Array {
   for (const t of tiles) {
     bytes[o++] = t.gx + 16;
     bytes[o++] = t.gz + 16;
-    bytes[o++] = (t.height & 3) | 0; // priority nibble reserved (auto order)
+    bytes[o++] = t.height & 31; // floor 0..31 (0.8m each); top 3 bits reserved
   }
   for (const s of spawns) {
     bytes[o++] = s.gx + 16;
@@ -72,7 +73,7 @@ export function decodeMap(bytes: Uint8Array): Omit<CustomMap, 'name'> | null {
   const tiles: MapTile[] = [];
   let o = 8;
   for (let i = 0; i < tileCount; i++) {
-    tiles.push({ gx: bytes[o] - 16, gz: bytes[o + 1] - 16, height: bytes[o + 2] & 3 });
+    tiles.push({ gx: bytes[o] - 16, gz: bytes[o + 1] - 16, height: bytes[o + 2] & 31 });
     o += 3;
   }
   const spawns: { gx: number; gz: number }[] = [];
