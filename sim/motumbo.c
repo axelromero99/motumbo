@@ -298,7 +298,36 @@ typedef struct Bot
 	float wander;	// desfase de deambular, para no ir todos al centro exacto
 	int favTarget;	// víctima preferida (reparte a los bots entre rivales)
 	int moodAt;		// tick en que re-rollea un poco la personalidad (varía)
+	int persona;	// índice 0..PERSONA_COUNT-1 del arquetipo (para HUD/flavor)
 } Bot;
+
+// 30 personality archetypes: distinct (aggr, courage, greed) blends so a field
+// of bots feels like a crowd of different players, not clones. aggr = how hard
+// they hunt/dash; courage = how close to the rim they'll fight (low = survivor);
+// greed = how much they chase orbs. Difficulty scales SKILL on top of these.
+typedef struct
+{
+	float aggr, courage, greed;
+	const char* name;
+} Persona;
+#define PERSONA_COUNT 30
+static const Persona PERSONAS[PERSONA_COUNT] = {
+	{ 0.95f, 0.72f, 0.20f, "El Maton" },		{ 0.30f, 0.20f, 0.42f, "El Cauto" },
+	{ 0.60f, 0.52f, 0.92f, "El Oportunista" },  { 1.00f, 0.98f, 0.12f, "El Kamikaze" },
+	{ 0.42f, 0.28f, 0.30f, "El Muro" },			{ 0.82f, 0.60f, 0.30f, "El Cazador" },
+	{ 0.52f, 0.75f, 0.50f, "El Bailarin" },		{ 0.72f, 0.42f, 0.22f, "El Tanque" },
+	{ 0.56f, 0.50f, 0.72f, "El Zorro" },		{ 0.94f, 0.90f, 0.16f, "El Berserker" },
+	{ 0.46f, 0.36f, 0.44f, "El Paciente" },		{ 0.26f, 0.16f, 0.62f, "El Raton" },
+	{ 0.86f, 0.55f, 0.25f, "El Toro" },			{ 0.50f, 0.82f, 0.50f, "El Fantasma" },
+	{ 0.90f, 0.64f, 0.20f, "El Verdugo" },		{ 0.32f, 0.26f, 0.52f, "El Timido" },
+	{ 0.50f, 0.46f, 1.00f, "El Codicioso" },	{ 0.62f, 0.46f, 0.55f, "El Estratega" },
+	{ 0.80f, 0.95f, 0.40f, "El Loco" },			{ 0.44f, 0.30f, 0.22f, "La Roca" },
+	{ 0.76f, 0.70f, 0.36f, "El Rayo" },			{ 0.40f, 0.34f, 0.32f, "El Guardian" },
+	{ 0.88f, 0.60f, 0.28f, "El Depredador" },   { 0.55f, 0.50f, 0.78f, "El Astuto" },
+	{ 0.92f, 0.80f, 0.48f, "El Impulsivo" },	{ 0.56f, 0.40f, 0.46f, "El Metodico" },
+	{ 0.34f, 0.24f, 0.40f, "El Superviviente" },{ 0.83f, 0.60f, 0.24f, "El Gladiador" },
+	{ 0.48f, 0.40f, 0.86f, "El Buitre" },		{ 0.70f, 0.55f, 0.42f, "El Campeon" },
+};
 
 static b3WorldId g_world;
 static Player g_players[MAX_PLAYERS];
@@ -461,20 +490,31 @@ MOTUMBO_EXPORT void motumbo_set_bot( int slot, int difficulty )
 	g_bots[slot].lastX = 0.0f;
 	g_bots[slot].lastZ = 0.0f;
 	g_bots[slot].stuck = 0;
-	// Roll a personality from this slot's own RNG stream (same on every peer).
-	// Difficulty sets skill (reaction/precision); personality sets STYLE, and
-	// varies at all difficulties so no two bots feel identical.
+	// Pick one of 30 archetypes from this slot's own RNG (same on every peer):
+	// personality sets STYLE. Difficulty scales SKILL on top — harder bots are
+	// pushier and steadier, so they hit more and survive longer.
 	uint64_t* rs = &g_botRngState[slot];
-	float r0 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
-	float r1 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
-	float r2 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
-	float r3 = (float)( PcgNext( rs ) % 1000u ) / 1000.0f;
-	g_bots[slot].aggr = 0.2f + r0 * 0.8f;
-	g_bots[slot].courage = 0.15f + r1 * 0.85f;
-	g_bots[slot].greed = r2;
-	g_bots[slot].wander = r3 * 6.2831853f;
+	int pi = (int)( PcgNext( rs ) % (uint32_t)PERSONA_COUNT );
+	const Persona* pers = &PERSONAS[pi];
+	int dif = g_bots[slot].difficulty;
+	g_bots[slot].persona = pi;
+	g_bots[slot].aggr = pers->aggr + 0.14f * (float)dif;
+	if ( g_bots[slot].aggr > 1.0f ) g_bots[slot].aggr = 1.0f;
+	g_bots[slot].courage = pers->courage;
+	g_bots[slot].greed = pers->greed;
+	g_bots[slot].wander = (float)( PcgNext( rs ) % 1000u ) / 1000.0f * 6.2831853f;
 	g_bots[slot].favTarget = -1;
 	g_bots[slot].moodAt = 0;
+}
+
+// Which archetype a bot slot is playing (−1 if not a bot). For the HUD.
+MOTUMBO_EXPORT int motumbo_bot_persona( int slot )
+{
+	if ( slot < 0 || slot >= g_playerCount || !g_bots[slot].active )
+	{
+		return -1;
+	}
+	return g_bots[slot].persona;
 }
 
 static void WriteState( void )
@@ -2676,6 +2716,12 @@ static void BotReplan( int slot )
 	bot->pulseDash = false;
 	bot->pulseJump = false;
 
+	// Mode awareness: in the objective modes bots should CONTEST the goal, not
+	// clear the arena. This factor dampens how eagerly they ring rivals out, so
+	// KOTH/COSECHA are decided by score instead of last-one-standing. SUMO and
+	// MALDITO (which end by elimination/explosion) keep full lethality.
+	float modeLethal = g_mode == MODE_KOTH ? 0.5f : ( g_mode == MODE_COSECHA ? 0.3f : 1.0f );
+
 	// Stuck detection: barely moved since the last plan while touching rivals
 	// means we're grinding in a scrum instead of playing.
 	float movedX = pos.x - bot->lastX;
@@ -2764,7 +2810,10 @@ static void BotReplan( int slot )
 			float fx = fp.x - pos.x;
 			float fz = fp.z - pos.z;
 			float fd = sqrtf( fx * fx + fz * fz );
-			if ( fd < 2.4f && fd > 0.3f && BotDashSafe( pos, fx / fd, fz / fd ) )
+			// Contest the zone, but not to the death: only some line-ups fire, so
+			// rivals get shoved OUT of the zone more than off the map.
+			if ( fd < 2.4f && fd > 0.3f && BotDashSafe( pos, fx / fd, fz / fd ) &&
+				 (float)( BotRng() % 1000u ) / 1000.0f < 0.55f )
 			{
 				bot->pulseDash = true;
 			}
@@ -2953,7 +3002,10 @@ static void BotReplan( int slot )
 			// contact without dashing is the "bobo" grind. Cautious bots still
 			// pick their moments a bit; aggressive/hard bots always shove.
 			float eager = 0.7f + 0.24f * bot->aggr + 0.08f * (float)bot->difficulty;
-			if ( safe && ( lethal || roll < eager ) )
+			// Objective modes dampen ring-outs: even a "lethal" line-up only fires
+			// sometimes, so the round is decided by the objective, not eliminations.
+			float fire = ( lethal ? 1.0f : eager ) * modeLethal;
+			if ( safe && roll < fire )
 			{
 				bot->pulseDash = true;
 			}
@@ -2987,6 +3039,11 @@ static void BotReplan( int slot )
 	float side = ( ( slot + (int)( g_frame / 130 ) ) & 1 ) ? 1.0f : -1.0f;
 	float ax = op.x + ux * spacing + ( -uz ) * side * ( spacing * 0.5f );
 	float az = op.z + uz * spacing + ux * side * ( spacing * 0.5f );
+	// Survivors (low courage) pull their reposition toward the arena centre so
+	// they don't loiter on the rim and get bumped off — they last longer.
+	float centerPull = 0.42f * ( 1.0f - bot->courage );
+	ax -= ax * centerPull;
+	az -= az * centerPull;
 	BotAimAt( bot, slot, ax, az );
 }
 

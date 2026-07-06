@@ -55,6 +55,11 @@ const DUST_COLOR = 0x9aa4c0;
 // scale by ≈amount before recovering.
 const SPRING_W = 18;
 const UP = new THREE.Vector3(0, 1, 0);
+// KO camera kick: a brief lean toward the ring-out + a FOV snap-zoom, both
+// self-restoring over ~KO_KICK_MS so the persistent camera never changes.
+const KO_KICK_MS = 420;
+const KO_KICK_DIST = 1.5; // world units the camera leans toward the fall
+const KO_FOV_PUNCH = 5; // degrees the FOV narrows at the peak
 
 export interface Theme {
   bg: number;
@@ -624,6 +629,14 @@ export class GameRenderer {
   private chaseYaw = 0; // heading the third-person cam sits behind (world yaw)
   private tune = loadTune(); // live feel knobs (dev panel writes, we read)
   private shakeTmp = new THREE.Vector3();
+  // KO camera kick envelope (1 → 0, decays in render); direction points from the
+  // action's look target toward the fall so the camera leans that way.
+  private koKick = 0;
+  private koKickDir = new THREE.Vector3();
+  private koProj = new THREE.Vector3(); // scratch for projecting the fall to screen
+  private koBaseFov = 45; // captured from the camera in the constructor
+  private container: HTMLElement; // canvas container we hang the KO callout on
+  private koText: HTMLDivElement; // on-screen "¡AFUERA!" ring-out shout (we own it)
   private hemi: THREE.HemisphereLight;
   private sun: THREE.DirectionalLight;
   private skyMat: THREE.ShaderMaterial;
@@ -699,6 +712,7 @@ export class GameRenderer {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
+    this.container = container;
 
     this.scene = new THREE.Scene();
     this.scene.add(this.fx.points);
@@ -707,6 +721,35 @@ export class GameRenderer {
     this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 160);
     this.camera.position.copy(this.cameraBase);
     this.camera.lookAt(0, 0, 0);
+    this.koBaseFov = this.camera.fov; // the KO kick restores exactly to this
+
+    // KO ring-out callout: a DOM overlay we own, layered over the canvas and
+    // CSS-animated so it fades itself out. Two keyframes so reduced-motion gets
+    // a plain fade instead of the bouncy pop.
+    const koStyle = document.createElement('style');
+    koStyle.textContent = `
+      @keyframes motumbo-ko-pop {
+        0%   { opacity: 0; transform: translate(-50%,-50%) scale(0.3) rotate(-8deg); }
+        14%  { opacity: 1; transform: translate(-50%,-50%) scale(1.28) rotate(-3deg); }
+        30%  { opacity: 1; transform: translate(-50%,-50%) scale(1.0) rotate(-3deg); }
+        68%  { opacity: 1; transform: translate(-50%,-56%) scale(1.02) rotate(-3deg); }
+        100% { opacity: 0; transform: translate(-50%,-74%) scale(1.1) rotate(-3deg); }
+      }
+      @keyframes motumbo-ko-fade {
+        0%   { opacity: 0; transform: translate(-50%,-50%); }
+        16%,70% { opacity: 1; transform: translate(-50%,-50%); }
+        100% { opacity: 0; transform: translate(-50%,-50%); }
+      }`;
+    document.head.appendChild(koStyle);
+    const koEl = document.createElement('div');
+    koEl.style.cssText =
+      'position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);' +
+      "font:900 clamp(40px,9vw,108px)/1 system-ui,-apple-system,'Segoe UI',sans-serif;" +
+      'letter-spacing:3px;color:#fff;white-space:nowrap;' +
+      '-webkit-text-stroke:3px rgba(0,0,0,0.55);text-shadow:0 3px 0 rgba(0,0,0,0.55);' +
+      'pointer-events:none;opacity:0;z-index:6;will-change:transform,opacity;';
+    container.appendChild(koEl);
+    this.koText = koEl;
 
     // Post-processing: ACES tone mapping + bloom. The threshold is kept high so
     // only the brightest, emissive things (orbs, power-up auras, neon/slime/lava
@@ -873,6 +916,59 @@ export class GameRenderer {
   squash(i: number, amount: number): void {
     if (i < 0 || i >= this.sqV.length) return;
     this.sqV[i] -= amount * SPRING_W * Math.E;
+  }
+
+  /**
+   * KO "juice" for a ring-out at (x, y, z): a brief self-restoring camera kick
+   * toward the fall (a lean + FOV snap-zoom that eases back over ~0.4s) plus an
+   * on-screen "¡AFUERA!" callout glowing in the victim's colour. Purely
+   * cosmetic — no persistent camera change; honours the reduced-motion setting.
+   */
+  knockout(x: number, y: number, z: number, color: number): void {
+    const reduced = document.body.classList.contains('reduced-motion');
+    // Lean the camera toward the KO on the ground plane; the FOV punch rides the
+    // same envelope. Skip the movement (not the shout) under reduced motion.
+    this.koKickDir.set(x - this.lookTarget.x, 0, z - this.lookTarget.z);
+    if (this.koKickDir.lengthSq() > 1e-4) this.koKickDir.normalize();
+    this.koKick = reduced ? 0 : 1;
+    this.showKnockoutCallout(x, y, z, color, reduced);
+  }
+
+  /** Position + fire the on-screen ring-out shout where the KO happened. */
+  private showKnockoutCallout(x: number, y: number, z: number, color: number, reduced: boolean): void {
+    const el = this.koText;
+    // Project the fall point to screen space so the shout lands on it (clamped
+    // to stay on-screen); fall back to centre if it's behind the camera.
+    this.koProj.set(x, y, z).project(this.camera);
+    if (this.koProj.z < 1) {
+      el.style.left = `${Math.min(86, Math.max(14, (this.koProj.x * 0.5 + 0.5) * 100))}%`;
+      el.style.top = `${Math.min(78, Math.max(22, (-this.koProj.y * 0.5 + 0.5) * 100))}%`;
+    } else {
+      el.style.left = '50%';
+      el.style.top = '42%';
+    }
+    const c = '#' + ((color >>> 0) & 0xffffff).toString(16).padStart(6, '0');
+    el.style.textShadow = `0 3px 0 rgba(0,0,0,0.55), 0 0 26px ${c}, 0 0 52px ${c}`;
+    el.textContent = Math.random() < 0.5 ? '¡AFUERA!' : '¡KO!';
+    // Restart the CSS animation: clear it, force a reflow, then re-apply.
+    el.style.animation = 'none';
+    void el.offsetWidth;
+    el.style.animation = `${reduced ? 'motumbo-ko-fade' : 'motumbo-ko-pop'} 0.9s cubic-bezier(0.2,0.9,0.25,1) forwards`;
+  }
+
+  /** Advance and apply the self-restoring KO camera kick (lean + FOV punch). */
+  private applyKnockoutKick(dtMs: number): void {
+    if (this.koKick <= 0) return;
+    this.koKick = Math.max(0, this.koKick - dtMs / KO_KICK_MS);
+    const amp = this.koKick * this.koKick; // instant punch, quadratic ease-out
+    this.camera.position.x += this.koKickDir.x * amp * KO_KICK_DIST;
+    this.camera.position.y += amp * KO_KICK_DIST * 0.32;
+    this.camera.position.z += this.koKickDir.z * amp * KO_KICK_DIST;
+    const fov = this.koBaseFov - amp * KO_FOV_PUNCH;
+    if (Math.abs(this.camera.fov - fov) > 1e-3) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   /** (Re)build meshes for a fresh round from the sim's initial snapshot. */
@@ -1056,6 +1152,12 @@ export class GameRenderer {
 
     this.lookTarget.set(0, 0, 0);
     this.camInit = false; // re-seat the follow cams on the new arena
+    // Clear any in-flight KO camera kick and restore the base FOV for the round.
+    this.koKick = 0;
+    if (this.camera.fov !== this.koBaseFov) {
+      this.camera.fov = this.koBaseFov;
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   /** Interpolate between the two most recent sim snapshots and draw. */
@@ -1486,6 +1588,7 @@ export class GameRenderer {
         .set(0, e * tuneVal(this.tune, 'isoH'), e * tuneVal(this.tune, 'isoD'))
         .add(this.fx.shakeOffset(this.shakeTmp, timeMs));
       this.camera.lookAt(this.lookTarget.x, 0, this.lookTarget.z);
+      this.applyKnockoutKick(dtMs);
       this.composer.render();
       return;
     }
@@ -1526,6 +1629,7 @@ export class GameRenderer {
       this.camera.position.addScaledVector(shake, 0.4);
       this.camera.lookAt(this.camFocus.x + hx * 2.5, this.camFocus.y + 0.7, this.camFocus.z + hz * 2.5);
     }
+    this.applyKnockoutKick(dtMs);
     this.composer.render();
   }
 

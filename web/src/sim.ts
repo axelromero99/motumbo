@@ -160,6 +160,7 @@ interface MotumboModule {
   _motumbo_event_count(): number;
   _motumbo_countdown_ticks(): number;
   _motumbo_set_bot(slot: number, difficulty: number): void;
+  _motumbo_bot_persona(slot: number): number;
   _motumbo_set_mode(mode: number, param: number): void;
   _motumbo_custom_ptr(): number;
   _motumbo_set_custom(len: number): void;
@@ -235,6 +236,11 @@ export class Sim {
    */
   setBot(slot: number, difficulty: number): void {
     this.module._motumbo_set_bot(slot, difficulty);
+  }
+
+  /** Archetype index (0-29) a bot slot is playing, or −1 if it's not a bot. */
+  botPersona(slot: number): number {
+    return this.module._motumbo_bot_persona(slot);
   }
 
   /**

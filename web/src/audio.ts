@@ -72,9 +72,9 @@ export class AudioEngine {
     osc.stop(t + dur + 0.02);
   }
 
-  private noise(dur: number, freq: number, q: number, vol: number, freqEnd?: number): void {
+  private noise(dur: number, freq: number, q: number, vol: number, freqEnd?: number, delay = 0): void {
     if (!this.ctx || !this.sfx || !this.noiseBuffer) return;
-    const t = this.ctx.currentTime;
+    const t = this.ctx.currentTime + delay;
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
     src.loop = true;
@@ -141,6 +141,17 @@ export class AudioEngine {
 
   fall(): void {
     this.tone(600, 90, 0.5, 'sawtooth', 0.2);
+  }
+
+  /** Ring-out KO: a diving whoosh that lands in a heavy impact thud. */
+  knockout(): void {
+    // Whoosh — pitch and filter dive downward like a body flung off the edge.
+    this.tone(880, 70, 0.4, 'sawtooth', 0.18);
+    this.noise(0.4, 2200, 1.1, 0.3, 150);
+    // Landing thud a beat later: a deep body under a short crack.
+    this.tone(140, 38, 0.3, 'sine', 0.7, 0.17);
+    this.tone(72, 30, 0.22, 'triangle', 0.42, 0.17);
+    this.noise(0.16, 520, 1.8, 0.55, 220, 0.17);
   }
 
   orbSpawn(): void {

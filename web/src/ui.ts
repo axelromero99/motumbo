@@ -121,6 +121,7 @@ import { deleteMap, listMaps } from './editor';
 import type { SavedMap } from './editor';
 import { MODE_COSECHA, MODE_KOTH, MODE_MALDITO, MODE_SUMO } from './sim';
 import { SKIN_COUNT, skinThumbnail } from './skins';
+import { isSkinUnlocked, nextUnlock, unlockHint, unlockedCount } from './unlocks';
 
 /** Presets del toggle de partículas (valor = multiplicador de densidad). */
 export const PARTICLE_PRESETS: Record<string, number> = { alta: 1, media: 0.5, baja: 0.2 };
@@ -317,6 +318,10 @@ export class UiShell {
   private lastRoomAction: { type: 'create' } | { type: 'join'; code: string } | { type: 'quick' } | null = null;
 
   private nextTimer = 0;
+
+  /** Botones del picker de skin y la línea de contador de desbloqueos. */
+  private skinThumbs: HTMLButtonElement[] = [];
+  private skinCounter: HTMLElement | null = null;
 
   constructor(callbacks: UiCallbacks) {
     this.cb = callbacks;
@@ -651,6 +656,9 @@ export class UiShell {
       window.clearInterval(this.nextTimer);
     }
     if (screen === 'setup') this.applySetupContext();
+    // Volver al título repinta el picker: las skins recién desbloqueadas en el
+    // último match (stats persistidas) se iluminan sin recargar.
+    if (screen === 'title') this.refreshSkinPicker();
     this.current = screen;
     for (const [name, el] of this.screens) {
       el.classList.toggle('active', name === screen);
@@ -673,27 +681,85 @@ export class UiShell {
   private wireSkinPicker(): void {
     const host = document.getElementById('skin-picker');
     if (!host) return;
+
+    // Selección inicial. Si la skin guardada quedó BLOQUEADA (p.ej. el jugador
+    // borró sus stats), caemos a la 0 —siempre inicial— para no dejar elegida
+    // una skin que no le corresponde. main.ts hace el mismo fallback al pintar
+    // la bola local (ver reporte: isSkinUnlocked en buildSkins).
     let sel = 0;
     try {
       sel = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
     } catch {
       sel = 0;
     }
-    const thumbs: HTMLButtonElement[] = [];
+    if (!isSkinUnlocked(sel)) {
+      sel = 0;
+      try {
+        localStorage.setItem('motumbo.skin', '0');
+      } catch {
+        // ignore storage errors
+      }
+    }
+
     for (let i = 0; i < SKIN_COUNT; i++) {
       const btn = document.createElement('button');
       btn.className = 'skin-thumb' + (i === sel ? ' sel' : '');
       btn.style.backgroundImage = `url(${skinThumbnail(i, 0xff5964)})`;
+      btn.style.position = 'relative';
+      // Candado sobre las bloqueadas (overlay hijo: no depende de CSS externo,
+      // que vive en index.html y no lo tocamos). refreshSkinPicker lo muestra/oculta.
+      const lock = document.createElement('span');
+      lock.className = 'skin-lock';
+      lock.textContent = '🔒';
+      lock.style.cssText =
+        'position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:15px;pointer-events:none;text-shadow:0 1px 2px rgba(0,0,0,0.9)';
+      btn.appendChild(lock);
       btn.addEventListener('click', () => {
+        if (!isSkinUnlocked(i)) {
+          this.toast(`Bloqueada · ${unlockHint(i)}`);
+          return;
+        }
         try {
           localStorage.setItem('motumbo.skin', String(i));
         } catch {
           // ignore storage errors
         }
-        thumbs.forEach((t, k) => t.classList.toggle('sel', k === i));
+        this.skinThumbs.forEach((t, k) => t.classList.toggle('sel', k === i));
       });
       host.appendChild(btn);
-      thumbs.push(btn);
+      this.skinThumbs.push(btn);
+    }
+
+    // Contador "X/44 skins desbloqueadas" + próximo desbloqueo, debajo de la fila.
+    const counter = document.createElement('div');
+    counter.className = 'skin-unlock-line';
+    counter.style.cssText =
+      'font-size:10px;font-weight:700;letter-spacing:0.5px;color:var(--muted);text-align:center;margin:-6px auto 12px;max-width:340px;padding:0 8px';
+    host.parentElement?.after(counter);
+    this.skinCounter = counter;
+
+    this.refreshSkinPicker();
+  }
+
+  /** Repinta el estado bloqueado/desbloqueado y el contador. Se llama al mostrar
+   *  la pantalla title, así las skins recién ganadas se iluminan al volver del
+   *  match sin recargar (las stats persisten en localStorage). */
+  private refreshSkinPicker(): void {
+    for (let i = 0; i < this.skinThumbs.length; i++) {
+      const btn = this.skinThumbs[i];
+      const unlocked = isSkinUnlocked(i);
+      btn.classList.toggle('locked', !unlocked);
+      btn.style.filter = unlocked ? '' : 'grayscale(1) brightness(0.55)';
+      btn.style.opacity = unlocked ? '' : '0.7';
+      btn.title = unlocked ? '' : unlockHint(i);
+      const lock = btn.querySelector<HTMLElement>('.skin-lock');
+      if (lock) lock.style.display = unlocked ? 'none' : 'flex';
+    }
+    if (this.skinCounter) {
+      let text = `${unlockedCount()}/${SKIN_COUNT} skins desbloqueadas`;
+      const next = nextUnlock();
+      if (next) text += ` · próxima: ${next.hint}`;
+      this.skinCounter.textContent = text;
     }
   }
 

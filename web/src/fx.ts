@@ -181,6 +181,29 @@ export class FxSystem {
     }
   }
 
+  /**
+   * Ring-out KO burst at (x, y, z): a fat two-layer particle explosion + a
+   * double shockwave ring in the victim's colour, plus a strong shake and a
+   * punch that shoves the camera outward toward the fall. `shake` scales the
+   * camera trauma/punch (pass 0 to stay still, e.g. reduced-motion / attract).
+   */
+  knockout(x: number, y: number, z: number, color: number, shake = 0.85): void {
+    // Explosion: a fast wide spray in the team colour + a bright white core.
+    this.burst(x, y, z, color, { count: 52, speed: 8.5, up: 4.5, gravity: 11, life: 760 });
+    this.burst(x, y, z, 0xffffff, { count: 20, speed: 5, up: 3, gravity: 8, life: 420 });
+    // Double ground shockwave, kept on/above the floor so it never sinks into
+    // the abyss: a tight bright ring inside a bigger faint coloured one.
+    const ry = Math.max(y, 0.15);
+    this.ring(x, ry, z, 0xffffff, 3);
+    this.ring(x, ry, z, color, 6);
+    // Impact: strong shake + a directional punch outward (toward the fall point).
+    if (shake > 0) {
+      this.addTrauma(shake);
+      const m = Math.hypot(x, z) || 1;
+      this.addPunch((x / m) * 0.8 * shake, (z / m) * 0.8 * shake);
+    }
+  }
+
   addTrauma(amount: number): void {
     this.trauma = Math.min(1, this.trauma + amount);
   }

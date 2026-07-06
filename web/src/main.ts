@@ -38,6 +38,7 @@ import {
 } from './sim';
 import { LocalInput, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT, IN_DASH, IN_JUMP, IN_BRACE } from './input';
 import { SKIN_COUNT, SKINS } from './skins';
+import { isSkinUnlocked } from './unlocks';
 import { TUNE_PARAMS, loadTune, tuneVal } from './tune';
 import { setupTouch } from './touch';
 import { GameRenderer, PLAYER_COLORS } from './render';
@@ -326,7 +327,9 @@ async function main(): Promise<void> {
   // Local player wears their chosen skin (localStorage); everyone else gets a
   // spread-out variety so the field looks different every round.
   const buildSkins = (localSlot: number): number[] => {
-    const chosen = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
+    let chosen = (Number(localStorage.getItem('motumbo.skin')) || 0) % SKIN_COUNT;
+    // Never paint a still-locked skin on the local ball (e.g. stats were cleared).
+    if (!isSkinUnlocked(chosen)) chosen = 0;
     // Group skins by category so bots get a real MIX — not all flags. Rotate
     // through patrón → material → bandera (flags as the accent, not the default).
     const byCat: Record<string, number[]> = { bandera: [], 'patrón': [], material: [] };
@@ -948,18 +951,22 @@ async function main(): Promise<void> {
           if (a >= 0) renderer.squash(a, 0.6);
           if (b >= 0) renderer.squash(b, 0.4);
           break;
-        case EVT_FALL:
+        case EVT_FALL: {
+          // Juicy ring-out: explosion + shockwave, camera kick + zoom, a big
+          // "¡AFUERA!" shout, a whoosh→thud, and a brief hitstop freeze. fx.knockout
+          // already carries the burst/ring/shake/punch, so it supersedes them here.
+          const koShake = attract ? 0 : reducedMotion ? 0.1 : 0.85;
+          renderer.fx.knockout(x, Math.max(y, -6), z, pcolor, koShake);
+          renderer.knockout(x, Math.max(y, -6), z, pcolor);
           if (!attract) {
-            audio.fall();
+            audio.knockout();
             music.duck(500);
-            trauma(0.3);
-            renderer.fx.addPunch(x * 0.05, z * 0.05);
+            hitstop(90);
             // Immediate "you're out" wash when the local human is eliminated.
             if (b === localHumanSlot() && !matchOver) flash('radial-gradient(circle at 50% 46%, rgba(0,0,0,0) 40%, rgba(190,24,44,0.45) 100%)');
           }
-          renderer.fx.burst(x, Math.max(y, -6), z, pcolor, { count: 36, speed: 4, up: 4, life: 800 });
-          renderer.fx.ring(x, 0.2, z, pcolor, 5);
           break;
+        }
         case EVT_ORB_SPAWN: {
           // `a` is the orb type; `b >= 0` means it was knocked out of a carrier.
           if (!attract) (b >= 0 ? audio.orbLoose() : audio.orbSpawn());
