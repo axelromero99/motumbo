@@ -2,6 +2,13 @@
 // handshake travels through here — a few KB, then the game is pure P2P and
 // the broker is out of the picture. Hand-rolled minimal MQTT 3.1.1 client
 // (CONNECT / SUBSCRIBE / PUBLISH qos0 / PING) to keep the game dependency-free.
+//
+// Transport is MULTI-BROKER on purpose: each client connects to EVERY broker at
+// once and publishes/subscribes on all of them, deduping incoming messages. A
+// single-broker client picked "the first broker that answered" independently on
+// each device, so two players could land on different brokers and never see each
+// other — matchmaking "found sometimes, not others". Fanning out fixes that: two
+// peers pair as long as they share ANY one live broker.
 
 const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081'];
 const CONNECT_TIMEOUT_MS = 6000;
@@ -61,8 +68,11 @@ function packet(type: number, ...parts: Uint8Array[]): ArrayBuffer {
   return out.buffer as ArrayBuffer;
 }
 
-class MqttClient {
+/** One physical MQTT-over-WebSocket connection to a single broker. */
+class MqttConn {
+  ready = false;
   onMessage: ((topic: string, payload: string) => void) | null = null;
+  onReady: (() => void) | null = null;
   onDown: (() => void) | null = null;
 
   private ws: WebSocket | null = null;
@@ -70,88 +80,102 @@ class MqttClient {
   private pktId = 1;
   private pinger = 0;
   private closed = false;
+  private downFired = false;
 
-  /** Tries each broker in order; resolves once CONNACK arrives. */
-  async connect(): Promise<void> {
-    for (const url of BROKERS) {
-      try {
-        await this.connectOne(url);
-        return;
-      } catch {
-        // try the next broker
-      }
-    }
-    throw new Error('No se pudo conectar al servicio de salas. Reintentá en unos segundos.');
+  constructor(private url: string) {}
+
+  /** onDown fires at most once — a failed WebSocket raises BOTH onerror and
+   *  onclose, and double-counting would make MultiMqtt think every broker died. */
+  private fireDown(): void {
+    if (this.downFired || this.closed) return;
+    this.downFired = true;
+    this.onDown?.();
   }
 
-  private connectOne(url: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url, 'mqtt');
-      ws.binaryType = 'arraybuffer';
-      let settled = false;
-      const timer = window.setTimeout(() => {
-        if (!settled) {
-          settled = true;
+  /** Fire-and-forget connect; calls onReady on CONNACK, onDown on failure/drop. */
+  connect(): void {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(this.url, 'mqtt');
+    } catch {
+      this.fireDown();
+      return;
+    }
+    ws.binaryType = 'arraybuffer';
+    const timer = setTimeout(() => {
+      if (!this.ready) {
+        try {
           ws.close();
-          reject(new Error('timeout'));
+        } catch {
+          // ignore
         }
-      }, CONNECT_TIMEOUT_MS);
+        this.fireDown();
+      }
+    }, CONNECT_TIMEOUT_MS);
 
-      ws.onopen = () => {
-        const clientId = `motumbo_${Math.random().toString(36).slice(2, 12)}`;
-        ws.send(
-          packet(
-            0x10,
-            mqttString('MQTT'),
-            new Uint8Array([4, 0x02, 0, 60]), // level 4, clean session, keepalive 60s
-            mqttString(clientId),
-          ),
-        );
-      };
-      ws.onmessage = (e) => {
-        this.feed(new Uint8Array(e.data as ArrayBuffer), () => {
-          if (!settled) {
-            settled = true;
-            window.clearTimeout(timer);
-            this.ws = ws;
-            this.pinger = window.setInterval(() => ws.send(new Uint8Array([0xc0, 0]).buffer as ArrayBuffer), 30000);
-            resolve();
-          }
-        });
-      };
-      ws.onclose = ws.onerror = () => {
-        if (!settled) {
-          settled = true;
-          window.clearTimeout(timer);
-          reject(new Error('closed'));
-        } else if (!this.closed) {
-          this.onDown?.();
+    ws.onopen = () => {
+      const clientId = `motumbo_${Math.random().toString(36).slice(2, 12)}`;
+      ws.send(
+        packet(
+          0x10,
+          mqttString('MQTT'),
+          new Uint8Array([4, 0x02, 0, 60]), // level 4, clean session, keepalive 60s
+          mqttString(clientId),
+        ),
+      );
+    };
+    ws.onmessage = (e) => {
+      this.feed(new Uint8Array(e.data as ArrayBuffer), () => {
+        if (!this.ready) {
+          this.ready = true;
+          clearTimeout(timer);
+          this.ws = ws;
+          this.pinger = setInterval(() => {
+            try {
+              ws.send(new Uint8Array([0xc0, 0]).buffer as ArrayBuffer);
+            } catch {
+              // ignore
+            }
+          }, 30000) as unknown as number;
+          this.onReady?.();
         }
-      };
-    });
+      });
+    };
+    ws.onclose = ws.onerror = () => {
+      clearTimeout(timer);
+      this.ready = false;
+      clearInterval(this.pinger);
+      this.fireDown();
+    };
   }
 
   subscribe(topic: string): void {
+    if (!this.ready || !this.ws) return;
     const id = this.pktId++;
     const filter = new Uint8Array(mqttString(topic).length + 1);
     filter.set(mqttString(topic), 0);
     filter[filter.length - 1] = 0; // qos 0
-    this.ws?.send(packet(0x82, new Uint8Array([id >> 8, id & 0xff]), filter));
+    this.ws.send(packet(0x82, new Uint8Array([id >> 8, id & 0xff]), filter));
   }
 
   publish(topic: string, payload: string): void {
-    this.ws?.send(packet(0x30, mqttString(topic), enc.encode(payload)));
+    if (!this.ready || !this.ws) return;
+    this.ws.send(packet(0x30, mqttString(topic), enc.encode(payload)));
   }
 
   close(): void {
     this.closed = true;
-    window.clearInterval(this.pinger);
+    clearInterval(this.pinger);
     try {
       this.ws?.send(new Uint8Array([0xe0, 0]).buffer as ArrayBuffer); // DISCONNECT
     } catch {
       // ignore
     }
-    this.ws?.close();
+    try {
+      this.ws?.close();
+    } catch {
+      // ignore
+    }
     this.ws = null;
   }
 
@@ -198,6 +222,74 @@ class MqttClient {
   }
 }
 
+/**
+ * Fans one logical connection out across every broker. Subscribe/publish hit all
+ * live brokers; incoming messages are deduped by (topic|payload). Resolves once
+ * ANY broker is ready; onDown fires only when they're ALL down.
+ */
+class MultiMqtt {
+  onMessage: ((topic: string, payload: string) => void) | null = null;
+  onDown: (() => void) | null = null;
+
+  private conns: MqttConn[] = [];
+  private subs = new Set<string>();
+  private seen = new Set<string>();
+  private closed = false;
+
+  connect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let downCount = 0;
+      const total = BROKERS.length;
+      this.conns = BROKERS.map((url) => {
+        const c = new MqttConn(url);
+        c.onReady = () => {
+          for (const t of this.subs) c.subscribe(t); // replay subs on late joiners
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        c.onMessage = (topic, payload) => {
+          const key = `${topic} ${payload}`;
+          if (this.seen.has(key)) return; // same message via a second broker
+          this.seen.add(key);
+          if (this.seen.size > 400) this.seen.clear(); // handshakes are short
+          this.onMessage?.(topic, payload);
+        };
+        c.onDown = () => {
+          downCount++;
+          if (downCount >= total && !this.closed) {
+            if (!settled) {
+              settled = true;
+              reject(new Error('No se pudo conectar al servicio de salas. Reintentá en unos segundos.'));
+            } else {
+              this.onDown?.();
+            }
+          }
+        };
+        c.connect();
+        return c;
+      });
+    });
+  }
+
+  subscribe(topic: string): void {
+    this.subs.add(topic);
+    for (const c of this.conns) c.subscribe(topic);
+  }
+
+  publish(topic: string, payload: string): void {
+    for (const c of this.conns) c.publish(topic, payload);
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const c of this.conns) c.close();
+    this.conns = [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Room protocol: hello -> offer -> answer, then everyone hangs up.
 // ---------------------------------------------------------------------------
@@ -217,7 +309,7 @@ export interface GuestCallbacks {
 }
 
 export class RoomSignal {
-  private mqtt = new MqttClient();
+  private mqtt = new MultiMqtt();
   private done = false;
 
   async host(code: string, cb: HostCallbacks): Promise<void> {
@@ -254,7 +346,7 @@ export class RoomSignal {
     };
     const base = `motumbo1/${code}`;
     const me = Math.random().toString(36).slice(2, 10);
-    const timer = window.setTimeout(() => {
+    const timer = setTimeout(() => {
       if (!this.done) {
         this.close();
         cb.onError('Nadie respondió en esa sala. Revisá el código o pedile al anfitrión que la vuelva a crear.');
@@ -264,28 +356,39 @@ export class RoomSignal {
       void (async () => {
         try {
           if (topic === `${base}/offer/${me}`) {
-            window.clearTimeout(timer);
+            clearTimeout(timer);
+            clearInterval(helloRetry);
             this.done = true;
             const answer = await cb.makeAnswer(payload);
             this.mqtt.publish(`${base}/answer/${me}`, answer);
             // Give the publish a moment to flush before hanging up.
-            window.setTimeout(() => this.close(), 800);
+            setTimeout(() => this.close(), 800);
           }
         } catch (err) {
-          window.clearTimeout(timer);
+          clearTimeout(timer);
+          clearInterval(helloRetry);
           cb.onError(err instanceof Error ? err.message : String(err));
         }
       })();
     };
     this.mqtt.subscribe(`${base}/offer/${me}`);
-    this.mqtt.publish(`${base}/hello`, me);
+    // Re-announce a few times: a broker that connects a beat late (multi-broker)
+    // or a subscribe that lands after the first hello would otherwise miss us.
+    const sayHello = (): void => {
+      if (!this.done) this.mqtt.publish(`${base}/hello`, me);
+    };
+    sayHello();
+    const helloRetry = setInterval(sayHello, 1500);
+    setTimeout(() => clearInterval(helloRetry), 12000);
   }
 
   /**
-   * Quick match (slither.io style): announce on a shared lobby, pair with the
-   * first other player who is also searching, and run the same offer/answer
-   * handshake. If no human turns up before `timeoutMs`, calls onNoPeer so the
-   * caller can start a bot game instead. The lower peer id becomes host.
+   * Quick match (slither.io style): announce on a shared lobby and pair with
+   * another searcher. Pairing uses a two-step claim→ok LOCK before any WebRTC so
+   * a peer can't be orphaned: the lower id claims the higher, the higher accepts
+   * only if free, and only then do offer/answer flow. A claim that isn't accepted
+   * (target already taken) is released and retried, so 3+ searchers all pair up
+   * instead of one being stranded into a bot game. The lower peer becomes host.
    */
   async quickMatch(
     cb: {
@@ -299,17 +402,31 @@ export class RoomSignal {
     timeoutMs = 22000,
   ): Promise<void> {
     await this.mqtt.connect();
-    // FIXED 8-char id. `Math.random().toString(36).slice(2,10)` could yield
-    // FEWER than 8 chars (small/short randoms), and the lobby guard below drops
-    // any peer whose id length differs from ours — so two searchers with
-    // mismatched-length ids never paired. Pad to guarantee 8.
+    // FIXED 8-char id (short randoms could be <8 chars and the length guard below
+    // would drop them). Pad to guarantee 8.
     const me = (Math.random().toString(36).slice(2) + '00000000').slice(0, 8);
     const lobby = 'motumbo1/lobby';
+    const q = (id: string, kind: string): string => `motumbo1/q/${id}/${kind}`;
+
     let announceTimer = 0;
     let noPeerTimer = 0;
+    // The peer we're currently locking with (claim sent, or ok sent), plus a
+    // release timer so a stalled partner doesn't strand us forever.
+    let partner: string | null = null;
+    let lockTimer = 0;
+    const releaseLock = (): void => {
+      partner = null;
+      clearTimeout(lockTimer);
+    };
+    const lockTo = (peer: string): void => {
+      partner = peer;
+      clearTimeout(lockTimer);
+      lockTimer = setTimeout(releaseLock, 3000) as unknown as number; // free up if it stalls
+    };
     const stopSearch = (): void => {
-      window.clearInterval(announceTimer);
-      window.clearTimeout(noPeerTimer);
+      clearInterval(announceTimer);
+      clearTimeout(noPeerTimer);
+      clearTimeout(lockTimer);
     };
 
     this.mqtt.onDown = () => {
@@ -318,26 +435,46 @@ export class RoomSignal {
     this.mqtt.onMessage = (topic, payload) => {
       void (async () => {
         try {
+          // The host sets done when it sends the offer, but STILL needs the guest's
+          // answer to finish WebRTC — so this must run even when done. (The original
+          // put this behind the done-guard, so no quick match ever actually
+          // connected: the host ignored every answer and both sides fell to bots.)
+          if (topic === q(me, 'answer')) {
+            cb.onAnswer(payload.slice(payload.indexOf('|') + 1));
+            return;
+          }
           if (this.done) return;
           if (topic === lobby) {
             const peer = payload;
             if (peer === me || peer.length !== me.length) return;
-            // Only the lower id initiates; the other waits for the offer.
-            if (me < peer) {
+            // Lower id initiates. Claim the peer if we're free; the ok locks it.
+            if (me < peer && partner === null) {
+              lockTo(peer);
+              this.mqtt.publish(q(peer, 'claim'), me);
+            }
+          } else if (topic === q(me, 'claim')) {
+            // A lower id wants to pair with us. Accept only if we're free.
+            const from = payload;
+            if (partner === null) {
+              lockTo(from);
+              this.mqtt.publish(q(from, 'ok'), me); // we're the guest, wait for the offer
+            }
+          } else if (topic === q(me, 'ok')) {
+            // Our claim was accepted → we host: send the offer.
+            const from = payload;
+            if (partner === from) {
               this.done = true;
               stopSearch();
               cb.onRole(true);
-              this.mqtt.publish(`motumbo1/q/${peer}/offer`, `${me}|${await cb.makeOffer()}`);
+              this.mqtt.publish(q(from, 'offer'), `${me}|${await cb.makeOffer()}`);
             }
-          } else if (topic === `motumbo1/q/${me}/offer`) {
+          } else if (topic === q(me, 'offer')) {
             const sep = payload.indexOf('|');
             const from = payload.slice(0, sep);
             this.done = true;
             stopSearch();
             cb.onRole(false);
-            this.mqtt.publish(`motumbo1/q/${from}/answer`, `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
-          } else if (topic === `motumbo1/q/${me}/answer`) {
-            cb.onAnswer(payload.slice(payload.indexOf('|') + 1));
+            this.mqtt.publish(q(from, 'answer'), `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
           }
         } catch (err) {
           cb.onError(err instanceof Error ? err.message : String(err));
@@ -346,20 +483,22 @@ export class RoomSignal {
     };
 
     this.mqtt.subscribe(lobby);
-    this.mqtt.subscribe(`motumbo1/q/${me}/offer`);
-    this.mqtt.subscribe(`motumbo1/q/${me}/answer`);
+    this.mqtt.subscribe(q(me, 'claim'));
+    this.mqtt.subscribe(q(me, 'ok'));
+    this.mqtt.subscribe(q(me, 'offer'));
+    this.mqtt.subscribe(q(me, 'answer'));
     const announce = (): void => {
       if (!this.done) this.mqtt.publish(lobby, me);
     };
     announce();
-    announceTimer = window.setInterval(announce, 1200);
-    noPeerTimer = window.setTimeout(() => {
+    announceTimer = setInterval(announce, 1200) as unknown as number;
+    noPeerTimer = setTimeout(() => {
       if (!this.done) {
         stopSearch();
         this.close();
         cb.onNoPeer();
       }
-    }, timeoutMs);
+    }, timeoutMs) as unknown as number;
   }
 
   close(): void {

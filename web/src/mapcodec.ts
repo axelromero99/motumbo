@@ -13,8 +13,11 @@ export const MAP_VERSION = 1;
 export const GRID_EXTENT = 7; // tiles live in gx,gz ∈ [-7, 7]
 export const MAX_TILES = 225; // 15×15 grid
 export const MAX_SPAWNS = 8;
-// Must match LEVEL_CUSTOM in sim/motumbo.c (20 handmade + 50 generated + 6 mega).
-export const LEVEL_CUSTOM = 76;
+// Must match LEVEL_CUSTOM in sim/motumbo.c (20 handmade + 50 generated + 11 mega
+// = 81 levels at ids 0..80, so the custom sentinel is 81). This was 76 — a REAL
+// mega arena (⊕ SALTOS) — so every custom/editor map silently loaded SALTOS
+// instead of the designed map. Keep in sync with LEVEL_COUNT/LEVEL_CUSTOM in the C.
+export const LEVEL_CUSTOM = 81;
 
 export interface MapTile {
   gx: number;

@@ -872,8 +872,13 @@ export class GameRenderer {
 
   /** (Re)build meshes for a fresh round from the sim's initial snapshot. */
   setup(sim: Sim, themeOverride?: number): void {
-    this.theme = THEMES[themeOverride ?? sim.level] ?? THEMES[0];
-    this.skyStyleIdx = SKY_STYLE[(themeOverride ?? sim.level) % 20] ?? 0;
+    // THEMES/SKY_STYLE hold 20 entries; levels run 0-80. Attract mode calls with
+    // no override and cycles all levels, so index by level % 20 (matching the sky)
+    // — without the modulo, THEMES[level>=20] was undefined and the backdrop fell
+    // back to CLÁSICA while the sky used the correct per-level style: mismatched.
+    const themeIdx = (themeOverride ?? sim.level) % 20;
+    this.theme = THEMES[themeIdx] ?? THEMES[0];
+    this.skyStyleIdx = SKY_STYLE[themeIdx] ?? 0;
     this.skyMat.uniforms.uStyle.value = this.skyStyleIdx;
     const fogHex = FOG_BY_STYLE[this.skyStyleIdx] >= 0 ? FOG_BY_STYLE[this.skyStyleIdx] : this.theme.bg;
     this.scene.background = null;

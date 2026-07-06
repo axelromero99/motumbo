@@ -201,13 +201,59 @@ export function makeSkinMaterial(skinIndex: number, colorHex: number, playerNumb
   return material;
 }
 
+// Overlay a hint of the MATERIAL (metalness sheen / emissive glow) plus a sphere
+// shade onto a thumbnail. Without this the material skins whose draw() is a flat
+// fill (Metal, Peluda, Slime, Neón, Piedra, Cromo, Hielo…) all render as the same
+// solid circle — makeSkinMaterial's look lives in mat(), which the 2D thumbnail
+// never applied, so 7 skins looked identical in the picker.
+function applyMaterialHint(g: Ctx, p: THREE.MeshStandardMaterialParameters, size: number): void {
+  const metal = (p.metalness as number) ?? 0;
+  const emiI = (p.emissiveIntensity as number) ?? 0;
+  // Imprint the bump texture (fur/stone/metal/slime are distinct canvases) so
+  // those materials read differently — otherwise Peluda vs Piedra are identical.
+  const bumpImg = (p.bumpMap as THREE.Texture | undefined)?.image as CanvasImageSource | undefined;
+  if (bumpImg) {
+    g.save();
+    g.globalAlpha = 0.6;
+    g.globalCompositeOperation = 'overlay';
+    g.drawImage(bumpImg, 20, 20, 88, 88, 0, 0, size, size);
+    g.restore();
+  }
+  if (metal > 0.5) {
+    const a = 0.12 + metal * 0.4;
+    const grd = g.createLinearGradient(0, size, size, 0);
+    grd.addColorStop(0, 'rgba(255,255,255,0)');
+    grd.addColorStop(0.46, `rgba(255,255,255,${a})`);
+    grd.addColorStop(0.56, `rgba(255,255,255,${a})`);
+    grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+  }
+  if (p.emissive != null && emiI > 0) {
+    const ec = p.emissive instanceof THREE.Color ? p.emissive : new THREE.Color(p.emissive as THREE.ColorRepresentation);
+    const grd = g.createRadialGradient(size * 0.5, size * 0.45, 1, size * 0.5, size * 0.5, size * 0.6);
+    grd.addColorStop(0, `rgba(${(ec.r * 255) | 0},${(ec.g * 255) | 0},${(ec.b * 255) | 0},${Math.min(0.6, 0.22 + emiI)})`);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, size, size);
+  }
+  // Sphere shading (all skins): light top-left, dark rim — reads as a 3D ball.
+  const sh = g.createRadialGradient(size * 0.36, size * 0.32, 1, size * 0.5, size * 0.5, size * 0.62);
+  sh.addColorStop(0, 'rgba(255,255,255,0.16)');
+  sh.addColorStop(0.6, 'rgba(0,0,0,0)');
+  sh.addColorStop(1, 'rgba(0,0,0,0.38)');
+  g.fillStyle = sh;
+  g.fillRect(0, 0, size, size);
+}
+
 /** Small round thumbnail (data URL) of a skin for the picker UI. */
 export function skinThumbnail(skinIndex: number, colorHex: number, size = 56): string {
   const skin = SKINS[((skinIndex % SKIN_COUNT) + SKIN_COUNT) % SKIN_COUNT];
+  const col = new THREE.Color(colorHex);
   const full = document.createElement('canvas');
   full.width = W;
   full.height = H;
-  skin.draw(full.getContext('2d')!, new THREE.Color(colorHex));
+  skin.draw(full.getContext('2d')!, col);
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
@@ -218,6 +264,7 @@ export function skinThumbnail(skinIndex: number, colorHex: number, size = 56): s
   g.clip();
   // Sample the front hemisphere (around x=64) so the motif reads.
   g.drawImage(full, 20, 20, 88, 88, 0, 0, size, size);
+  applyMaterialHint(g, skin.mat(col), size);
   g.restore();
   return c.toDataURL();
 }
