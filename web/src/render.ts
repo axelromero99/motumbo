@@ -19,6 +19,7 @@ import {
   ORB_INFO,
   MAX_ORBS,
   hasShield,
+  isFrozen,
   pieceStateOf,
   pieceSpecialOf,
   SPECIAL_BOOST,
@@ -1187,9 +1188,12 @@ export class GameRenderer {
         this.shields[i].scale.setScalar(s);
       }
 
-      // Cursed aura beats every other glow; then power orb, then dash ready.
+      // Frozen (CONGELAR) beats all — an icy glow; then cursed, power, dash.
       const mat = this.playerMats[i];
-      if (cursed) {
+      if (isFrozen(flags)) {
+        mat.emissive.setHex(0x8fdfff);
+        mat.emissiveIntensity = 0.75;
+      } else if (cursed) {
         mat.emissive.setHex(CURSE_COLOR);
         mat.emissiveIntensity = 0.65 + 1.05 * cursePulse;
       } else if (flags & FLAG_HAS_POWER) {

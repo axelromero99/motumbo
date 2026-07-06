@@ -88,6 +88,9 @@ export const ORB_TURBO = 1;
 export const ORB_MEGA = 2;
 export const ORB_SHIELD = 3;
 export const ORB_SHOCK = 4;
+export const ORB_MAGNET = 5;
+export const ORB_FREEZE = 6;
+export const ORB_LAUNCH = 7;
 
 // Per-type presentation: color, emoji icon, short label, one-line description.
 // The icon mirrors the billboard glyph drawn over the orb in render.ts.
@@ -97,11 +100,19 @@ export const ORB_INFO = [
   { color: 0xff5964, icon: '✥', name: 'MEGA', desc: 'crecés y pesás más' },
   { color: 0x8affc0, icon: '🛡', name: 'ESCUDO', desc: 'bloquea el próximo empujón' },
   { color: 0xff8a3d, icon: '💥', name: 'BOMBA', desc: 'onda que empuja a todos' },
+  { color: 0xb15cff, icon: '◎', name: 'IMÁN', desc: 'atrae a todos hacia vos' },
+  { color: 0x7fe9ff, icon: '❄', name: 'CONGELAR', desc: 'congela al rival más cercano' },
+  { color: 0x9be15a, icon: '⇧', name: 'RESORTE', desc: 'súper salto — ideal en las torres' },
 ] as const;
 
 export const FLAG_SHIELD = 65536;
 export function hasShield(flags: number): boolean {
   return (flags & FLAG_SHIELD) !== 0;
+}
+
+export const FLAG_FROZEN = 131072; // frozen by a rival's CONGELAR
+export function isFrozen(flags: number): boolean {
+  return (flags & FLAG_FROZEN) !== 0;
 }
 
 // Game modes (deterministic, resolved inside the sim).

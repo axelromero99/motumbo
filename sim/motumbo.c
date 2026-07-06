@@ -45,7 +45,10 @@ enum
 	ORB_MEGA = 2,	 // permanent (per round) size/mass stack
 	ORB_SHIELD = 3,	 // blocks the next shove you take (one use)
 	ORB_SHOCK = 4,	 // instant: shoves everyone around you on pickup
-	ORB_TYPE_COUNT = 5,
+	ORB_MAGNET = 5,	 // instant: reels every nearby rival IN toward you (chaos)
+	ORB_FREEZE = 6,	 // instant: freezes the nearest rival solid for a beat
+	ORB_LAUNCH = 7,	 // instant: super-jump — flings you up (shines on towers)
+	ORB_TYPE_COUNT = 8,
 };
 #define TURBO_STEP 0.16f
 #define TURBO_MAX 1.5f
@@ -53,6 +56,10 @@ enum
 #define MEGA_MAX 1.55f
 #define SHOCK_RADIUS 5.0f
 #define SHOCK_FORCE 8.0f
+#define MAGNET_RADIUS 8.5f
+#define MAGNET_FORCE 7.0f
+#define FREEZE_TICKS 78	 // ~1.3 s a rival is frozen solid
+#define LAUNCH_UP 9.5f	 // upward impulse velocity of the RESORTE super-jump
 // Several pickups lie around the map at once, scaled to its size.
 #define MAX_ORBS 6
 
@@ -138,6 +145,7 @@ enum
 #define FLAG_BRACED 512
 #define FLAG_CURSED 1024
 #define FLAG_SHIELD 65536 // bit16 (bits 11-15 hold the ball radius)
+#define FLAG_FROZEN 131072 // bit17: frozen by a rival's CONGELAR
 
 // Mode section appended to the state buffer: [mode, m0, m1, m2] + one score per
 // player slot. Sized off MAX_PLAYERS so big brawls still get a score each.
@@ -227,6 +235,7 @@ typedef struct Player
 	float speedMult; // TURBO stacks
 	bool hasPower;	 // carrying SUPER (next dash empowered)
 	bool hasShield;	 // carrying SHIELD (blocks next shove)
+	int frozenTicks; // > 0 while frozen by a rival's CONGELAR (can't move)
 	bool alive;
 } Player;
 
@@ -513,7 +522,7 @@ static void WriteState( void )
 		int flags = ( p->alive ? FLAG_ALIVE : 0 ) | ( p->dashCooldown == 0 ? FLAG_DASH_READY : 0 ) |
 					( p->hasPower ? FLAG_HAS_POWER : 0 ) | ( cd << FLAG_CD_SHIFT ) |
 					( p->braceTicks > 0 ? FLAG_BRACED : 0 ) | ( g_cursed == i ? FLAG_CURSED : 0 ) | ( rBits << 11 ) |
-					( p->hasShield ? FLAG_SHIELD : 0 );
+					( p->hasShield ? FLAG_SHIELD : 0 ) | ( p->frozenTicks > 0 ? FLAG_FROZEN : 0 );
 		out[7] = (float)flags;
 		out += STATE_STRIDE;
 	}
@@ -2419,6 +2428,7 @@ MOTUMBO_EXPORT void motumbo_init( uint32_t seed, int playerCount, int level )
 		g_players[i].braceTicks = 0;
 		g_players[i].hasPower = false;
 		g_players[i].hasShield = false;
+		g_players[i].frozenTicks = 0;
 		g_players[i].alive = true;
 	}
 
@@ -3264,7 +3274,11 @@ static void StepPlayers( void )
 			continue;
 		}
 
-		uint32_t in = frozen ? 0u : g_inputs[i];
+		// A CONGELAR victim is iced for a beat: its input is ignored while it sits
+		// still, so a rival can roll up and bump it off the edge.
+		bool iced = p->frozenTicks > 0;
+		if ( iced ) { p->frozenTicks -= 1; }
+		uint32_t in = ( frozen || iced ) ? 0u : g_inputs[i];
 		uint32_t pressed = in & ~p->prevIn;
 		p->prevIn = in;
 
@@ -3848,6 +3862,67 @@ static void ApplyOrb( int i, int type, b3Vec3 at )
 				}
 			}
 			PushEvent( EVT_SHOCK, at.x, at.y, at.z, 0.0f, (float)i );
+			break;
+		}
+		case ORB_MAGNET:
+		{
+			// Opposite of SHOCK: reel every nearby rival IN toward you.
+			b3Pos pos = b3Body_GetPosition( p->body );
+			for ( int j = 0; j < g_playerCount; ++j )
+			{
+				if ( j == i || !g_players[j].alive )
+				{
+					continue;
+				}
+				b3Pos op = b3Body_GetPosition( g_players[j].body );
+				float rx = pos.x - op.x;
+				float rz = pos.z - op.z;
+				float d = sqrtf( rx * rx + rz * rz );
+				if ( d < MAGNET_RADIUS && d > 0.4f )
+				{
+					float jm = b3Body_GetMass( g_players[j].body );
+					float force = MAGNET_FORCE * jm * ( d / MAGNET_RADIUS );
+					b3Body_ApplyLinearImpulseToCenter( g_players[j].body, ( b3Vec3 ){ rx / d * force, 0.18f * force, rz / d * force }, true );
+				}
+			}
+			break;
+		}
+		case ORB_FREEZE:
+		{
+			// Freeze the single nearest rival solid for a beat.
+			b3Pos pos = b3Body_GetPosition( p->body );
+			int best = -1;
+			float bestD = 1e18f;
+			for ( int j = 0; j < g_playerCount; ++j )
+			{
+				if ( j == i || !g_players[j].alive )
+				{
+					continue;
+				}
+				b3Pos op = b3Body_GetPosition( g_players[j].body );
+				float rx = op.x - pos.x;
+				float rz = op.z - pos.z;
+				float dd = rx * rx + rz * rz;
+				if ( dd < bestD )
+				{
+					bestD = dd;
+					best = j;
+				}
+			}
+			if ( best >= 0 )
+			{
+				g_players[best].frozenTicks = FREEZE_TICKS;
+				b3Body_SetLinearVelocity( g_players[best].body, ( b3Vec3 ){ 0.0f, 0.0f, 0.0f } );
+			}
+			break;
+		}
+		case ORB_LAUNCH:
+		{
+			// Super-jump: cancel any fall, then fling straight up (keep run speed).
+			float m = b3Body_GetMass( p->body );
+			b3Vec3 v = b3Body_GetLinearVelocity( p->body );
+			b3Body_SetLinearVelocity( p->body, ( b3Vec3 ){ v.x, v.y < 0.0f ? 0.0f : v.y, v.z } );
+			b3Body_ApplyLinearImpulseToCenter( p->body, ( b3Vec3 ){ 0.0f, LAUNCH_UP * m, 0.0f }, true );
 			break;
 		}
 		default: // ORB_SUPER
