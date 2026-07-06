@@ -1454,8 +1454,8 @@ static void BuildGenerated( int level, const b3BoxHull* hull )
 	float R = famR[fam] + GenF( -1.5f, 2.0f );
 
 	const float step = 0.8f;						  // one ramp-tile of climb = one floor step
-	int tierEvery = 2 + (int)( GenNext() % 2u );	  // grid-rings per floor (2 or 3)
-	int maxTier = 4 + (int)( GenNext() % 2u );		  // storeys above ground (4 or 5)
+	int tierEvery = 1 + (int)( GenNext() % 2u );	  // grid-rings per floor (1 or 2 — steeper towers)
+	int maxTier = 6 + (int)( GenNext() % 4u );		  // storeys above ground (6..9 — real towers now)
 
 	// Family params, all rolled up-front so the RNG stream stays stable.
 	int holes = 2 + (int)( GenNext() % 3u );
