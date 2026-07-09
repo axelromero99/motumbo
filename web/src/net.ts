@@ -4,6 +4,25 @@
 // state hash that acts as a desync tripwire.
 
 export const INPUT_DELAY = 4;
+// Relay games go through an MQTT broker, so one-way latency is ~100-250ms instead
+// of a LAN's few ms. A bigger input delay hides that: inputs are scheduled far
+// enough ahead that they arrive before the tick that needs them, so the game runs
+// smoothly (with more input lag) instead of stuttering. Both peers use the same
+// value when relaying, so the sim stays bit-identical.
+export const RELAY_INPUT_DELAY = 18;
+
+/**
+ * The wire both game endpoints share. NetSession (WebRTC) and RelayTransport
+ * (MQTT relay) both satisfy it, so the lockstep/game code never cares which one
+ * is carrying the bytes.
+ */
+export interface Transport {
+  onMessage: ((view: DataView) => void) | null;
+  onOpen: (() => void) | null;
+  onClose: (() => void) | null;
+  send(buf: ArrayBuffer): void;
+  close(): void;
+}
 
 // Wire format (little-endian):
 //   INPUT: u8 type=0, u8 round, u32 tick, u32 word
@@ -137,7 +156,7 @@ function waitIceComplete(pc: RTCPeerConnection, timeoutMs = 2000): Promise<void>
   });
 }
 
-export class NetSession {
+export class NetSession implements Transport {
   onMessage: ((view: DataView) => void) | null = null;
   onOpen: (() => void) | null = null;
   onClose: (() => void) | null = null;
@@ -212,12 +231,13 @@ export class Lockstep {
   private words = new Uint32Array(8);
 
   constructor(
-    private session: NetSession,
+    private session: Transport,
     private mySlot: number,
     private round: number,
+    private inputDelay: number = INPUT_DELAY,
   ) {
     // The first DELAY ticks have no player input on either side.
-    for (let t = 0; t < INPUT_DELAY; t++) {
+    for (let t = 0; t < inputDelay; t++) {
       this.local.set(t, 0);
       this.remote.set(t, 0);
     }
@@ -225,7 +245,7 @@ export class Lockstep {
 
   /** Sample the local input word once per pending tick (idempotent). */
   scheduleLocal(word: number): void {
-    const target = this.tick + INPUT_DELAY;
+    const target = this.tick + this.inputDelay;
     if (!this.local.has(target)) {
       this.local.set(target, word);
       this.session.send(msgInput(this.round, target, word));

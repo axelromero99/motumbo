@@ -38,7 +38,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22 (LTS) so `npm test` can run the TS signal-matchmaking test directly
+          # via --experimental-transform-types (unavailable on 20). Vite 8 supports it.
+          node-version: 22
 
       - name: Web dependencies
         run: npm ci

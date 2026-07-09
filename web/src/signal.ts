@@ -9,6 +9,22 @@
 // each device, so two players could land on different brokers and never see each
 // other — matchmaking "found sometimes, not others". Fanning out fixes that: two
 // peers pair as long as they share ANY one live broker.
+//
+// The broker also doubles as a LAST-RESORT game relay: when WebRTC can't punch
+// the NAT (symmetric NAT, no TURN), quickMatch keeps this MQTT link open and hands
+// main.ts a RelayLink (raw publish + inbox subscription) it wraps in a reliable
+// RelayTransport, so two players connect even across restrictive networks — at the
+// cost of broker latency. signal.ts stays free of the transport itself (and of any
+// non-node-resolvable import) so it can run under the node test harness.
+
+/** Raw broker pipe to the paired peer, wrapped by main.ts into a reliable channel. */
+export interface RelayLink {
+  /** Publish one packet to the peer's relay inbox. */
+  sendRaw(packet: string): void;
+  /** Register the handler fed with packets arriving on our inbox. */
+  setReceiver(handler: (packet: string) => void): void;
+  isHost: boolean;
+}
 
 const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081'];
 const CONNECT_TIMEOUT_MS = 6000;
@@ -33,6 +49,12 @@ export function normalizeRoomCode(raw: string): string | null {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+// Opt-in matchmaking trace: set globalThis.__MM_DEBUG = true (the e2e tests do)
+// to log pairing/handshake/retry transitions. Silent in normal play.
+function mmlog(...a: unknown[]): void {
+  if ((globalThis as { __MM_DEBUG?: boolean }).__MM_DEBUG) console.log('[mm]', ...a);
+}
 
 function mqttString(s: string): Uint8Array {
   const bytes = enc.encode(s);
@@ -235,6 +257,12 @@ class MultiMqtt {
   private subs = new Set<string>();
   private seen = new Set<string>();
   private closed = false;
+  // Per-publish nonce (frames every message). Cross-broker COPIES of one publish
+  // share the nonce and dedup; genuine RE-SENDS (re-announce, re-claim, hello
+  // retry) get a fresh nonce so they're NOT swallowed — without this, matchmaking
+  // retries died silently because their payloads are byte-identical each time.
+  private pubTag = Math.random().toString(36).slice(2, 8);
+  private pubSeq = 0;
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -250,12 +278,16 @@ class MultiMqtt {
             resolve();
           }
         };
-        c.onMessage = (topic, payload) => {
-          const key = `${topic} ${payload}`;
-          if (this.seen.has(key)) return; // same message via a second broker
+        c.onMessage = (topic, framed) => {
+          // Dedup on the framed string (nonce + payload): a second broker's COPY of
+          // one publish collapses, but a re-send with a fresh nonce does not — that's
+          // what lets a failed handshake's retry find its peer again.
+          const key = topic + ' ' + framed;
+          if (this.seen.has(key)) return;
           this.seen.add(key);
-          if (this.seen.size > 400) this.seen.clear(); // handshakes are short
-          this.onMessage?.(topic, payload);
+          if (this.seen.size > 3000) this.seen.clear(); // a 5-min search sends many
+          const bar = framed.indexOf('|');
+          this.onMessage?.(topic, bar >= 0 ? framed.slice(bar + 1) : framed);
         };
         c.onDown = () => {
           downCount++;
@@ -280,7 +312,11 @@ class MultiMqtt {
   }
 
   publish(topic: string, payload: string): void {
-    for (const c of this.conns) c.publish(topic, payload);
+    // Frame with a unique nonce so every broker gets the SAME string for one
+    // logical publish (dedups on the receiver) while re-sends get a fresh nonce
+    // (so they survive the dedup). Receiver strips everything up to the first '|'.
+    const framed = this.pubTag + this.pubSeq++ + '|' + payload;
+    for (const c of this.conns) c.publish(topic, framed);
   }
 
   close(): void {
@@ -311,6 +347,21 @@ export interface GuestCallbacks {
 export class RoomSignal {
   private mqtt = new MultiMqtt();
   private done = false;
+  // quickMatch installs these so main.ts can drive the retry loop from the
+  // WebRTC side: confirmConnected() when the DataChannel truly opens (the ONLY
+  // thing that ends the search), retryNow() when an attempt's connection dies.
+  private onConfirm: (() => void) | null = null;
+  private onAbort: (() => void) | null = null;
+
+  /** The DataChannel opened for real — stop searching for good. */
+  confirmConnected(): void {
+    this.onConfirm?.();
+  }
+
+  /** This attempt's WebRTC died — drop the peer and re-enter the pool. */
+  retryNow(): void {
+    this.onAbort?.();
+  }
 
   async host(code: string, cb: HostCallbacks): Promise<void> {
     await this.mqtt.connect();
@@ -386,9 +437,24 @@ export class RoomSignal {
    * Quick match (slither.io style): announce on a shared lobby and pair with
    * another searcher. Pairing uses a two-step claim→ok LOCK before any WebRTC so
    * a peer can't be orphaned: the lower id claims the higher, the higher accepts
-   * only if free, and only then do offer/answer flow. A claim that isn't accepted
-   * (target already taken) is released and retried, so 3+ searchers all pair up
-   * instead of one being stranded into a bot game. The lower peer becomes host.
+   * only if free, and only then do offer/answer flow. The lower peer becomes host.
+   *
+   * Resilience (this is what makes it feel like real matchmaking): a lobby pair is
+   * only a CANDIDATE. The search does NOT end when offer/answer are exchanged — it
+   * ends only when main.ts calls confirmConnected() because the DataChannel really
+   * opened. Every attempt gets a watchdog; if the P2P link doesn't confirm in time
+   * (NAT with no TURN, ICE failure, a peer that vanished), abortAttempt() drops the
+   * partner, tells main.ts to throw away the dead session (onRetry), and re-enters
+   * the pool to find a DIFFERENT peer. So a failed handshake never strands anyone,
+   * and because the pool stays open across whole bot matches, a rival who shows up
+   * a minute later still pairs you in — "connect on the next game" for free.
+   *
+   *   onNoPeer  fires ONCE after a short grace with nobody → main starts a bot game
+   *             while WE KEEP SEARCHING (it is NOT the end of the search).
+   *   onRetry   an attempt failed → main drops its half-open NetSession; the next
+   *             makeOffer/makeAnswer must build a fresh one.
+   *   poolMs    hard cap on the whole search (spans several bot matches); when it
+   *             elapses with no connection, the search closes quietly.
    */
   async quickMatch(
     cb: {
@@ -398,8 +464,14 @@ export class RoomSignal {
       onRole(isHost: boolean): void;
       onError(message: string): void;
       onNoPeer(): void;
+      onRetry?(): void;
+      // WebRTC couldn't connect to this partner — here's a raw broker link to relay
+      // the game through instead (works if MQTT is up). main.ts wraps it in a
+      // RelayTransport and must NOT close the RoomSignal (the relay rides its MQTT).
+      onRelay?(link: RelayLink): void;
     },
-    timeoutMs = 22000,
+    poolMs = 300000, // ~5 min: outlives the current match and the next one
+    graceMs = 3500, // play-now grace before onNoPeer (bots) — search lives on
   ): Promise<void> {
     await this.mqtt.connect();
     // FIXED 8-char id (short randoms could be <8 chars and the length guard below
@@ -407,13 +479,31 @@ export class RoomSignal {
     const me = (Math.random().toString(36).slice(2) + '00000000').slice(0, 8);
     const lobby = 'motumbo1/lobby';
     const q = (id: string, kind: string): string => `motumbo1/q/${id}/${kind}`;
+    mmlog(me, 'searching');
 
     let announceTimer = 0;
-    let noPeerTimer = 0;
-    // The peer we're currently locking with (claim sent, or ok sent), plus a
-    // release timer so a stalled partner doesn't strand us forever.
+    let poolTimer = 0;
+    let noPeerFired = false;
+    // The peer we're locking/handshaking with, plus a release timer so a stalled
+    // partner doesn't strand us before the handshake even starts.
     let partner: string | null = null;
     let lockTimer = 0;
+    // A full offer/answer handshake is in flight; block new pairings until it
+    // either confirms (confirmConnected) or is aborted (watchdog / dead session).
+    let attempting = false;
+    let attemptTimer = 0;
+    let iAmHost = false; // decided by the pairing (ok=host, offer=guest)
+    // Relay fallback: when WebRTC to this partner fails, we don't abandon them —
+    // we relay through MQTT. committed pins which transport won this attempt so a
+    // late WebRTC open can't fight a live relay (and vice-versa).
+    let committed: 'none' | 'webrtc' | 'relay' = 'none';
+    let relayTried = false;
+    let relayTimer = 0; // proactive: fall back if WebRTC hasn't confirmed in time
+    let relayInitTimer = 0; // host: re-send relay-init until the guest acks
+    let relayGiveupTimer = 0; // relay handshake itself stalled → re-hunt
+    let relayReceiver: ((packet: string) => void) | null = null; // main's inbox handler
+    const relayIn = q(me, 'rd'); // our relayed-data inbox
+
     const releaseLock = (): void => {
       partner = null;
       clearTimeout(lockTimer);
@@ -421,12 +511,106 @@ export class RoomSignal {
     const lockTo = (peer: string): void => {
       partner = peer;
       clearTimeout(lockTimer);
-      lockTimer = setTimeout(releaseLock, 3000) as unknown as number; // free up if it stalls
+      // Release fast if the claim→ok stalls (target busy) so we retry another peer
+      // quickly. This is only the PRE-handshake lock — beginAttempt pins the partner
+      // for the actual offer/answer via its own longer watchdog.
+      lockTimer = setTimeout(releaseLock, 3000) as unknown as number;
     };
     const stopSearch = (): void => {
       clearInterval(announceTimer);
-      clearTimeout(noPeerTimer);
+      clearTimeout(poolTimer);
       clearTimeout(lockTimer);
+      clearTimeout(attemptTimer);
+      clearTimeout(relayTimer);
+      clearTimeout(relayInitTimer);
+      clearTimeout(relayGiveupTimer);
+    };
+
+    const announce = (): void => {
+      // Pause announcing mid-handshake so a third searcher doesn't claim us.
+      if (!this.done && !attempting) this.mqtt.publish(lobby, me);
+    };
+
+    // Last resort: abandon this partner entirely and hunt for a fresh one. Only
+    // reached if BOTH WebRTC and the relay fallback failed with them (partner gone).
+    const reHunt = (): void => {
+      if (this.done || !attempting) return;
+      mmlog(me, 'giving up on', partner, '→ back to pool');
+      attempting = false;
+      committed = 'none';
+      relayTried = false;
+      clearTimeout(attemptTimer);
+      clearTimeout(relayTimer);
+      clearTimeout(relayInitTimer);
+      clearTimeout(relayGiveupTimer);
+      releaseLock();
+      cb.onRetry?.(); // main tears down the half-open session; next attempt rebuilds
+      announce(); // re-enter the pool right away
+    };
+
+    // Adopt the broker relay for this partner. Keeps the MQTT link OPEN (the relay
+    // rides it) — unlike the WebRTC path, we do NOT close(). done stops the search.
+    const commitRelay = (host: boolean): void => {
+      if (this.done || committed !== 'none' || !partner) return;
+      committed = 'relay';
+      this.done = true;
+      const peer = partner;
+      stopSearch();
+      mmlog(me, 'RELAY connected with', peer, host ? '(host)' : '(guest)');
+      cb.onRelay?.({
+        sendRaw: (pkt) => this.mqtt.publish(q(peer, 'rd'), pkt),
+        setReceiver: (fn) => {
+          relayReceiver = fn;
+        },
+        isHost: host,
+      });
+    };
+
+    // WebRTC to this partner didn't come up → try relaying through the broker with
+    // the SAME partner (guaranteed if MQTT is alive) before abandoning them. Host
+    // proposes (relay-init), guest waits for it; whoever's silent long enough re-hunts.
+    const startRelayFallback = (): void => {
+      if (this.done || committed !== 'none' || !attempting || !partner || relayTried) return;
+      relayTried = true;
+      clearTimeout(relayTimer);
+      const peer = partner;
+      mmlog(me, 'WebRTC stalled →', iAmHost ? 'offering relay to' : 'awaiting relay from', peer);
+      if (iAmHost) {
+        const sendInit = (): void => {
+          if (committed === 'none' && !this.done) this.mqtt.publish(q(peer, 'ri'), me);
+        };
+        sendInit();
+        relayInitTimer = setInterval(sendInit, 1500) as unknown as number;
+        relayGiveupTimer = setTimeout(reHunt, 8000) as unknown as number;
+      } else {
+        relayGiveupTimer = setTimeout(reHunt, 10000) as unknown as number;
+      }
+    };
+
+    const beginAttempt = (): void => {
+      mmlog(me, 'begin attempt with', partner);
+      attempting = true;
+      clearTimeout(lockTimer); // pin the partner for the whole handshake
+      clearTimeout(relayTimer);
+      // Prefer WebRTC (low latency). If it hasn't confirmed in ~15s — a silent stall
+      // that connectionState never flagged — fall back to the broker relay. A real
+      // failure trips retryNow() sooner and takes the same path. Aborting mid-flight
+      // would kill a handshake about to succeed, so this is generous on purpose.
+      relayTimer = setTimeout(startRelayFallback, 15000) as unknown as number;
+    };
+
+    // main.ts drives these off the real WebRTC channel.
+    this.onConfirm = () => {
+      if (this.done) return;
+      committed = 'webrtc';
+      mmlog(me, 'CONFIRMED WebRTC with', partner);
+      this.done = true;
+      stopSearch();
+      this.close(); // WebRTC won — the broker is no longer needed
+    };
+    this.onAbort = () => {
+      mmlog(me, 'retryNow() from main (WebRTC died) → relay fallback');
+      startRelayFallback();
     };
 
     this.mqtt.onDown = () => {
@@ -435,15 +619,39 @@ export class RoomSignal {
     this.mqtt.onMessage = (topic, payload) => {
       void (async () => {
         try {
-          // The host sets done when it sends the offer, but STILL needs the guest's
-          // answer to finish WebRTC — so this must run even when done. (The original
-          // put this behind the done-guard, so no quick match ever actually
-          // connected: the host ignored every answer and both sides fell to bots.)
-          if (topic === q(me, 'answer')) {
-            cb.onAnswer(payload.slice(payload.indexOf('|') + 1));
+          // Relayed game bytes flow AFTER done=true (relay committed), so route them
+          // before any guard.
+          if (topic === relayIn) {
+            relayReceiver?.(payload);
             return;
           }
-          if (this.done) return;
+          // The host needs the guest's answer to finish WebRTC — this runs even
+          // while attempting (that's the whole point of the handshake). Accept it
+          // ONLY from the peer we're handshaking with, so a late answer from an
+          // aborted attempt can't clobber a freshly rebuilt session.
+          if (topic === q(me, 'answer')) {
+            const sep = payload.indexOf('|');
+            if (!this.done && attempting && payload.slice(0, sep) === partner) {
+              cb.onAnswer(payload.slice(sep + 1));
+            }
+            return;
+          }
+          // Relay coordination runs DURING an attempt (WebRTC failed, still committed
+          // to this partner). Host proposes 'ri', guest accepts with 'ra'.
+          if (topic === q(me, 'ri')) {
+            if (!this.done && attempting && committed === 'none' && payload === partner) {
+              this.mqtt.publish(q(partner, 'ra'), me); // ack so the host can commit too
+              commitRelay(false);
+            }
+            return;
+          }
+          if (topic === q(me, 'ra')) {
+            if (!this.done && attempting && committed === 'none' && iAmHost && payload === partner) {
+              commitRelay(true);
+            }
+            return;
+          }
+          if (this.done || attempting) return; // one candidate at a time
           if (topic === lobby) {
             const peer = payload;
             if (peer === me || peer.length !== me.length) return;
@@ -453,55 +661,82 @@ export class RoomSignal {
               this.mqtt.publish(q(peer, 'claim'), me);
             }
           } else if (topic === q(me, 'claim')) {
-            // A lower id wants to pair with us. Accept only if we're free.
+            // A lower id wants to pair with us. Accept only if we're free; otherwise
+            // reject at once so the claimer retries another peer immediately instead
+            // of waiting out its lock timer (snappy 3+ player pairing).
             const from = payload;
             if (partner === null) {
+              mmlog(me, 'claimed by', from, '→ ok');
               lockTo(from);
               this.mqtt.publish(q(from, 'ok'), me); // we're the guest, wait for the offer
+            } else if (from !== partner) {
+              this.mqtt.publish(q(from, 'no'), me); // busy — try someone else
+            }
+          } else if (topic === q(me, 'no')) {
+            // Our claim was rejected (target already taken) → free up and re-hunt now.
+            if (payload === partner) {
+              mmlog(me, 'rejected by', payload, '→ re-hunt');
+              releaseLock();
+              announce();
             }
           } else if (topic === q(me, 'ok')) {
             // Our claim was accepted → we host: send the offer.
             const from = payload;
             if (partner === from) {
-              this.done = true;
-              stopSearch();
+              iAmHost = true;
+              beginAttempt();
               cb.onRole(true);
               this.mqtt.publish(q(from, 'offer'), `${me}|${await cb.makeOffer()}`);
             }
           } else if (topic === q(me, 'offer')) {
             const sep = payload.indexOf('|');
             const from = payload.slice(0, sep);
-            this.done = true;
-            stopSearch();
+            iAmHost = false;
+            lockTo(from);
+            beginAttempt();
             cb.onRole(false);
             this.mqtt.publish(q(from, 'answer'), `${me}|${await cb.makeAnswer(payload.slice(sep + 1))}`);
           }
-        } catch (err) {
-          cb.onError(err instanceof Error ? err.message : String(err));
+        } catch {
+          // A WebRTC/build error in THIS attempt isn't fatal — try the broker relay
+          // with the same partner. Only a dead broker (onDown) surfaces as an error.
+          startRelayFallback();
         }
       })();
     };
 
     this.mqtt.subscribe(lobby);
     this.mqtt.subscribe(q(me, 'claim'));
+    this.mqtt.subscribe(q(me, 'no'));
     this.mqtt.subscribe(q(me, 'ok'));
     this.mqtt.subscribe(q(me, 'offer'));
     this.mqtt.subscribe(q(me, 'answer'));
-    const announce = (): void => {
-      if (!this.done) this.mqtt.publish(lobby, me);
-    };
+    this.mqtt.subscribe(q(me, 'ri')); // relay-init (guest hears)
+    this.mqtt.subscribe(q(me, 'ra')); // relay-ack (host hears)
+    this.mqtt.subscribe(relayIn); // relayed game bytes
     announce();
-    announceTimer = setInterval(announce, 1200) as unknown as number;
-    noPeerTimer = setTimeout(() => {
+    announceTimer = setInterval(announce, 1000) as unknown as number;
+    // Soft "nobody yet" so main can drop into bots FAST — but the search lives on.
+    setTimeout(() => {
+      if (!this.done && !noPeerFired) {
+        noPeerFired = true;
+        cb.onNoPeer();
+      }
+    }, graceMs);
+    poolTimer = setTimeout(() => {
       if (!this.done) {
         stopSearch();
         this.close();
-        cb.onNoPeer();
       }
-    }, timeoutMs) as unknown as number;
+    }, poolMs) as unknown as number;
   }
 
   close(): void {
+    // done stops any in-flight quickMatch handler and neuters late
+    // confirm/abort calls from main.ts after teardown.
+    this.done = true;
+    this.onConfirm = null;
+    this.onAbort = null;
     this.mqtt.close();
   }
 }

@@ -139,6 +139,38 @@ modeParam].
   (hello→offer→answer); después es P2P puro. Código de 4 chars (`MOTUMBO-XK42`),
   link `#room=CODE`. Menú rediseñado: JUGAR/ONLINE/EDITOR/OPCIONES, setup con
   RIVALES (bots+dificultad | humano), contrato en el doc-header de ui.ts.
+- JUGAR = **quick match resiliente** (`RoomSignal.quickMatch`): anuncia en un lobby
+  común y empareja con `claim→ok→offer→answer` (id menor = host; rechazo `no`
+  inmediato si el target está ocupado → 3+ jugadores emparejan rápido sin esperar
+  el lock). Un par del lobby es solo CANDIDATO: la búsqueda NO termina al
+  intercambiar offer/answer, sino cuando `main.ts` llama `confirmConnected()` al
+  abrir de verdad el DataChannel. Watchdog GENEROSO (~15s antes del fallback, 30s
+  el backstop): NUNCA debe cortar una conexión que todavía se está estableciendo
+  (sobre brokers públicos tarda 15-25s) — abortarla a mitad era el bug "nunca
+  empieza la partida". El pool vive ~5 min (cruza varias partidas de bots), así que
+  un rival que aparece después igual te empareja. **Clave**: el dedup cross-broker
+  de `MultiMqtt` enmarca cada publish con un nonce único, si no los re-anuncios/
+  reintentos (payload idéntico) se tragaban y el retry moría en silencio.
+- **Fallback a relay** (conecta con NAT simétrico / sin TURN): si el WebRTC no abre,
+  NO se abandona al peer — se relaya el juego por el mismo broker MQTT. El host manda
+  `ri` (relay-init), el guest responde `ra`, ambos adoptan un `RelayTransport`
+  (`web/src/relay.ts`) sobre un `RelayLink` que da `signal.ts` (publish crudo +
+  suscripción al inbox `q(me,'rd')`). `RelayTransport` es un canal CONFIABLE y
+  ORDENADO sobre qos0 (seq + ack acumulativo + retransmisión de lo no-ackeado; los
+  paquetes lockstep son ≤13 bytes, retransmitir es gratis). Como pasa por el broker,
+  la latencia sube → usa `RELAY_INPUT_DELAY=18` (ambos peers, determinista). `main.ts`
+  NO cierra el `RoomSignal` en el relay (lleva el MQTT); lo cierra en teardown/quit.
+  Contra: mayor input lag + dependés del broker. `signal.ts` se mantiene SIN importar
+  `relay.ts` (por eso el `RelayLink`) para poder correr bajo node en los tests.
+- **Red de seguridad de lockstep**: si el round no avanza 20s (peer trabado, canal
+  muerto en silencio que no dispara `onClose`), `main.ts` corta como desconexión —
+  el host nunca se congela para siempre esperando inputs.
+- Tests: `scripts/test-signal.mjs` (pairing + relay-fallback, unit) y
+  `scripts/test-relay.mjs` (confiabilidad del relay con 60% de pérdida) están en
+  `npm test`; `scripts/test-matchmaking-e2e.mjs` (`npm run test:mm`, LOCAL) lanza dos
+  Chromium reales y verifica que el ROUND CORRA (lockstep avanzando), por WebRTC y
+  por relay con WebRTC bloqueado. `globalThis.__MM_DEBUG=true` loguea transiciones y
+  publica `window.__mmMode/__mmTick/__mmRelay`.
 - El tema visual/musical de niveles generados = `level % 20`.
 
 ## Mapas custom (nivel 8)
