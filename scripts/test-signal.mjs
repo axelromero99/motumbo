@@ -165,7 +165,7 @@ const { RoomSignal } = mod;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function runQuickMatch(n, { block, wait = 1200, timeoutMs = 2500 } = {}) {
+async function runQuickMatch(n, { block, wait = 2000, timeoutMs = 4000, graceMs = 6000 } = {}) {
   reachable = block || (() => true);
   brokers.clear();
   const clients = [];
@@ -185,11 +185,16 @@ async function runQuickMatch(n, { block, wait = 1200, timeoutMs = 2500 } = {}) {
         makeAnswer: async (offer) => {
           rec.partner = offer.slice(4); // "off:C3" -> host id
           rec.completed = true;
+          // Simulate the DataChannel opening a beat AFTER the answer flushes — that's
+          // what ends the search in the real app (offer/answer alone is a candidate).
+          // Must lag the publish or we'd close the broker before the answer is sent.
+          setTimeout(() => rec.rs.confirmConnected(), 40);
           return `ans:${id}`;
         },
         onAnswer: (answer) => {
           rec.partner = answer.slice(4); // "ans:C7" -> guest id
           rec.completed = true;
+          setTimeout(() => rec.rs.confirmConnected(), 40); // host: link opens next
         },
         onError: (m) => {
           rec.error = m;
@@ -197,8 +202,12 @@ async function runQuickMatch(n, { block, wait = 1200, timeoutMs = 2500 } = {}) {
         onNoPeer: () => {
           rec.noPeer = true;
         },
+        onRetry: () => {
+          rec.retries = (rec.retries || 0) + 1;
+        },
       },
       timeoutMs,
+      graceMs,
     ).catch((e) => {
       rec.error = e instanceof Error ? e.message : String(e);
     });
@@ -243,9 +252,11 @@ console.log('signal.ts quick-match pairing');
 }
 
 // 2) FOUR searchers → two clean pairs, nobody orphaned (the old code stranded one
-//    per extra peer into a bot game).
+//    per extra peer into a bot game). Generous window: lock contention among 4 can
+//    take an extra claim→release cycle, and grace stays high so a slow-but-real pair
+//    isn't miscounted as an orphan.
 {
-  const c = await runQuickMatch(4);
+  const c = await runQuickMatch(4, { wait: 3500, timeoutMs: 12000, graceMs: 10000 });
   const done = c.filter((x) => x.completed).length;
   const orphans = c.filter((x) => x.noPeer || x.error).length;
   check('4 peers: all 4 completed', done === 4, `done=${done}`);
@@ -256,13 +267,17 @@ console.log('signal.ts quick-match pairing');
   check('4 peers: all links reciprocal', mutual);
 }
 
-// 3) THREE searchers → one pair + exactly one onNoPeer (odd one out), not chaos.
+// 3) THREE searchers → exactly one pair, and the odd one out falls back to bots
+//    (onNoPeer) while it KEEPS searching (new resilient behavior). We don't assert
+//    that the paired two never fire onNoPeer — in the real app a slow pair legitimately
+//    plays a beat of bots before swapping in — only that the lonely peer is the one
+//    left unpaired and signalled to bots.
 {
-  const c = await runQuickMatch(3, { wait: 3200, timeoutMs: 2500 });
-  const done = c.filter((x) => x.completed).length;
-  const noPeer = c.filter((x) => x.noPeer).length;
-  check('3 peers: exactly 2 paired', done === 2, `done=${done}`);
-  check('3 peers: exactly 1 noPeer', noPeer === 1, `noPeer=${noPeer}`);
+  const c = await runQuickMatch(3, { wait: 2500, timeoutMs: 8000, graceMs: 300 });
+  const done = c.filter((x) => x.completed);
+  const lonely = c.filter((x) => !x.completed);
+  check('3 peers: exactly 2 paired', done.length === 2, `done=${done.length}`);
+  check('3 peers: odd one out falls back to bots', lonely.length === 1 && lonely[0].noPeer, `lonely=${lonely.map((x) => x.id + (x.noPeer ? '(bots)' : '(stranded!)'))}`);
 }
 
 // 4) BROKER SPLIT: A reachable only on broker[0], B only on broker[1]. They share
@@ -291,7 +306,53 @@ console.log('signal.ts quick-match pairing');
   }
 }
 
+// 6) RELAY FALLBACK: when WebRTC can't connect, retryNow() must NOT abandon the
+//    peer — the matchmaker relays the game through the broker instead. Both sides
+//    end up with a RelayLink, exactly one as host. (This also exercises the ri/ra
+//    coordination and the per-publish nonce, since those messages repeat.)
+{
+  reachable = () => true;
+  brokers.clear();
+  const mk = (id) => {
+    const rs = new RoomSignal();
+    const rec = { id, rs, role: null, relay: false, relayHost: null };
+    curClient = id;
+    rs.quickMatch(
+      {
+        onRole: (h) => {
+          rec.role = h ? 'host' : 'guest';
+        },
+        makeOffer: async () => `off:${id}`,
+        makeAnswer: async () => `ans:${id}`,
+        onAnswer: () => {},
+        onError: () => {},
+        onNoPeer: () => {},
+        onRetry: () => {},
+        onRelay: (link) => {
+          rec.relay = true;
+          rec.relayHost = link.isHost;
+        },
+      },
+      30000,
+      9000, // grace high so it doesn't interfere
+    );
+    return rec;
+  };
+  const A = mk('R0');
+  await sleep(5);
+  const B = mk('R1');
+  await sleep(1600); // pair (offer/answer exchanged; no confirmConnected yet)
+  // Both WebRTC links "die" → main.ts calls retryNow(); the matchmaker must relay.
+  A.rs.retryNow();
+  B.rs.retryNow();
+  await sleep(1200); // ri → ra → both commit to the relay
+  check('relay fallback: both got a relay link', A.relay && B.relay, `A=${A.relay} B=${B.relay}`);
+  check('relay fallback: exactly one relay host', A.relayHost !== B.relayHost && A.relayHost !== null, `A=${A.relayHost} B=${B.relayHost}`);
+  A.rs.close();
+  B.rs.close();
+}
+
 if (process.exitCode) console.log('\nSIGNAL TESTS FAILED');
-else console.log('\nSIGNAL OK — quick-match pairs cleanly and is broker-split resilient.');
+else console.log('\nSIGNAL OK — quick-match pairs, survives broker splits, and relays when WebRTC fails.');
 // Any stray broker timers are cleared by close(); exit promptly regardless.
 process.exit(process.exitCode || 0);

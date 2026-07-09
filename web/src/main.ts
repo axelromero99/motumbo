@@ -44,7 +44,10 @@ import { setupTouch } from './touch';
 import { GameRenderer, PLAYER_COLORS } from './render';
 import { AudioEngine } from './audio';
 import { MusicEngine } from './music';
-import { NetSession, Lockstep, msgStart, msgMap, msgName, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP, MSG_NAME } from './net';
+import { NetSession, Lockstep, msgStart, msgMap, msgName, MSG_INPUT, MSG_HASH, MSG_START, MSG_MAP, MSG_NAME, RELAY_INPUT_DELAY, INPUT_DELAY } from './net';
+import type { Transport } from './net';
+import { RelayTransport } from './relay';
+import type { RelayLink } from './signal';
 import { RoomSignal, randomRoomCode, normalizeRoomCode } from './signal';
 import { UiShell, type Settings } from './ui';
 import { renderLevelThumbs } from './minimap';
@@ -163,8 +166,10 @@ async function main(): Promise<void> {
   let attractTimer = 0;
   let attractLevel = 0;
 
-  // Netplay state.
-  let session: NetSession | null = null;
+  // Netplay state. session is the active game transport — a WebRTC NetSession, or a
+  // broker-relayed RelayTransport when WebRTC couldn't punch the NAT.
+  let session: Transport | null = null;
+  let relayMode = false; // the session is a broker relay → use the bigger input delay
   let lockstep: Lockstep | null = null;
   let isHost = false;
   let mySlot = 0;
@@ -418,8 +423,13 @@ async function main(): Promise<void> {
   };
 
   const quitToTitle = (): void => {
+    // Close the relay's MQTT link too (WebRTC games already closed roomSignal on
+    // connect; relay games kept it open to carry the game).
+    roomSignal?.close();
+    roomSignal = null;
     session?.close();
     session = null;
+    relayMode = false;
     lockstep = null;
     paused = false;
     ui.setLifetimeLine(stats.summaryLine());
@@ -438,52 +448,82 @@ async function main(): Promise<void> {
   // Online flow
   // ---------------------------------------------------------------------
 
+  // Game-message dispatch — transport-agnostic, so a WebRTC NetSession and a
+  // broker RelayTransport feed it identically.
+  const handleNetMessage = (v: DataView): void => {
+    const type = v.getUint8(0);
+    if (type === MSG_INPUT) lockstep?.onRemoteInput(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
+    else if (type === MSG_HASH) lockstep?.onRemoteHash(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
+    else if (type === MSG_NAME) {
+      const len = v.getUint8(1);
+      remoteName = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 2, len)).slice(0, 18);
+      if (mode === 'net') updateScorebar(true);
+    } else if (type === MSG_MAP && !isHost) {
+      const len = v.getUint16(1, true);
+      pendingGuestMap = new Uint8Array(v.buffer.slice(v.byteOffset + 3, v.byteOffset + 3 + len));
+    } else if (type === MSG_START && !isHost) {
+      const round = v.getUint8(1);
+      const netSeed = v.getUint32(2, true);
+      const lvl = v.getUint8(6);
+      const doReset = v.getUint8(7) === 1;
+      winTarget = v.getUint8(8);
+      gameMode = v.getUint8(9);
+      gameModeParam = v.getUint8(10);
+      // Bots the host added to the room; the guest sets the SAME slots so
+      // both sims stay bit-identical.
+      netBotCount = v.getUint8(11);
+      botDifficulty = v.getUint8(12);
+      // A duplicate START for a round we already started would restart it (the relay
+      // retransmits until acked) — ignore it once we're already in that round.
+      if (mode === 'net' && round === roundId && lockstep) return;
+      if (doReset) resetNetMatch();
+      roundId = round;
+      const spec: RoundSpec =
+        lvl === LEVEL_CUSTOM && pendingGuestMap
+          ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] % 20, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
+          : { level: lvl, theme: lvl % 20, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
+      startNetRound(netSeed, spec, round);
+    }
+  };
+
+  // A transport dropped. Same recovery whether it was WebRTC or the relay.
+  const handleTransportClose = (): void => {
+    if (mode === 'net') {
+      ui.toast('❌ se cortó la conexión');
+      quitToTitle();
+    } else if (quickMatching && !quickMatchFellBack) {
+      // A quick-match WebRTC attempt died before it ever opened — try the broker
+      // relay with the same peer (retryNow() routes to the relay fallback). We're
+      // likely already playing bots, so this is invisible.
+      roomSignal?.retryNow();
+    } else if (!quickMatching) {
+      ui.setRoomState('error', 'Se cortó la conexión. Volvé a intentar.');
+    }
+  };
+
   const wireSession = (): NetSession => {
     const s = new NetSession();
     s.onOpen = () => onChannelOpen();
-    s.onMessage = (v: DataView) => {
-      const type = v.getUint8(0);
-      if (type === MSG_INPUT) lockstep?.onRemoteInput(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
-      else if (type === MSG_HASH) lockstep?.onRemoteHash(v.getUint8(1), v.getUint32(2, true), v.getUint32(6, true));
-      else if (type === MSG_NAME) {
-        const len = v.getUint8(1);
-        remoteName = new TextDecoder().decode(new Uint8Array(v.buffer, v.byteOffset + 2, len)).slice(0, 18);
-        if (mode === 'net') updateScorebar(true);
-      } else if (type === MSG_MAP && !isHost) {
-        const len = v.getUint16(1, true);
-        pendingGuestMap = new Uint8Array(v.buffer.slice(v.byteOffset + 3, v.byteOffset + 3 + len));
-      } else if (type === MSG_START && !isHost) {
-        const round = v.getUint8(1);
-        const netSeed = v.getUint32(2, true);
-        const lvl = v.getUint8(6);
-        const doReset = v.getUint8(7) === 1;
-        winTarget = v.getUint8(8);
-        gameMode = v.getUint8(9);
-        gameModeParam = v.getUint8(10);
-        // Bots the host added to the room; the guest sets the SAME slots so
-        // both sims stay bit-identical.
-        netBotCount = v.getUint8(11);
-        botDifficulty = v.getUint8(12);
-        if (doReset) resetNetMatch();
-        roundId = round;
-        const spec: RoundSpec =
-          lvl === LEVEL_CUSTOM && pendingGuestMap
-            ? { level: LEVEL_CUSTOM, theme: pendingGuestMap[1] % 20, bytes: pendingGuestMap, name: 'MAPA DEL ANFITRIÓN' }
-            : { level: lvl, theme: lvl % 20, bytes: null, name: LEVEL_NAMES[lvl] ?? 'CUSTOM' };
-        startNetRound(netSeed, spec, round);
-      }
-    };
-    s.onClose = () => {
-      if (mode === 'net') {
-        ui.toast('❌ se cortó la conexión');
-        quitToTitle();
-      } else if (!quickMatching) {
-        // During quick-match we may be playing bots while still searching — a
-        // dropped handshake there isn't an error to surface.
-        ui.setRoomState('error', 'Se cortó la conexión. Volvé a intentar.');
-      }
-    };
+    s.onMessage = handleNetMessage;
+    s.onClose = handleTransportClose;
     return s;
+  };
+
+  // WebRTC couldn't reach this peer — the matchmaker handed us a raw broker link.
+  // Wrap it in a reliable RelayTransport and adopt it as the session. Crucially we
+  // do NOT close roomSignal here: the relay is riding its MQTT link.
+  const onRelayConnected = (link: RelayLink): void => {
+    isHost = link.isHost;
+    mySlot = link.isHost ? 0 : 1;
+    if (session instanceof NetSession) session.close(); // drop the dead WebRTC pc
+    const relay = new RelayTransport(link.sendRaw);
+    link.setReceiver((pkt) => relay.receive(pkt));
+    session = relay;
+    relayMode = true;
+    relay.onMessage = handleNetMessage;
+    relay.onClose = handleTransportClose;
+    relay.onOpen = () => enterOnlineMatch();
+    ui.toast('🔗 emparejado por relay (NAT restrictivo)');
   };
 
   function teardownOnline(): void {
@@ -491,14 +531,19 @@ async function main(): Promise<void> {
     roomSignal = null;
     session?.close();
     session = null;
+    relayMode = false;
     lockstep = null;
     quickMatching = false;
     quickBotsRunning = false;
     window.clearTimeout(connectTimeout);
   }
 
-  // Slither-style quick match: find any waiting player in ~5s, else drop into
-  // a bot game instantly. Either way you're playing fast.
+  // Slither-style quick match: hunt the lobby for a rival while you play. If
+  // nobody's there yet you drop into a bot game in a few seconds, but the search
+  // NEVER stops until it truly connects (DataChannel open) — so a rival who shows
+  // up during this match or the next one still gets swapped in. Each handshake
+  // attempt uses a fresh RTCPeerConnection, and a failed one recycles into the
+  // pool instead of stranding you.
   async function startQuickMatch(): Promise<void> {
     teardownOnline();
     audio.uiClick();
@@ -510,45 +555,40 @@ async function main(): Promise<void> {
     gameMode = MODE_SUMO;
     gameModeParam = 0;
     winTarget = 5;
-    session = wireSession();
+    // A retry after dead ICE must NOT reuse a poisoned peer connection, so every
+    // attempt gets a brand-new session.
+    const newAttemptSession = (): NetSession => {
+      session?.close();
+      const s = wireSession();
+      session = s;
+      return s;
+    };
     const rs = new RoomSignal();
     roomSignal = rs;
-    const armTimeout = (): void => {
-      window.clearTimeout(connectTimeout);
-      // If the WebRTC handshake stalls (NAT), don't hang — fall to bots while
-      // the lobby search keeps running for another rival.
-      connectTimeout = window.setTimeout(() => startQuickBots(), 12000);
-    };
-    // Play NOW: after a short grace with no rival, drop into a bot game — but
-    // keep searching the lobby, so a rival who shows up later still swaps us in.
-    window.setTimeout(() => startQuickBots(), 3500);
     try {
-      await rs.quickMatch(
-        {
-          onRole: (host) => {
-            isHost = host;
-            mySlot = host ? 0 : 1;
-            ui.setRoomState('connecting', '¡rival encontrado! conectando…');
-          },
-          makeOffer: async () => {
-            armTimeout();
-            return await session!.createOfferCode();
-          },
-          onAnswer: (answer) => void session!.acceptAnswerCode(answer),
-          makeAnswer: async (offer) => {
-            armTimeout();
-            return await session!.acceptOfferCode(offer);
-          },
-          onError: () => startQuickBots(),
-          onNoPeer: () => {
-            // Searched the pool a long time with nobody — settle into bots.
-            roomSignal?.close();
-            roomSignal = null;
-            startQuickBots();
-          },
+      await rs.quickMatch({
+        onRole: (host) => {
+          isHost = host;
+          mySlot = host ? 0 : 1;
+          ui.setRoomState('connecting', '¡rival encontrado! conectando…');
         },
-        90000, // keep the pool open ~90 s (slither-style: rivals can join anytime)
-      );
+        makeOffer: async () => await newAttemptSession().createOfferCode(),
+        onAnswer: (answer) => {
+          if (session instanceof NetSession) void session.acceptAnswerCode(answer);
+        },
+        makeAnswer: async (offer) => await newAttemptSession().acceptOfferCode(offer),
+        onRetry: () => {
+          // WebRTC AND its relay fallback both failed with this peer — drop the dead
+          // session so the next peer gets a clean one. We stay in the pool.
+          session?.close();
+          session = null;
+        },
+        // WebRTC couldn't punch the NAT → play over the broker relay instead.
+        onRelay: (link) => onRelayConnected(link),
+        onError: () => startQuickBots(),
+        // Nobody yet → play bots now, but the search keeps running underneath.
+        onNoPeer: () => startQuickBots(),
+      });
     } catch {
       startQuickBots();
     }
@@ -575,7 +615,8 @@ async function main(): Promise<void> {
     isHost = true;
     mySlot = 0;
     intent = 'net-host';
-    session = wireSession();
+    const s = wireSession();
+    session = s;
     roomSignal = new RoomSignal();
     const code = randomRoomCode();
     try {
@@ -585,9 +626,9 @@ async function main(): Promise<void> {
           connectTimeout = window.setTimeout(() => {
             ui.setRoomState('error', 'No se pudo conectar (NAT restrictivo). Probá con el hotspot del celular.');
           }, 15000);
-          return await session!.createOfferCode();
+          return await s.createOfferCode();
         },
-        onAnswer: (answer) => void session!.acceptAnswerCode(answer),
+        onAnswer: (answer) => void s.acceptAnswerCode(answer),
         onError: (msg) => ui.setRoomState('error', msg),
       });
       ui.setRoomState('waiting', undefined, code);
@@ -606,7 +647,8 @@ async function main(): Promise<void> {
     isHost = false;
     mySlot = 1;
     intent = 'net-host';
-    session = wireSession();
+    const s = wireSession();
+    session = s;
     roomSignal = new RoomSignal();
     try {
       await roomSignal.join(code, {
@@ -615,7 +657,7 @@ async function main(): Promise<void> {
           connectTimeout = window.setTimeout(() => {
             ui.setRoomState('error', 'No se pudo conectar (NAT restrictivo). Probá con el hotspot del celular.');
           }, 15000);
-          return await session!.acceptOfferCode(offer);
+          return await s.acceptOfferCode(offer);
         },
         onError: (msg) => ui.setRoomState('error', msg),
       });
@@ -624,9 +666,17 @@ async function main(): Promise<void> {
     }
   }
 
+  // WebRTC DataChannel opened. Stop the matchmaker for good (the P2P link won) and
+  // enter the match. confirmConnected is a no-op for room/join, which use close().
   const onChannelOpen = (): void => {
+    roomSignal?.confirmConnected();
     roomSignal?.close();
     roomSignal = null;
+    enterOnlineMatch();
+  };
+
+  // Shared by the WebRTC and relay paths: name exchange + drop into the match.
+  const enterOnlineMatch = (): void => {
     quickMatchFellBack = true; // a human connected; cancel the bot fallback
     quickBotsRunning = false;
     window.clearTimeout(connectTimeout);
@@ -680,7 +730,9 @@ async function main(): Promise<void> {
       stats.reset(playerCount);
     }
     initRound(netSeed, spec);
-    lockstep = new Lockstep(session!, mySlot, round);
+    // Relay games carry a bigger input delay to hide broker latency; both peers use
+    // the same value (both are in relayMode), so the sim stays bit-identical.
+    lockstep = new Lockstep(session!, mySlot, round, relayMode ? RELAY_INPUT_DELAY : INPUT_DELAY);
     lastNetProgress = performance.now();
     ui.show('none');
     help.innerHTML = helpText();
@@ -1180,6 +1232,7 @@ async function main(): Promise<void> {
 
     if (paused) {
       acc = 0;
+      lastNetProgress = now; // don't count paused time as a net stall
     } else if (mode === 'local' || mode === 'menu') {
       let words = input.words;
       if (remap) {
@@ -1209,11 +1262,28 @@ async function main(): Promise<void> {
       }
       if (!blocked) lastNetProgress = now;
       netwait.style.display = now - lastNetProgress > 400 ? 'block' : 'none';
+      // Hard stall: the peer stopped feeding inputs for many seconds and the socket
+      // never reported a close (a peer stuck in its bot game, or a silently dead
+      // channel). Don't spin the netwait forever — treat it as a lost connection so
+      // the host never freezes waiting for a guest that will never arrive.
+      if (now - lastNetProgress > 20000) {
+        ui.toast('❌ se perdió la conexión con el rival');
+        quitToTitle();
+      }
       if (lockstep.desync && !desyncShown) {
         desyncShown = true;
         banner.innerHTML = '⚠ DESYNC DETECTADO<br><small>esto no debería pasar — avisá al dev</small>';
         banner.style.display = 'block';
       }
+    }
+
+    // Test hook (opt-in, zero cost in normal play): lets the e2e observe that the
+    // online round is really advancing, over WebRTC OR the broker relay.
+    if ((globalThis as { __MM_DEBUG?: boolean }).__MM_DEBUG) {
+      const w = window as unknown as { __mmMode?: string; __mmTick?: number; __mmRelay?: boolean };
+      w.__mmMode = mode;
+      w.__mmTick = lockstep ? lockstep.tick : -1;
+      w.__mmRelay = relayMode;
     }
 
     renderer.update(sim, acc / TICK_MS, now);
